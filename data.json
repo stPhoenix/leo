@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "logLevel": "info",
+  "provider": {
+    "kind": "lmstudio",
+    "endpoint": "http://localhost:1234",
+    "chatModel": "qwen/qwen3.6-35b-a3b",
+    "embeddingModel": "text-embedding-nomic-embed-text-v1.5",
+    "temperature": 0.6,
+    "maxTokens": 16048
+  },
+  "indexing": {
+    "excludePatterns": []
+  },
+  "ui": {
+    "firstRunComplete": true,
+    "firstChatViewOpened": true,
+    "expandedSections": {
+      "provider": true,
+      "indexing": true,
+      "skills": true,
+      "mcp": true,
+      "plan": true,
+      "appearance": true,
+      "advanced": true
+    }
+  }
+}

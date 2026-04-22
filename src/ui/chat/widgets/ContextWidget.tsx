@@ -1,0 +1,159 @@
+import type { ContextData } from '@/agent/contextAnalyzer';
+import {
+  buildGrid,
+  pickGridDimensions,
+  type CategoryId,
+  type ContextCategory,
+  type GridSquare,
+} from '@/ui/contextGrid';
+import { AUTOCOMPACT_BUFFER_TOKENS } from '@/agent/compactConstants';
+import { registerWidget, type WidgetComponentProps } from './registry';
+
+export interface ContextWidgetPayload {
+  readonly data: ContextData;
+  readonly contextWindow: number;
+}
+
+const CATEGORY_LABELS: Readonly<Record<CategoryId, string>> = {
+  system_prompt: 'system prompt',
+  system_tools: 'built-in tools',
+  mcp_tools: 'mcp tools',
+  mcp_tools_deferred: 'mcp tools (deferred)',
+  system_tools_deferred: 'built-in tools (deferred)',
+  custom_agents: 'custom agents',
+  memory_files: 'memory files',
+  skills: 'skills',
+  messages: 'messages',
+  compact_buffer: 'compact buffer',
+  free_space: 'free',
+};
+
+export function ContextWidget({ props }: WidgetComponentProps): JSX.Element {
+  const payload = props as ContextWidgetPayload;
+  return <ContextWidgetBody data={payload.data} contextWindow={payload.contextWindow} />;
+}
+
+interface BodyProps {
+  readonly data: ContextData;
+  readonly contextWindow: number;
+}
+
+function ContextWidgetBody({ data, contextWindow }: BodyProps): JSX.Element {
+  const window = contextWindow > 0 ? contextWindow : 1;
+  const used = sumUsed(data);
+  const reserved = Math.min(AUTOCOMPACT_BUFFER_TOKENS, Math.max(0, window - used));
+  const free = Math.max(0, window - used - reserved);
+  const categories = buildCategories(data, reserved, free);
+  const dimensions = pickGridDimensions(window, 80);
+  const squares = buildGrid({ categories, contextWindow: window, dimensions });
+  const rows = chunk(squares, dimensions.cols).slice(0, dimensions.rows);
+  const totalTokens = data.totalTokens > 0 ? data.totalTokens : used;
+  const pct = Math.min(100, Math.round((totalTokens / window) * 100));
+  const source = data.tokenTotalSource === 'api' ? 'measured' : 'estimated';
+  const legend = categories.filter((c) => c.isFreeSpace !== true && c.tokens > 0);
+
+  return (
+    <section
+      className="leo-context-widget"
+      data-slot="context-widget"
+      aria-label="Context usage breakdown"
+    >
+      <header className="leo-context-widget-head">
+        <span className="leo-context-widget-title">Context</span>
+        <span className="leo-context-widget-total" data-slot="widget-total">
+          {fmt(totalTokens)} / {fmt(window)} ({pct}%)
+        </span>
+        <span className="leo-context-widget-meta" data-slot="widget-meta">
+          {source} · {data.model} · {data.pipelineMessageCount} msgs
+          {data.skillCountFailed ? ' · skills: count failed' : ''}
+        </span>
+      </header>
+      <div
+        className="leo-context-widget-grid"
+        role="img"
+        aria-label="Context usage grid"
+        data-slot="widget-grid"
+      >
+        {rows.map((row, i) => (
+          <div key={i} className="leo-context-widget-row">
+            {row.map((sq, j) => (
+              <span
+                key={j}
+                className={`leo-context-widget-square leo-cat-${sq.categoryId}`}
+                data-category={sq.categoryId}
+                data-fullness={sq.fullness.toFixed(2)}
+                aria-hidden="true"
+              >
+                {renderSquare(sq)}
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+      <ul className="leo-context-widget-legend" data-slot="widget-legend">
+        {legend.map((c) => (
+          <li
+            key={c.id}
+            className={`leo-context-widget-legend-item leo-cat-${c.id}`}
+            data-category={c.id}
+          >
+            <span className="leo-context-widget-legend-swatch" aria-hidden="true">
+              ◉
+            </span>
+            <span className="leo-context-widget-legend-label">{c.label}</span>
+            <span className="leo-context-widget-legend-value">{fmt(c.tokens)}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function sumUsed(data: ContextData): number {
+  return (
+    data.systemTokens +
+    data.memoryFileTokens +
+    data.builtInToolTokens +
+    data.mcpToolTokens +
+    data.customAgentTokens +
+    data.slashCommandTokens +
+    data.messageTokens +
+    data.skillTokens
+  );
+}
+
+function buildCategories(data: ContextData, reserved: number, free: number): ContextCategory[] {
+  return [
+    { id: 'system_prompt', label: CATEGORY_LABELS.system_prompt, tokens: data.systemTokens },
+    { id: 'system_tools', label: CATEGORY_LABELS.system_tools, tokens: data.builtInToolTokens },
+    { id: 'mcp_tools', label: CATEGORY_LABELS.mcp_tools, tokens: data.mcpToolTokens },
+    { id: 'custom_agents', label: CATEGORY_LABELS.custom_agents, tokens: data.customAgentTokens },
+    { id: 'memory_files', label: CATEGORY_LABELS.memory_files, tokens: data.memoryFileTokens },
+    { id: 'skills', label: CATEGORY_LABELS.skills, tokens: data.skillTokens },
+    { id: 'messages', label: CATEGORY_LABELS.messages, tokens: data.messageTokens },
+    {
+      id: 'compact_buffer',
+      label: CATEGORY_LABELS.compact_buffer,
+      tokens: reserved,
+      isReserved: true,
+    },
+    { id: 'free_space', label: CATEGORY_LABELS.free_space, tokens: free, isFreeSpace: true },
+  ];
+}
+
+function renderSquare(sq: GridSquare): string {
+  if (sq.isFreeSpace) return '·';
+  return sq.symbol;
+}
+
+function chunk<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+function fmt(n: number): string {
+  return n.toLocaleString('en-US');
+}
+
+registerWidget('context', ContextWidget);

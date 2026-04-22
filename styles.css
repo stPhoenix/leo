@@ -1,0 +1,553 @@
+/* Leo plugin styles. Theme-neutral: every colour resolves through Obsidian CSS
+   variables so light, dark, and community themes apply without changes. */
+
+.leo-chat-view-host,
+.leo-chat-root {
+  --leo-z-content: 0;
+  --leo-z-editlock: 100;
+  --leo-z-tooltip: 800;
+  --leo-z-inline-dialog: 900;
+
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+}
+
+.leo-header-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.leo-header-title {
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.leo-header-slots {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  margin-left: auto;
+}
+
+.leo-header-status-slot {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-header-overflow {
+  background: transparent;
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-1) var(--size-4-2);
+  cursor: pointer;
+}
+
+.leo-header-overflow:focus-visible,
+.leo-composer-send:focus-visible,
+.leo-composer-textarea:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.leo-context-indicator {
+  padding: var(--size-4-2) var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-context-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--size-4-2);
+  margin: 0;
+}
+
+.leo-context-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+}
+
+.leo-context-grid dt {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase;
+}
+
+.leo-context-grid dd {
+  margin: 0;
+  color: var(--text-normal);
+}
+
+.leo-context-indicator.is-collapsed .leo-context-summary {
+  color: var(--text-muted);
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.leo-context-indicator.is-empty {
+  padding: 0;
+  border: none;
+}
+
+.leo-context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  max-width: 100%;
+  padding: var(--size-4-1) var(--size-4-2);
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.leo-context-chip:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.leo-context-chip-note {
+  color: var(--text-normal);
+  font-weight: 500;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.leo-context-chip-range,
+.leo-context-chip-sel {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.leo-context-chip-sel {
+  color: var(--interactive-accent);
+}
+
+.leo-message-list {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--background-primary);
+  z-index: var(--leo-z-content);
+}
+
+.leo-message-list-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--size-4-3);
+}
+
+.leo-message-list-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.leo-message-list-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-3);
+}
+
+.leo-message {
+  display: flex;
+}
+
+.leo-message-user {
+  justify-content: flex-end;
+}
+
+.leo-message-assistant {
+  justify-content: flex-start;
+}
+
+.leo-bubble {
+  max-width: 85%;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  padding: var(--size-4-2) var(--size-4-3);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+}
+
+.leo-bubble-user {
+  background: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
+}
+
+.leo-bubble-assistant {
+  background: var(--background-secondary);
+  border-color: var(--background-modifier-border);
+}
+
+.leo-bubble-header {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  margin-bottom: var(--size-4-1);
+}
+
+.leo-bubble-body {
+  white-space: pre-wrap;
+  color: var(--text-normal);
+}
+
+.leo-bubble-assistant .leo-bubble-body {
+  white-space: normal;
+}
+
+.leo-bubble-usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  margin-top: var(--size-4-1);
+  padding-top: var(--size-4-1);
+  border-top: 1px dashed var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-bubble-usage [data-estimated='true'] {
+  font-style: italic;
+}
+
+.leo-message-actions {
+  display: none;
+  gap: var(--size-4-1);
+  margin-top: var(--size-4-1);
+}
+
+.leo-bubble:hover .leo-message-actions,
+.leo-bubble:focus-within .leo-message-actions {
+  display: flex;
+}
+
+.leo-message-action {
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  padding: var(--size-4-1) var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.leo-message-action:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.leo-inline-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+}
+
+.leo-inline-editor-textarea {
+  width: 100%;
+  min-height: 80px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-2);
+  font-family: var(--font-text);
+  resize: vertical;
+}
+
+.leo-inline-editor-actions {
+  display: flex;
+  gap: var(--size-4-1);
+}
+
+.leo-copy-code-button {
+  position: absolute;
+  top: var(--size-4-1);
+  right: var(--size-4-1);
+  padding: var(--size-4-1) var(--size-4-2);
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-copy-code-button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.leo-jump-to-latest {
+  position: absolute;
+  left: 50%;
+  bottom: var(--size-4-3);
+  transform: translateX(-50%);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border: none;
+  border-radius: var(--radius-l);
+  padding: var(--size-4-1) var(--size-4-3);
+  cursor: pointer;
+  box-shadow: var(--shadow-s);
+}
+
+.leo-jump-to-latest:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.leo-inline-confirmation,
+.leo-inline-dialog {
+  position: relative;
+  z-index: var(--leo-z-inline-dialog);
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.leo-confirmation-header {
+  display: flex;
+  gap: var(--size-4-2);
+  align-items: center;
+  padding: var(--size-4-2) var(--size-4-3);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-confirmation-write .leo-confirmation-header {
+  background: var(--background-modifier-border-hover);
+  color: var(--color-yellow);
+}
+
+.leo-confirmation-read .leo-confirmation-header {
+  color: var(--text-muted);
+}
+
+.leo-confirmation-args {
+  margin: 0;
+  padding: var(--size-4-2) var(--size-4-3);
+  background: var(--background-primary-alt);
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  white-space: pre-wrap;
+  overflow-x: auto;
+  max-height: 220px;
+}
+
+.leo-confirmation-actions {
+  display: flex;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-3);
+}
+
+.leo-confirmation-actions button {
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  padding: var(--size-4-1) var(--size-4-2);
+  cursor: pointer;
+}
+
+.leo-confirmation-actions button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.leo-confirmation-write [data-slot='confirmation-allow-once'],
+.leo-confirmation-write [data-slot='confirmation-allow-thread'] {
+  border-color: var(--color-yellow);
+}
+
+.leo-inline-confirmation[hidden],
+.leo-inline-dialog[hidden] {
+  display: none;
+}
+
+.leo-composer-input {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    'textarea send'
+    'hint hint'
+    'queue queue';
+  gap: var(--size-4-1) var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-3);
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.leo-composer-queue {
+  grid-area: queue;
+  color: var(--text-accent);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-composer-textarea {
+  grid-area: textarea;
+  resize: none;
+  max-height: 280px;
+  line-height: var(--line-height-tight);
+  white-space: pre-wrap;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-2);
+  font-family: var(--font-text);
+  transition: height 120ms ease;
+}
+
+.leo-composer-send {
+  grid-area: send;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--size-4-8);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border: none;
+  border-radius: var(--radius-s);
+  padding: 0 var(--size-4-3);
+  cursor: pointer;
+  transition: transform 120ms ease, opacity 120ms ease;
+}
+
+.leo-composer-send[disabled],
+.leo-composer-send[aria-disabled='true'],
+.leo-composer-textarea[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.leo-composer-send:active:not([disabled]):not([aria-disabled='true']) {
+  transform: scale(0.96);
+}
+
+.leo-composer-hint {
+  grid-area: hint;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-composer-input.is-reduced-motion .leo-composer-textarea,
+.leo-composer-input.is-reduced-motion .leo-composer-send {
+  transition: none;
+}
+
+.leo-composer-input.is-reduced-motion .leo-composer-send:active:not([disabled]):not([aria-disabled='true']) {
+  transform: none;
+}
+
+.leo-provider-unreachable {
+  color: var(--text-error);
+}
+
+.leo-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.leo-streaming-cursor {
+  display: inline-block;
+  width: 0.55em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--interactive-accent);
+  animation: leo-cursor-blink 1s steps(2, start) infinite;
+}
+
+@keyframes leo-cursor-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+.leo-banner {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  padding: var(--size-4-2) var(--size-4-3);
+  background: var(--background-modifier-border);
+}
+
+.leo-banner-cancelled {
+  color: var(--color-orange);
+  border-color: var(--color-orange);
+  background: var(--background-modifier-border);
+}
+
+.leo-banner-error {
+  color: var(--text-error);
+  border-color: var(--text-error);
+  background: var(--background-modifier-error);
+}
+
+.leo-chat-root[data-visual-state='awaiting-confirmation'] {
+  box-shadow: inset 0 0 0 2px var(--color-yellow);
+}
+
+.leo-chat-root[data-visual-state='error'] {
+  box-shadow: inset 0 0 0 2px var(--text-error);
+}
+
+.leo-chat-root[data-visual-state='cancelled'] {
+  opacity: 0.8;
+}
+
+.leo-chat-root[data-visual-state='edit-locked'] {
+  outline: 1px dashed var(--interactive-accent);
+  outline-offset: -1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .leo-streaming-cursor {
+    animation: none;
+  }
+  .leo-chat-root[data-visual-state] {
+    transition: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .leo-chat-root,
+  .leo-chat-root * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+.leo-section-error {
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  margin: 0 0 var(--size-4-2) 0;
+}

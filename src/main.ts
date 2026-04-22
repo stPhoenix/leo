@@ -1,0 +1,942 @@
+import { Notice, Plugin } from 'obsidian';
+import { Logger } from '@/platform/Logger';
+import { RotatingFileSink } from '@/platform/rotatingFileSink';
+import { createObsidianSinkFs } from '@/platform/obsidianSinkFs';
+import { createObsidianUserErrorChannel } from '@/platform/obsidianUserErrorChannel';
+import { ProviderManager } from '@/providers/providerManager';
+import { EmbeddingClient } from '@/providers/embeddingClient';
+import { createProviderForKind } from '@/providers/registry';
+import { resolvePricing, computeCostUSD, LOCAL_PROVIDER_IDS } from '@/providers/pricing';
+import {
+  SafeStorage,
+  type SecretsPersistence,
+  type SafeStorageLike,
+  type StoredSecret,
+} from '@/storage/safeStorage';
+import type { VaultAdapter } from '@/storage/vaultAdapter';
+import { wireMcp, type McpWiring } from '@/mcp/wireMcp';
+import { ThreadsStore } from '@/storage/threadsStore';
+import { SkillEditorController } from '@/skills/skillEditorController';
+import { SettingsStore } from '@/settings/settingsStore';
+import { SettingsTab } from '@/settings/SettingsTab';
+import { COMMAND_IDS, openLeoSettings, registerLeoCommand } from '@/settings/commands';
+import { ChatView } from '@/ui/chatView';
+import { VIEW_TYPE_LEO_CHAT } from '@/ui/viewType';
+import { openOrFocusChatView } from '@/ui/openChatView';
+import { EditorBridge } from '@/editor/editorBridge';
+import { FocusedContextChannel } from '@/editor/focusedContextChannel';
+import { WorkspaceFocusProbe } from '@/editor/workspaceFocusProbe';
+import { AgentRunner } from '@/agent/agentRunner';
+import type { AgentHistoryMessage } from '@/agent/types';
+import { PlanModeController } from '@/agent/planModeController';
+import { TodoStore } from '@/agent/todoStore';
+import {
+  analyzeContextUsage,
+  type ContextCounters,
+  type ContextData,
+} from '@/agent/contextAnalyzer';
+import { estimateMessageTokens, roughTokenCountEstimation } from '@/agent/tokenEstimator';
+import type { TokenMessage } from '@/agent/tokenEstimator';
+import type { ChatMessage } from '@/providers/types';
+import { ToolRegistry } from '@/tools/toolRegistry';
+import { createReadNoteTool } from '@/tools/readNoteTool';
+import { createCreateNoteTool, createAppendToNoteTool } from '@/tools/writeTools';
+import { createCreateFolderTool } from '@/tools/createFolderTool';
+import { createEditNoteTool } from '@/tools/editNoteTool';
+import type { ToolSpec } from '@/tools/types';
+import { ConfirmationController, prettifyArgs } from '@/agent/confirmationController';
+import { AcceptRejectController } from '@/agent/acceptRejectController';
+import { SkillsStore } from '@/skills/skillsStore';
+import { GENERAL_SKILL, type Skill as AgentSkill } from '@/agent/types';
+import type { SkillPickerSource } from '@/ui/chat/SkillPicker';
+import type { ChatStreamStarter } from '@/ui/chatView';
+import { ChatMessageStore } from '@/chat/messageStore';
+import { ConversationStore, DEFAULT_THREAD_ID } from '@/storage/conversationStore';
+import { createObsidianVaultAdapter } from '@/storage/vaultAdapter';
+import type { StoredMessage } from '@/storage/conversationSchema';
+import type { ChatMessageRecord } from '@/chat/types';
+import { wireIndexerRag, type AppLike, type IndexerRagWiring } from '@/indexer/wireIndexerRag';
+import { createSearchVaultTool, type SearchVaultHit } from '@/tools/builtin/searchVault';
+import { EditLockController } from '@/editor/editLock';
+import { HighlightController } from '@/editor/highlights';
+import { createLockDecorationExtension } from '@/editor/cm6LockDecoration';
+import {
+  createActiveNoteEditBridge,
+  type ActiveMarkdownResolver,
+  type EditorLike,
+} from '@/editor/activeNoteEditBridge';
+import { MarkdownView } from 'obsidian';
+import { PlanStore } from '@/storage/planStore';
+import { PlanApprovalController } from '@/agent/planApprovalController';
+import { PlanSessionResume } from '@/agent/planSessionResume';
+import { createTodoWriteTool } from '@/tools/todoWriteTool';
+import { createEnterPlanModeTool, createExitPlanModeTool } from '@/tools/planModeTools';
+import {
+  wireUserTools,
+  type UserToolsFileEvents,
+  type UserToolsWiring,
+} from '@/tools/user/wireUserTools';
+import { wireAttachments, type AttachmentsWiring } from '@/chat/wireAttachments';
+import { wireUiHelpers, type UiHelpersWiring } from '@/ui/wireUiHelpers';
+import { wireContextStatusLine, type ContextStatusLineWiring } from '@/ui/wireContextStatusLine';
+
+const LEO_DIR = '.leo';
+const LOGS_DIR = '.leo/logs';
+const LOG_PATH = '.leo/logs/leo.log';
+
+export default class LeoPlugin extends Plugin {
+  store!: SettingsStore;
+  logger!: Logger;
+  providerManager!: ProviderManager;
+  embeddingClient!: EmbeddingClient;
+  focusedContext!: FocusedContextChannel;
+  agentRunner!: AgentRunner;
+  chatMessageStore!: ChatMessageStore;
+  conversationStore!: ConversationStore;
+  toolRegistry!: ToolRegistry;
+  confirmationController!: ConfirmationController;
+  acceptRejectController!: AcceptRejectController;
+  skillsStore!: SkillsStore;
+  todoStore!: TodoStore;
+  planModeController!: PlanModeController;
+  indexerRag!: IndexerRagWiring;
+  editLock!: EditLockController;
+  highlightController!: HighlightController;
+  planStore!: PlanStore;
+  planApprovalController!: PlanApprovalController;
+  safeStorage!: SafeStorage;
+  mcp: McpWiring | null = null;
+  threadsStore: ThreadsStore | null = null;
+  skillEditor: SkillEditorController | null = null;
+  userTools: UserToolsWiring | null = null;
+  attachments: AttachmentsWiring | null = null;
+  uiHelpers: UiHelpersWiring | null = null;
+  contextStatusLine: ContextStatusLineWiring | null = null;
+  private readonly skillListeners = new Set<() => void>();
+  private editorBridge!: EditorBridge;
+  private chatStoreUnsub: (() => void) | null = null;
+  private sink!: RotatingFileSink;
+  private providerStatusEl: HTMLElement | null = null;
+  private connectionUnsub: (() => void) | null = null;
+  private indexerStatusEl: HTMLElement | null = null;
+
+  override async onload(): Promise<void> {
+    this.store = new SettingsStore(this);
+    const settings = await this.store.load();
+
+    const fs = createObsidianSinkFs(this.app.vault.adapter);
+    await fs.mkdir(LEO_DIR);
+    await fs.mkdir(LOGS_DIR);
+
+    this.sink = new RotatingFileSink(fs, { path: LOG_PATH });
+    await this.sink.init();
+
+    const statusEl = this.addStatusBarItem();
+    const userChannel = createObsidianUserErrorChannel(statusEl);
+
+    this.logger = new Logger({
+      level: settings.logLevel,
+      sink: this.sink,
+      userChannel,
+    });
+
+    const vaultAdapterForSecrets = createObsidianVaultAdapter(this.app.vault.adapter);
+
+    this.safeStorage = new SafeStorage({
+      logger: this.logger,
+      persistence: buildSecretsPersistence(vaultAdapterForSecrets),
+      electron: resolveElectronSafeStorage(),
+      onFallbackNotice: () =>
+        new Notice('Leo: OS keyring unavailable — API keys stored with obfuscation only.'),
+    });
+    await this.safeStorage.load();
+
+    const currentApiKeyKey = (): string => `provider.${this.store.get().provider.kind}.apiKey`;
+    const apiKeyCache = { value: '' };
+    const loadApiKey = async (): Promise<void> => {
+      apiKeyCache.value = (await this.safeStorage.get(currentApiKeyKey())) ?? '';
+    };
+    await loadApiKey();
+
+    const providerCtx = {
+      endpoint: (): string => this.store.get().provider.endpoint,
+      apiKey: (): string => apiKeyCache.value,
+    };
+    const provider = createProviderForKind(this.store.get().provider.kind, providerCtx);
+    this.providerManager = new ProviderManager({ provider, logger: this.logger });
+    this.register(
+      this.store.on((next) => {
+        const nextKind = next.provider.kind;
+        if (nextKind !== this.providerManager.activeProviderId()) {
+          const nextProvider = createProviderForKind(nextKind, providerCtx);
+          this.providerManager.setProvider(nextProvider);
+          void loadApiKey();
+        }
+      }),
+    );
+    this.embeddingClient = new EmbeddingClient({
+      endpoint: () => this.store.get().provider.endpoint,
+      model: () => this.store.get().provider.embeddingModel,
+      connection: this.providerManager.connection,
+      logger: this.logger,
+    });
+
+    this.providerStatusEl = this.addStatusBarItem();
+    const renderProviderStatus = (status: 'available' | 'unreachable'): void => {
+      if (this.providerStatusEl === null) return;
+      this.providerStatusEl.setText(status === 'unreachable' ? 'Leo: LM Studio offline' : '');
+      this.providerStatusEl.toggleClass('leo-provider-unreachable', status === 'unreachable');
+    };
+    renderProviderStatus(this.providerManager.connection.current);
+    this.connectionUnsub = this.providerManager.connection.on(renderProviderStatus);
+
+    this.focusedContext = new FocusedContextChannel();
+    this.editorBridge = new EditorBridge({
+      plugin: this,
+      sink: this.focusedContext,
+      logger: this.logger,
+      probe: new WorkspaceFocusProbe(this.app),
+    });
+    this.editorBridge.start();
+
+    const vaultAdapter = createObsidianVaultAdapter(this.app.vault.adapter);
+    this.toolRegistry = new ToolRegistry({ logger: this.logger });
+    this.toolRegistry.register(
+      createReadNoteTool(vaultAdapter) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createCreateNoteTool(vaultAdapter) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createAppendToNoteTool(vaultAdapter) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createCreateFolderTool(vaultAdapter) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.acceptRejectController = new AcceptRejectController();
+    this.editLock = new EditLockController({
+      logger: this.logger,
+      onBlockedKeystroke: () => new Notice('Leo: range is locked — wait for edit to finish.'),
+    });
+    this.highlightController = new HighlightController({ logger: this.logger });
+    const resolver: ActiveMarkdownResolver = {
+      resolve: (path) => {
+        const leaves = this.app.workspace.getLeavesOfType('markdown');
+        for (const leaf of leaves) {
+          const view = leaf.view;
+          if (view instanceof MarkdownView && view.file?.path === path) {
+            return view.editor as unknown as EditorLike;
+          }
+        }
+        return null;
+      },
+    };
+    const editBridge = createActiveNoteEditBridge({
+      resolver,
+      lock: this.editLock,
+      highlights: this.highlightController,
+      logger: this.logger,
+    });
+    this.registerEditorExtension(
+      createLockDecorationExtension({
+        lock: this.editLock,
+        highlights: this.highlightController,
+      }),
+    );
+    this.toolRegistry.register(
+      createEditNoteTool({
+        vault: vaultAdapter,
+        bridge: editBridge,
+        acceptReject: this.acceptRejectController,
+        logger: this.logger,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.skillsStore = new SkillsStore({
+      vault: vaultAdapter,
+      logger: this.logger,
+      noticeChannel: { notify: (msg) => new Notice(msg) },
+    });
+    await this.skillsStore.loadAll();
+
+    this.skillEditor = new SkillEditorController({
+      store: this.skillsStore,
+      logger: this.logger,
+      notice: { notify: (msg) => new Notice(msg) },
+    });
+
+    this.conversationStore = new ConversationStore({
+      adapter: vaultAdapter,
+      logger: this.logger,
+    });
+    const loadedThread = await this.conversationStore.load();
+    this.chatMessageStore = new ChatMessageStore();
+    this.chatMessageStore.set(storedToRecords(loadedThread.messages));
+    this.chatStoreUnsub = this.chatMessageStore.subscribe(() => {
+      const snapshot = this.chatMessageStore.getSnapshot();
+      this.conversationStore.mutate((prev) => ({
+        ...prev,
+        messages: recordsToStored(snapshot),
+      }));
+    });
+
+    const agentHistory = new Map<string, AgentHistoryMessage[]>();
+    agentHistory.set(DEFAULT_THREAD_ID, deriveAgentHistory(loadedThread.messages));
+
+    this.confirmationController = new ConfirmationController();
+    this.todoStore = new TodoStore();
+    this.planModeController = new PlanModeController({
+      logger: this.logger,
+      todoStore: this.todoStore,
+    });
+    this.planStore = new PlanStore({ vault: vaultAdapter, logger: this.logger });
+    this.planApprovalController = new PlanApprovalController();
+    this.toolRegistry.register(
+      createTodoWriteTool({
+        store: this.todoStore,
+        keyFor: ({ thread, agentId }) =>
+          agentId !== undefined && agentId.length > 0 ? agentId : thread,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createEnterPlanModeTool({
+        controller: this.planModeController,
+        planStore: this.planStore,
+        logger: this.logger,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createExitPlanModeTool({
+        controller: this.planModeController,
+        planStore: this.planStore,
+        approval: this.planApprovalController,
+        logger: this.logger,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+
+    try {
+      this.threadsStore = new ThreadsStore({
+        adapter: vaultAdapter,
+        logger: this.logger,
+        onNotify: (msg, action) => {
+          if (action === undefined) {
+            new Notice(msg);
+            return;
+          }
+          const fragment = document.createDocumentFragment();
+          fragment.appendChild(document.createTextNode(`${msg} · `));
+          const btn = document.createElement('a');
+          btn.textContent = action.label;
+          btn.style.cursor = 'pointer';
+          btn.addEventListener('click', () => action.run());
+          fragment.appendChild(btn);
+          new Notice(fragment, 10_000);
+        },
+      });
+      await this.threadsStore.init();
+    } catch (err) {
+      this.logger.warn('threads.wire.failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    try {
+      this.mcp = await wireMcp({
+        logger: this.logger,
+        vault: vaultAdapter,
+        toolRegistry: this.toolRegistry,
+        safeStorage: this.safeStorage,
+      });
+      void this.mcp.connectAll();
+    } catch (err) {
+      this.logger.warn('mcp.wire.failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    const settingsTab = new SettingsTab(this.app, this, {
+      store: this.store,
+      providerManager: this.providerManager,
+      logger: this.logger,
+      safeStorage: this.safeStorage,
+      skillsStore: this.skillsStore,
+      skillEditor: this.skillEditor ?? undefined,
+      mcpSettingsStore: this.mcp?.settingsStore,
+      mcpClient: this.mcp?.client,
+    });
+    this.addSettingTab(settingsTab);
+
+    try {
+      const resume = new PlanSessionResume({
+        todoStore: this.todoStore,
+        planStore: this.planStore,
+        vault: vaultAdapter,
+        logger: this.logger,
+      });
+      const storedThread = this.conversationStore.getThread();
+      await resume.resume(storedThread);
+    } catch (err) {
+      this.logger.warn('plan.resume.failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    this.indexerStatusEl = this.addStatusBarItem();
+    this.indexerRag = await wireIndexerRag({
+      app: this.app as unknown as AppLike,
+      plugin: this,
+      vaultAdapter,
+      embeddingClient: this.embeddingClient,
+      logger: this.logger,
+      excludePatterns: () => this.store.get().indexing.excludePatterns,
+      embeddingModel: () => this.store.get().provider.embeddingModel,
+      chatProviderReady: () => this.providerManager.connection.current === 'available',
+      statusBarEl: this.indexerStatusEl,
+      promptHeaderMismatch: async () => {
+        new Notice('Leo: index model changed — re-index from settings when ready.');
+        return 'later';
+      },
+      confirmReindex: async () => {
+        new Notice('Leo: re-indexing vault…');
+        return 'reindex';
+      },
+      confirmModelSwitch: async () => 'later',
+    });
+
+    const settingsUnsub = this.store.on((next) => {
+      void this.indexerRag.excludeStore.set(next.indexing.excludePatterns);
+    });
+    this.register(settingsUnsub);
+
+    const searchVaultTool = createSearchVaultTool({
+      query: async (text, opts) => {
+        const hits = await this.indexerRag.ragEngine.query(text, {
+          ...(opts?.tags !== undefined ? { tags: opts.tags } : {}),
+          ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
+        });
+        return hits as readonly SearchVaultHit[];
+      },
+    });
+    this.toolRegistry.register(searchVaultTool as unknown as ToolSpec<unknown, unknown>);
+
+    const userToolsEvents: UserToolsFileEvents = {
+      on: (cb) => {
+        const refs = [
+          this.app.vault.on('create', (f) => cb(f.path, 'create')),
+          this.app.vault.on('modify', (f) => cb(f.path, 'modify')),
+          this.app.vault.on('delete', (f) => cb(f.path, 'delete')),
+          this.app.vault.on('rename', (f, oldPath) => {
+            cb(f.path, 'rename');
+            if (oldPath.length > 0) cb(oldPath, 'rename');
+          }),
+        ];
+        refs.forEach((r) => this.registerEvent(r));
+        return () => {
+          for (const r of refs) this.app.vault.offref(r);
+        };
+      },
+    };
+    try {
+      this.userTools = await wireUserTools({
+        vault: vaultAdapter,
+        toolRegistry: this.toolRegistry,
+        logger: this.logger,
+        notice: { notify: (msg) => new Notice(msg) },
+        fileEvents: userToolsEvents,
+        commands: {
+          register: (id, name, run) => {
+            registerLeoCommand(this, {
+              id,
+              name,
+              callback: () => {
+                void (async (): Promise<void> => {
+                  await run();
+                })();
+              },
+            });
+          },
+        },
+      });
+    } catch (err) {
+      this.logger.warn('tool.user.wire.failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    this.attachments = wireAttachments();
+
+    this.contextStatusLine = wireContextStatusLine({
+      createStatusEl: () => {
+        const el = this.addStatusBarItem();
+        return {
+          setText: (text) => el.setText(text),
+          detach: () => el.detach(),
+        };
+      },
+      build: () => null,
+    });
+
+    this.uiHelpers = wireUiHelpers({
+      notice: { show: (msg) => new Notice(msg) },
+      statusBar: {
+        create: () => {
+          const el = this.addStatusBarItem();
+          return {
+            setText: (text) => {
+              el.setText(text);
+            },
+            clear: () => {
+              el.setText('');
+            },
+            remove: () => {
+              el.detach();
+            },
+          };
+        },
+      },
+      inlineDialog: {
+        mount: () => () => undefined,
+        isNativeModal: () => false,
+      },
+      inlineConfirmation: {
+        present: () => () => undefined,
+        isNativeModal: () => false,
+      },
+    });
+
+    this.agentRunner = new AgentRunner({
+      provider: this.providerManager,
+      focusedContext: this.focusedContext,
+      logger: this.logger,
+      model: () => this.store.get().provider.chatModel,
+      historyByThread: agentHistory,
+      toolRegistry: this.toolRegistry,
+      planMode: this.planModeController,
+      ragEngine: this.indexerRag.ragEngine,
+      skill: () => this.resolveActiveSkill(),
+      confirmTool: (req) =>
+        this.confirmationController.request({
+          toolId: req.toolId,
+          thread: req.thread,
+          argsJson: req.argsJson,
+          argsPretty: prettifyArgs(req.argsJson),
+          category: req.category,
+        }),
+      allowedToolsForThread: () =>
+        new Set(this.conversationStore.getThread().metadata.allowedTools),
+      markThreadAllowed: (_thread, toolId) => {
+        this.conversationStore.mutate((prev) => {
+          if (prev.metadata.allowedTools.includes(toolId)) return prev;
+          return {
+            ...prev,
+            metadata: {
+              ...prev.metadata,
+              allowedTools: [...prev.metadata.allowedTools, toolId],
+            },
+          };
+        });
+      },
+    });
+
+    const streamStarter: ChatStreamStarter = (prompt, signal) => {
+      const thread = DEFAULT_THREAD_ID;
+      const onAbort = (): void => this.agentRunner.cancel(thread);
+      signal.addEventListener('abort', onAbort, { once: true });
+      const source = this.agentRunner.send({
+        thread,
+        message: { role: 'user', content: prompt },
+      });
+      return (async function* () {
+        try {
+          for await (const ev of source) {
+            if (ev.type === 'done') {
+              yield { type: 'done' };
+            } else if (ev.type === 'error') {
+              yield { type: 'error', error: ev.error };
+            } else {
+              yield ev;
+            }
+          }
+        } finally {
+          signal.removeEventListener('abort', onAbort);
+        }
+      })();
+    };
+
+    this.registerView(
+      VIEW_TYPE_LEO_CHAT,
+      (leaf) =>
+        new ChatView(leaf, {
+          logger: this.logger,
+          focusedContext: this.focusedContext,
+          streamStarter,
+          messageStore: this.chatMessageStore,
+          confirmationController: this.confirmationController,
+          acceptRejectController: this.acceptRejectController,
+          skillPickerSource: this.buildSkillPickerSource(),
+          planMode: {
+            enter: () => this.planModeController.enterPlan(DEFAULT_THREAD_ID),
+            exit: () => this.planModeController.exitPlan(DEFAULT_THREAD_ID),
+          },
+          analyzeContext: (signal) => this.analyzeContextForChat(signal),
+          indexStatusSource: this.buildIndexStatusSource(),
+          indexDrainSubscribe: (l) => this.indexerRag.vaultIndexer.subscribe(l),
+          onIndexVault: () => {
+            void (async (): Promise<void> => {
+              const count = await this.indexerRag.reindexService.reindexVault();
+              if (count !== null) new Notice(`Leo: re-indexed ${count} files.`);
+            })();
+          },
+          planApprovalController: this.planApprovalController,
+          resolveCostUSD: ({ input, output }) => {
+            const s = this.store.get().provider;
+            if (LOCAL_PROVIDER_IDS.has(s.kind)) return null;
+            const pricing = resolvePricing({ provider: s.kind, model: s.chatModel });
+            if (pricing === null) return null;
+            return computeCostUSD(pricing, { input, output });
+          },
+        }),
+    );
+    this.addRibbonIcon('bot', 'Leo: Open chat', () => {
+      void openOrFocusChatView(this.app.workspace, { toggle: true });
+    });
+    this.app.workspace.onLayoutReady(() => {
+      void this.maybeOpenChatOnFirstLaunch();
+    });
+
+    registerLeoCommand(this, {
+      id: COMMAND_IDS.openSettings,
+      name: 'Leo: Open settings',
+      callback: () => openLeoSettings(this),
+    });
+    registerLeoCommand(this, {
+      id: COMMAND_IDS.configureLmStudio,
+      name: 'Leo: Configure LM Studio',
+      callback: () => settingsTab.openWizard(this.store.get()),
+    });
+    registerLeoCommand(this, {
+      id: COMMAND_IDS.openChat,
+      name: 'Leo: Open chat',
+      callback: () => {
+        void openOrFocusChatView(this.app.workspace);
+      },
+    });
+
+    registerLeoCommand(this, {
+      id: 'leo-new-thread',
+      name: 'Leo: New thread',
+      callback: () => {
+        void (async (): Promise<void> => {
+          if (this.threadsStore === null) return;
+          const id = await this.threadsStore.create();
+          await this.threadsStore.switch(id);
+          new Notice('Leo: new thread created.');
+        })();
+      },
+    });
+
+    registerLeoCommand(this, {
+      id: 'leo-reindex-vault',
+      name: 'Leo: Re-index vault',
+      callback: () => {
+        void (async (): Promise<void> => {
+          const count = await this.indexerRag.reindexService.reindexVault();
+          if (count !== null) new Notice(`Leo: re-indexed ${count} files.`);
+        })();
+      },
+    });
+
+    this.logger.info('plugin.load', { version: this.manifest.version });
+  }
+
+  override async onunload(): Promise<void> {
+    this.logger?.info('plugin.unload', {});
+    this.chatStoreUnsub?.();
+    this.chatStoreUnsub = null;
+    try {
+      await this.conversationStore?.flush();
+    } catch {
+      /* logged by store */
+    }
+    this.conversationStore?.dispose();
+    this.confirmationController?.dispose();
+    this.acceptRejectController?.dispose();
+    this.agentRunner?.dispose();
+    this.planModeController?.dispose();
+    this.todoStore?.dispose();
+    this.editorBridge?.dispose();
+    this.connectionUnsub?.();
+    this.connectionUnsub = null;
+    this.providerManager?.dispose();
+    try {
+      await this.indexerRag?.dispose();
+    } catch {
+      /* logged by wiring */
+    }
+    this.userTools?.dispose();
+    this.userTools = null;
+    this.attachments?.dispose();
+    this.attachments = null;
+    this.uiHelpers?.dispose();
+    this.uiHelpers = null;
+    this.contextStatusLine?.dispose();
+    this.contextStatusLine = null;
+    this.editLock?.release();
+    this.planApprovalController?.dispose();
+    try {
+      if (this.mcp !== null) await this.mcp.shutdown();
+    } catch {
+      /* logged by wiring */
+    }
+    await this.sink?.flush();
+  }
+
+  private async analyzeContextForChat(signal: AbortSignal): Promise<ContextData> {
+    const thread = DEFAULT_THREAD_ID;
+    const model = this.store.get().provider.chatModel;
+    const history = this.chatMessageStore.getSnapshot();
+    const messages = history
+      .filter((r) => r.role === 'user' || r.role === 'assistant')
+      .map((r) => ({
+        role: r.role === 'assistant' ? 'assistant' : 'user',
+        content: r.content,
+      })) as unknown as readonly TokenMessage[];
+
+    const toolsJson = JSON.stringify(this.toolRegistry.toOpenAITools(thread));
+    const builtInToolTokens = roughTokenCountEstimation(toolsJson);
+
+    const counters: ContextCounters = {
+      countSystemTokens: async () => 0,
+      countMemoryFileTokens: async () => 0,
+      countBuiltInToolTokens: async () => builtInToolTokens,
+      countMcpToolTokens: async () => 0,
+      countCustomAgentTokens: async () => 0,
+      countSlashCommandTokens: async () => 0,
+      approximateMessageTokens: async (ctx) =>
+        estimateMessageTokens(ctx.messages as unknown as readonly TokenMessage[]),
+      countSkillTokens: async () => 0,
+    };
+
+    return analyzeContextUsage({
+      messages: messages as unknown as readonly ChatMessage[],
+      model,
+      logger: this.logger,
+      counters,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
+  private resolveActiveSkill(): AgentSkill {
+    const id = this.conversationStore?.getThread().metadata.skillId ?? 'general';
+    const resolved = id !== null ? this.skillsStore?.get(id) : undefined;
+    if (resolved !== undefined) {
+      return {
+        id: resolved.id,
+        systemPrompt: resolved.systemPrompt,
+        ...(resolved.allowedTools !== undefined ? { allowedTools: resolved.allowedTools } : {}),
+        ...(resolved.defaultModel !== undefined ? { defaultModel: resolved.defaultModel } : {}),
+        examples: resolved.examples?.map((e) => `${e.user} → ${e.assistant}`) ?? [],
+      };
+    }
+    return GENERAL_SKILL;
+  }
+
+  private buildIndexStatusSource(): {
+    hasIndex: () => boolean;
+    subscribe: (cb: () => void) => () => void;
+  } {
+    const listeners = new Set<() => void>();
+    let cachedHasIndex = false;
+    const probe = async (): Promise<void> => {
+      try {
+        const rows = await this.indexerRag.vectorStore.getAll();
+        const next = rows.length > 0;
+        if (next !== cachedHasIndex) {
+          cachedHasIndex = next;
+          for (const l of listeners) l();
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    void probe();
+    const unsub = this.indexerRag.vaultIndexer.subscribe((ev) => {
+      if (ev.kind === 'complete') void probe();
+    });
+    this.register(() => unsub());
+    return {
+      hasIndex: () => cachedHasIndex,
+      subscribe: (cb) => {
+        listeners.add(cb);
+        return () => {
+          listeners.delete(cb);
+        };
+      },
+    };
+  }
+
+  private buildSkillPickerSource(): SkillPickerSource {
+    return {
+      listSkills: () => this.skillsStore.list(),
+      currentSkillId: () => this.conversationStore.getThread().metadata.skillId ?? 'general',
+      subscribe: (cb) => {
+        this.skillListeners.add(cb);
+        return (): void => {
+          this.skillListeners.delete(cb);
+        };
+      },
+      select: (id) => {
+        this.conversationStore.mutate((prev) => {
+          if (prev.metadata.skillId === id) return prev;
+          return { ...prev, metadata: { ...prev.metadata, skillId: id } };
+        });
+        for (const l of this.skillListeners) l();
+      },
+    };
+  }
+
+  private async maybeOpenChatOnFirstLaunch(): Promise<void> {
+    if (this.store.get().ui.firstChatViewOpened) return;
+    if (this.app.workspace.getLeavesOfType(VIEW_TYPE_LEO_CHAT).length > 0) {
+      await this.store.update((prev) => ({
+        ...prev,
+        ui: { ...prev.ui, firstChatViewOpened: true },
+      }));
+      return;
+    }
+    await openOrFocusChatView(this.app.workspace);
+    await this.store.update((prev) => ({
+      ...prev,
+      ui: { ...prev.ui, firstChatViewOpened: true },
+    }));
+  }
+}
+
+function storedToRecords(messages: readonly StoredMessage[]): ChatMessageRecord[] {
+  const out: ChatMessageRecord[] = [];
+  for (const m of messages) {
+    if (m.role === 'tool') continue;
+    const role =
+      m.role === 'banner'
+        ? 'banner'
+        : m.role === 'widget'
+          ? 'widget'
+          : m.role === 'assistant'
+            ? 'assistant'
+            : 'user';
+    const status = isAssistantStatus(m.status) ? m.status : undefined;
+    const record: ChatMessageRecord = {
+      id: m.id,
+      role,
+      content: m.content,
+      createdAt: m.createdAt,
+      ...(status !== undefined ? { status } : {}),
+      ...(m.tokens !== undefined
+        ? {
+            tokens: {
+              input: m.tokens.input,
+              output: m.tokens.output,
+              total: m.tokens.total,
+            },
+          }
+        : {}),
+      ...(m.banner !== undefined
+        ? {
+            banner: {
+              kind:
+                m.banner.kind === 'error'
+                  ? 'error'
+                  : m.banner.kind === 'info'
+                    ? 'info'
+                    : 'cancelled',
+              ...(m.banner.toolCount !== undefined ? { toolCount: m.banner.toolCount } : {}),
+              ...(m.banner.message !== undefined ? { message: m.banner.message } : {}),
+            },
+          }
+        : {}),
+      ...(m.widget !== undefined ? { widget: { kind: m.widget.kind, props: m.widget.props } } : {}),
+    };
+    out.push(record);
+  }
+  return out;
+}
+
+function recordsToStored(records: readonly ChatMessageRecord[]): StoredMessage[] {
+  return records.map((r) => {
+    const base: StoredMessage = {
+      id: r.id,
+      role: r.role,
+      content: r.content,
+      createdAt: r.createdAt,
+      ...(r.status !== undefined ? { status: r.status } : {}),
+      ...(r.tokens !== undefined
+        ? {
+            tokens: {
+              input: r.tokens.input,
+              output: r.tokens.output,
+              total: r.tokens.total,
+            },
+          }
+        : {}),
+      ...(r.banner !== undefined
+        ? {
+            banner: {
+              kind: r.banner.kind,
+              ...(r.banner.toolCount !== undefined ? { toolCount: r.banner.toolCount } : {}),
+              ...(r.banner.message !== undefined ? { message: r.banner.message } : {}),
+            },
+          }
+        : {}),
+      ...(r.widget !== undefined ? { widget: { kind: r.widget.kind, props: r.widget.props } } : {}),
+    };
+    return base;
+  });
+}
+
+function deriveAgentHistory(messages: readonly StoredMessage[]): AgentHistoryMessage[] {
+  const out: AgentHistoryMessage[] = [];
+  for (const m of messages) {
+    if (m.role === 'user') out.push({ role: 'user', content: m.content });
+    else if (m.role === 'assistant' && m.status !== 'streaming') {
+      out.push({ role: 'assistant', content: m.content });
+    }
+  }
+  return out;
+}
+
+function isAssistantStatus(v: unknown): v is 'streaming' | 'done' | 'cancelled' | 'error' {
+  return v === 'streaming' || v === 'done' || v === 'cancelled' || v === 'error';
+}
+
+const SECRETS_PATH = '.leo/secrets.json';
+
+function buildSecretsPersistence(vault: VaultAdapter): SecretsPersistence {
+  return {
+    async load() {
+      if (!(await vault.exists(SECRETS_PATH))) return null;
+      try {
+        const raw = await vault.read(SECRETS_PATH);
+        const parsed = JSON.parse(raw) as unknown;
+        if (parsed === null || typeof parsed !== 'object') return null;
+        return parsed as Record<string, StoredSecret>;
+      } catch {
+        return null;
+      }
+    },
+    async save(data) {
+      await vault.mkdir('.leo');
+      await vault.write(SECRETS_PATH, JSON.stringify(data, null, 2));
+    },
+  };
+}
+
+function resolveElectronSafeStorage(): SafeStorageLike | null {
+  try {
+    const w = globalThis as { require?: (id: string) => unknown };
+    if (typeof w.require !== 'function') return null;
+    const mod = w.require('electron') as { safeStorage?: SafeStorageLike } | null;
+    if (mod === null || mod.safeStorage === undefined) return null;
+    return mod.safeStorage;
+  } catch {
+    return null;
+  }
+}

@@ -1,0 +1,31 @@
+import esbuild from 'esbuild';
+import builtins from 'builtin-modules';
+import process from 'node:process';
+
+const production = process.argv.includes('production');
+
+const context = await esbuild.context({
+  entryPoints: ['src/main.ts'],
+  bundle: true,
+  format: 'cjs',
+  target: 'es2022',
+  platform: 'browser',
+  mainFields: ['browser', 'module', 'main'],
+  conditions: ['browser', 'module', 'import', 'default'],
+  external: ['obsidian', 'electron', '@codemirror/*', ...builtins],
+  sourcemap: production ? false : 'inline',
+  treeShaking: true,
+  minify: production,
+  outfile: 'main.js',
+  logLevel: 'info',
+  alias: {
+    '@': './src',
+  },
+});
+
+if (production) {
+  await context.rebuild();
+  await context.dispose();
+} else {
+  await context.watch();
+}

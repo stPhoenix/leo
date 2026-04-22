@@ -1,0 +1,6 @@
+node_modules
+main.js
+dist
+pnpm-lock.yaml
+data.json
+.agent/features
