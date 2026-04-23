@@ -4,6 +4,7 @@ export interface HeaderBarProps {
   readonly collapsed: boolean;
   readonly onOverflowMenu?: (anchor: HTMLElement) => void;
   readonly skillPicker?: ReactNode;
+  readonly threadSwitcher?: ReactNode;
 }
 
 export function HeaderBar(props: HeaderBarProps): JSX.Element {
@@ -28,7 +29,9 @@ export function HeaderBar(props: HeaderBarProps): JSX.Element {
             …
           </button>
         ) : (
-          <span className="leo-header-action-slot" data-slot="header-actions" />
+          <span className="leo-header-action-slot" data-slot="header-actions">
+            {props.threadSwitcher ?? null}
+          </span>
         )}
       </div>
     </header>

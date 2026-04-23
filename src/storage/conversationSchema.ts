@@ -34,7 +34,6 @@ export interface StoredMessage {
 
 export interface StoredThreadMetadata {
   readonly allowedTools: readonly string[];
-  readonly skillId: string | null;
   readonly title?: string;
   readonly extras?: Readonly<Record<string, unknown>>;
 }
@@ -72,6 +71,7 @@ const MESSAGE_KEYS = new Set([
 ]);
 
 const METADATA_KEYS = new Set(['allowedTools', 'skillId', 'title']);
+const LEGACY_METADATA_KEYS = new Set(['skillId']);
 
 export interface ParseContext {
   readonly logger?: Logger;
@@ -84,7 +84,7 @@ export function emptyThread(id: string, nowIso: string): StoredThread {
     schemaVersion: CONVERSATION_SCHEMA_VERSION,
     createdAt: nowIso,
     updatedAt: nowIso,
-    metadata: { allowedTools: [], skillId: null },
+    metadata: { allowedTools: [] },
     messages: [],
   };
 }
@@ -116,18 +116,16 @@ export function parseThread(raw: unknown, ctx: ParseContext): StoredThread {
 
 function parseMetadata(raw: unknown, ctx: ParseContext): StoredThreadMetadata {
   if (raw === null || typeof raw !== 'object') {
-    return { allowedTools: [], skillId: null };
+    return { allowedTools: [] };
   }
   const obj = raw as Record<string, unknown>;
   const allowedTools = Array.isArray(obj.allowedTools)
     ? obj.allowedTools.filter((v): v is string => typeof v === 'string')
     : [];
-  const skillId = typeof obj.skillId === 'string' ? obj.skillId : null;
   const title = typeof obj.title === 'string' ? obj.title : undefined;
-  const extras = collectExtras(obj, METADATA_KEYS, ctx, 'metadata');
+  const extras = collectExtras(obj, METADATA_KEYS, ctx, 'metadata', LEGACY_METADATA_KEYS);
   return {
     allowedTools,
-    skillId,
     ...(title !== undefined ? { title } : {}),
     ...(extras !== undefined ? { extras } : {}),
   };
@@ -213,10 +211,12 @@ function collectExtras(
   known: ReadonlySet<string>,
   ctx: ParseContext,
   path: string,
+  ignored?: ReadonlySet<string>,
 ): Readonly<Record<string, unknown>> | undefined {
   let result: Record<string, unknown> | undefined;
   for (const key of Object.keys(obj)) {
     if (known.has(key)) continue;
+    if (ignored?.has(key) === true) continue;
     if (result === undefined) result = {};
     result[key] = obj[key];
     ctx.logger?.info('conversation.schema.unknown-field', {
@@ -245,7 +245,6 @@ export function serializeThread(thread: StoredThread): string {
 function serializeMetadata(m: StoredThreadMetadata): Record<string, unknown> {
   const raw: Record<string, unknown> = {
     allowedTools: [...m.allowedTools],
-    skillId: m.skillId,
   };
   if (m.title !== undefined) raw.title = m.title;
   if (m.extras !== undefined) {

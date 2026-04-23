@@ -1,16 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SkillsStore } from '@/skills/skillsStore';
-import { parseSkillFile } from '@/skills/parse';
 import type { VaultAdapter, VaultListing } from '@/storage/vaultAdapter';
 
 class FakeVault implements VaultAdapter {
   readonly files = new Map<string, string>();
+  readonly folders = new Set<string>();
   readonly mkdirs = new Set<string>();
   async exists(p: string): Promise<boolean> {
-    return this.files.has(p);
+    return this.files.has(p) || this.folders.has(p);
   }
   async mkdir(p: string): Promise<void> {
     this.mkdirs.add(p);
+    this.folders.add(p);
   }
   async read(p: string): Promise<string> {
     const v = this.files.get(p);
@@ -19,6 +20,8 @@ class FakeVault implements VaultAdapter {
   }
   async write(p: string, d: string): Promise<void> {
     this.files.set(p, d);
+    const dir = p.split('/').slice(0, -1).join('/');
+    if (dir.length > 0) this.folders.add(dir);
   }
   async rename(from: string, to: string): Promise<void> {
     const v = this.files.get(from);
@@ -28,151 +31,93 @@ class FakeVault implements VaultAdapter {
   }
   async remove(p: string): Promise<void> {
     this.files.delete(p);
+    this.folders.delete(p);
   }
   async list(dir: string): Promise<VaultListing> {
     const prefix = dir.endsWith('/') ? dir : `${dir}/`;
-    return {
-      files: [...this.files.keys()].filter((k) => k.startsWith(prefix)),
-      folders: [],
-    };
+    const allKeys = [...this.files.keys(), ...this.folders.keys()];
+    const files = [...this.files.keys()].filter(
+      (k) => k.startsWith(prefix) && !k.slice(prefix.length).includes('/'),
+    );
+    const folders = allKeys
+      .filter((k) => k.startsWith(prefix))
+      .map((k) => k.slice(prefix.length).split('/')[0]!)
+      .filter((seg, idx, arr) => arr.indexOf(seg) === idx && this.folders.has(`${prefix}${seg}`));
+    return { files, folders: folders.map((f) => `${prefix}${f}`) };
   }
 }
 
-describe('parseSkillFile — JSON vs markdown frontmatter parse equivalence', () => {
-  it('parses a valid JSON skill', () => {
-    const json = JSON.stringify({
-      id: 'x',
-      name: 'X',
-      description: 'd',
-      systemPrompt: 'sys',
-      allowedTools: ['read_note'],
-      defaultModel: 'gpt-4',
-    });
-    const r = parseSkillFile(json, 'x.json', { source: 'user' });
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.skill.id).toBe('x');
-      expect(r.skill.allowedTools).toEqual(['read_note']);
-      expect(r.skill.defaultModel).toBe('gpt-4');
-      expect(r.skill.source).toBe('user');
-    }
-  });
-
-  it('parses a valid markdown skill with YAML frontmatter + body as systemPrompt', () => {
-    const md = `---
-id: y
-name: Y
-description: description
-allowedTools: [read_note, search_vault]
-defaultModel: gpt-4
----
-Hello I am the system prompt.
-
-Line two.`;
-    const r = parseSkillFile(md, 'y.md', { source: 'user' });
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.skill.id).toBe('y');
-      expect(r.skill.allowedTools).toEqual(['read_note', 'search_vault']);
-      expect(r.skill.systemPrompt).toContain('Hello I am the system prompt.');
-      expect(r.skill.systemPrompt).toContain('Line two.');
-    }
-  });
-
-  it('JSON and markdown of the same content round-trip to the same Skill shape (minus formatting)', () => {
-    const json = parseSkillFile(
-      JSON.stringify({ id: 'r', name: 'R', description: 'd', systemPrompt: 'SP' }),
-      'r.json',
-      { source: 'user' },
-    );
-    const md = parseSkillFile(`---\nid: r\nname: R\ndescription: d\n---\nSP`, 'r.md', {
-      source: 'user',
-    });
-    expect(json.ok).toBe(true);
-    expect(md.ok).toBe(true);
-    if (json.ok && md.ok) expect({ ...json.skill }).toEqual({ ...md.skill });
-  });
-
-  it('rejects skills with missing required fields', () => {
-    const r = parseSkillFile(JSON.stringify({ id: 'x', name: 'X' }), 'x.json', { source: 'user' });
-    expect(r.ok).toBe(false);
-  });
-
-  it('rejects invalid JSON', () => {
-    const r = parseSkillFile('{not json', 'x.json', { source: 'user' });
-    expect(r.ok).toBe(false);
-  });
-
-  it('rejects slug-invalid ids', () => {
-    const r = parseSkillFile(
-      JSON.stringify({ id: 'has spaces', name: 'N', description: 'd', systemPrompt: 's' }),
-      'x.json',
-      { source: 'user' },
-    );
-    expect(r.ok).toBe(false);
-  });
-});
+const validSkill = `---\nname: team-custom\ndescription: Team helper\n---\nBody for team skill.\n`;
 
 describe('SkillsStore', () => {
   it('loadAll starts empty and creates .leo/skills on first load', async () => {
     const vault = new FakeVault();
     const store = new SkillsStore({ vault });
     await store.loadAll();
-    expect(store.list()).toHaveLength(0);
+    expect(store.listAll()).toHaveLength(0);
     expect(vault.mkdirs.has('.leo/skills')).toBe(true);
   });
 
-  it('loads user skills from .leo/skills and tags source=user', async () => {
+  it('loads skills from .leo/skills/<name>/SKILL.md with source=userSettings', async () => {
     const vault = new FakeVault();
-    vault.files.set(
-      '.leo/skills/team.json',
-      JSON.stringify({
-        id: 'team-custom',
-        name: 'Team custom',
-        description: 'd',
-        systemPrompt: 'sys',
-      }),
-    );
+    await vault.mkdir('.leo/skills/team-custom');
+    vault.files.set('.leo/skills/team-custom/SKILL.md', validSkill);
     const store = new SkillsStore({ vault });
     await store.loadAll();
-    const team = store.get('team-custom');
-    expect(team?.source).toBe('user');
+    const team = store.find('team-custom');
+    expect(team?.source).toBe('userSettings');
+    expect(team?.displayName).toBe('team-custom');
+    expect(team?.description).toBe('Team helper');
   });
 
-  it('skips invalid skill files, logs skills.load.invalid, and fires a one-time Notice', async () => {
+  it('reports invalid SKILL.md files via the notice channel', async () => {
     const vault = new FakeVault();
-    vault.files.set('.leo/skills/bad.json', '{not json');
-    vault.files.set('.leo/skills/bad2.json', JSON.stringify({ id: 'x', name: 'X' }));
+    await vault.mkdir('.leo/skills/bad');
+    vault.files.set('.leo/skills/bad/SKILL.md', '---\nname: bad\n---\n');
     const notice = { notify: vi.fn() };
-    const records: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const warns: string[] = [];
     const logger = {
       debug: () => undefined,
       info: () => undefined,
-      warn: (event: string, fields: Record<string, unknown>) => records.push({ event, fields }),
+      warn: (event: string) => warns.push(event),
       error: () => undefined,
     } as unknown as ConstructorParameters<typeof SkillsStore>[0]['logger'];
     const store = new SkillsStore({ vault, logger, noticeChannel: notice });
     await store.loadAll();
-    const invalids = records.filter((r) => r.event === 'skills.load.invalid');
-    expect(invalids.length).toBeGreaterThanOrEqual(2);
+    expect(warns).toContain('skills.load.invalid');
     expect(notice.notify).toHaveBeenCalledTimes(1);
   });
 
-  it('loadOne refreshes a single entry when a user file is added at runtime', async () => {
+  it('migrates legacy flat skills on loadAll', async () => {
     const vault = new FakeVault();
-    const store = new SkillsStore({ vault });
-    await store.loadAll();
-    expect(store.get('later')).toBeUndefined();
+    await vault.mkdir('.leo/skills');
     vault.files.set(
-      '.leo/skills/later.json',
+      '.leo/skills/legacy.json',
       JSON.stringify({
-        id: 'later',
-        name: 'Later',
-        description: 'd',
-        systemPrompt: 's',
+        id: 'legacy',
+        name: 'Legacy',
+        description: 'Was flat',
+        systemPrompt: 'Do the thing.',
       }),
     );
-    await store.loadOne('.leo/skills/later.json');
-    expect(store.get('later')?.source).toBe('user');
+    const store = new SkillsStore({ vault });
+    await store.loadAll();
+    expect(vault.files.has('.leo/skills/legacy.json')).toBe(false);
+    expect(vault.files.has('.leo/skills/legacy/SKILL.md')).toBe(true);
+    const skill = store.find('legacy');
+    expect(skill?.description).toBe('Was flat');
+  });
+
+  it('routes paths: skills into the conditional pool', async () => {
+    const vault = new FakeVault();
+    await vault.mkdir('.leo/skills/typed');
+    vault.files.set(
+      '.leo/skills/typed/SKILL.md',
+      `---\nname: typed\ndescription: Only for TS\npaths: ["src/**/*.ts"]\n---\nTriggered by TS.\n`,
+    );
+    const store = new SkillsStore({ vault });
+    await store.loadAll();
+    expect(store.listAvailable().find((s) => s.name === 'typed')).toBeUndefined();
+    expect(store.conditionalEntries()).toHaveLength(1);
   });
 });

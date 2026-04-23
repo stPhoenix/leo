@@ -439,13 +439,13 @@ export class SettingsTab extends PluginSettingTab {
       return;
     }
 
-    const skills = [...skillsStore.list()].sort((a, b) => a.name.localeCompare(b.name));
+    const skills = [...skillsStore.listAll()].sort((a, b) => a.name.localeCompare(b.name));
     const header = body.createDiv({ cls: 'leo-section-help' });
     header.setText(`${skills.length} skill${skills.length === 1 ? '' : 's'} loaded.`);
 
     new Setting(body)
       .setName('Add skill')
-      .setDesc('Create a new user skill stored under .leo/skills/.')
+      .setDesc('Create a new user skill stored under .leo/skills/<name>/SKILL.md.')
       .addButton((b) => {
         b.setButtonText('New skill')
           .setCta()
@@ -463,56 +463,37 @@ export class SettingsTab extends PluginSettingTab {
     }
 
     for (const skill of skills) {
-      const editable = editor.isEditable(skill.id);
       const setting = new Setting(body)
-        .setName(skill.name)
+        .setName(skill.displayName)
         .setDesc(
-          `${skill.source} · ${skill.id}${skill.description.length > 0 ? ` — ${skill.description}` : ''}`,
+          `${skill.source} · ${skill.name}${skill.description.length > 0 ? ` — ${skill.description}` : ''}`,
         );
-      if (editable) {
-        setting.addButton((b) => {
-          b.setButtonText('Edit').onClick(() => {
-            const draft = editor.openDraftForEdit(skill.id);
-            if (draft === null) {
-              new Notice(`Skill ${skill.id} not found`);
-              return;
-            }
-            this.editingSkillId = skill.id;
-            this.skillDraft = draft;
-            this.skillSaveErrors = [];
-            this.display();
-          });
-        });
-      }
       setting.addButton((b) => {
-        b.setButtonText('Duplicate').onClick(async () => {
-          const res = await editor.duplicate(skill.id);
-          if (!res.ok) {
-            new Notice(`Duplicate failed: ${res.error}`);
+        b.setButtonText('Edit').onClick(() => {
+          const draft = editor.openDraftForEdit(skill.name);
+          if (draft === null) {
+            new Notice(`Skill ${skill.name} not found`);
             return;
           }
-          this.editingSkillId = res.skill.id;
-          this.skillDraft = editor.openDraftForEdit(res.skill.id);
+          this.editingSkillId = skill.name;
+          this.skillDraft = draft;
           this.skillSaveErrors = [];
           this.display();
         });
       });
-      if (editable) {
-        setting.addButton((b) => {
-          b.setButtonText('Delete')
-            .setWarning()
-            .onClick(async () => {
-              const message = editor.deleteConfirmationMessage(skill.id);
-              if (!confirm(message)) return;
-              const res = await editor.deleteUserSkill(skill.id);
-              if (!res.ok) {
-                new Notice(`Delete failed: ${res.error}`);
-                return;
-              }
-              this.display();
-            });
-        });
-      }
+      setting.addButton((b) => {
+        b.setButtonText('Delete')
+          .setWarning()
+          .onClick(async () => {
+            if (!confirm(`Delete skill "${skill.displayName}"?`)) return;
+            const res = await editor.deleteUserSkill(skill.name);
+            if (!res.ok) {
+              new Notice(`Delete failed: ${res.error}`);
+              return;
+            }
+            this.display();
+          });
+      });
     }
   }
 
@@ -522,50 +503,60 @@ export class SettingsTab extends PluginSettingTab {
     const mode: 'create' | 'edit' = this.editingSkillId === '__new__' ? 'create' : 'edit';
 
     const heading = body.createEl('h4');
-    heading.setText(mode === 'create' ? 'New skill' : `Edit skill: ${draft.id}`);
+    heading.setText(mode === 'create' ? 'New skill' : `Edit skill: ${draft.name}`);
 
     const updateDraft = (patch: Partial<SkillDraft>): void => {
       this.skillDraft = { ...draft, ...patch } as SkillDraft;
     };
 
     new Setting(body)
-      .setName('id')
-      .setDesc('Lowercase-kebab id (a-z 0-9 hyphens). Cannot collide with existing skills.')
+      .setName('name')
+      .setDesc('Canonical kebab-case name (a-z 0-9 hyphens). Becomes the directory name.')
       .addText((t) => {
-        t.setValue(draft.id);
+        t.setValue(draft.name);
         t.inputEl.disabled = mode === 'edit';
-        t.onChange((v) => updateDraft({ id: v.trim() }));
+        t.onChange((v) => updateDraft({ name: v.trim() }));
       });
-    this.appendErrorsForField(body, 'id');
-    this.appendErrorsForField(body, 'id-duplicate');
-
-    new Setting(body).setName('name').addText((t) => {
-      t.setValue(draft.name).onChange((v) => updateDraft({ name: v }));
-    });
     this.appendErrorsForField(body, 'name');
+    this.appendErrorsForField(body, 'name-duplicate');
+
+    new Setting(body).setName('display name').addText((t) => {
+      t.setValue(draft.displayName).onChange((v) => updateDraft({ displayName: v }));
+    });
+    this.appendErrorsForField(body, 'displayName');
 
     new Setting(body)
       .setName('description')
-      .setDesc('Short summary shown in the picker.')
+      .setDesc('Short summary shown in the turn-0 listing.')
       .addTextArea((t) => {
         t.inputEl.rows = 2;
         t.inputEl.style.width = '100%';
         t.setValue(draft.description).onChange((v) => updateDraft({ description: v }));
       });
+    this.appendErrorsForField(body, 'description');
 
     new Setting(body)
-      .setName('system prompt')
-      .setDesc('Prepended to every turn when this skill is active.')
+      .setName('when to use')
+      .setDesc('Hint the model uses to decide when to invoke this skill.')
       .addTextArea((t) => {
-        t.inputEl.rows = 8;
+        t.inputEl.rows = 2;
         t.inputEl.style.width = '100%';
-        t.setValue(draft.systemPrompt).onChange((v) => updateDraft({ systemPrompt: v }));
+        t.setValue(draft.whenToUse).onChange((v) => updateDraft({ whenToUse: v }));
       });
-    this.appendErrorsForField(body, 'systemPrompt');
+
+    new Setting(body)
+      .setName('body')
+      .setDesc('Skill body injected on invocation. Supports $1, $ARGUMENTS, ${CLAUDE_SKILL_DIR}.')
+      .addTextArea((t) => {
+        t.inputEl.rows = 10;
+        t.inputEl.style.width = '100%';
+        t.setValue(draft.body).onChange((v) => updateDraft({ body: v }));
+      });
+    this.appendErrorsForField(body, 'body');
 
     new Setting(body)
       .setName('allowed tools')
-      .setDesc('Comma-separated tool ids. Leave blank to allow all registered tools.')
+      .setDesc('Comma-separated tool ids scoped during the skill turn.')
       .addText((t) => {
         t.setValue([...draft.allowedTools].join(', ')).onChange((v) => {
           const tools = v
@@ -577,14 +568,59 @@ export class SettingsTab extends PluginSettingTab {
       });
 
     new Setting(body)
-      .setName('default model')
-      .setDesc('Optional model id override; blank = use provider default.')
+      .setName('paths')
+      .setDesc(
+        'Optional gitignore-style patterns; skill stays hidden until a matching file is touched.',
+      )
       .addText((t) => {
-        t.setValue(draft.defaultModel ?? '').onChange((v) => {
-          const trimmed = v.trim();
-          updateDraft({ defaultModel: trimmed.length > 0 ? trimmed : null });
+        t.setValue(draft.paths.join(', ')).onChange((v) => {
+          const paths = v
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0);
+          updateDraft({ paths });
         });
       });
+
+    new Setting(body).setName('argument hint').addText((t) => {
+      t.setValue(draft.argumentHint ?? '').onChange((v) => {
+        const trimmed = v.trim();
+        updateDraft({ argumentHint: trimmed.length > 0 ? trimmed : null });
+      });
+    });
+
+    new Setting(body)
+      .setName('argument names')
+      .setDesc('Comma-separated names; map to $NAME substitutions.')
+      .addText((t) => {
+        t.setValue(draft.argNames.join(', ')).onChange((v) => {
+          const names = v
+            .split(',')
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0);
+          updateDraft({ argNames: names });
+        });
+      });
+
+    new Setting(body)
+      .setName('model override')
+      .setDesc('Optional model id for this skill; blank = use the current model.')
+      .addText((t) => {
+        t.setValue(draft.model ?? '').onChange((v) => {
+          const trimmed = v.trim();
+          updateDraft({ model: trimmed.length > 0 ? trimmed : null });
+        });
+      });
+
+    new Setting(body).setName('disable model invocation').addToggle((t) => {
+      t.setValue(draft.disableModelInvocation).onChange((v) =>
+        updateDraft({ disableModelInvocation: v }),
+      );
+    });
+
+    new Setting(body).setName('user invocable').addToggle((t) => {
+      t.setValue(draft.userInvocable).onChange((v) => updateDraft({ userInvocable: v }));
+    });
 
     new Setting(body)
       .addButton((b) => {
@@ -597,7 +633,7 @@ export class SettingsTab extends PluginSettingTab {
               if ('errors' in res) {
                 this.skillSaveErrors = res.errors;
               } else {
-                this.skillSaveErrors = [{ field: 'id', message: res.error }];
+                this.skillSaveErrors = [{ field: 'name', message: res.error }];
               }
               this.display();
               return;

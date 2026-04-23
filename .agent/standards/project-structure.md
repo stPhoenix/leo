@@ -13,6 +13,7 @@ leo/
 │   │   ├── compact.md
 │   │   ├── context.md
 │   │   ├── plan.md
+│   │   ├── skill-doc.md
 │   │   └── srs.md                       # Software requirements spec
 │   └── standards/
 │       ├── best-practices.md
@@ -110,11 +111,23 @@ leo/
 │   │   ├── WizardApp.tsx
 │   │   ├── wizardMachine.ts
 │   │   └── wizardModal.tsx
-│   ├── skills/                          # Skill parse/store/editor + builtin skills
+│   ├── skills/                          # Skill parse/store/editor, registry, runtime (conditional, hooks, permissions, shell exec, slash, substitutions, listing, invoked, signals, dynamic, migration)
 │   │   ├── builtins.ts
+│   │   ├── conditional.ts
+│   │   ├── dynamic.ts
+│   │   ├── hooks.ts
+│   │   ├── invokedSkills.ts
+│   │   ├── listingAttachment.ts
+│   │   ├── migration.ts
 │   │   ├── parse.ts
+│   │   ├── permissions.ts
+│   │   ├── registry.ts
+│   │   ├── shellExec.ts
+│   │   ├── signals.ts
 │   │   ├── skillEditorController.ts
 │   │   ├── skillsStore.ts
+│   │   ├── slashProcessor.ts
+│   │   ├── substitutions.ts
 │   │   └── types.ts
 │   ├── storage/                         # IndexedDB stores, vault adapter, safeStorage, vectors
 │   │   ├── conversationSchema.ts
@@ -126,7 +139,8 @@ leo/
 │   │   └── vectorStore.ts
 │   ├── tools/                           # Tool registry + builtin + user tool loader
 │   │   ├── builtin/
-│   │   │   └── searchVault.ts
+│   │   │   ├── searchVault.ts
+│   │   │   └── skillTool.ts
 │   │   ├── user/
 │   │   │   ├── userToolsLoader.ts
 │   │   │   └── wireUserTools.ts
@@ -159,6 +173,7 @@ leo/
 │   │   │   ├── SkillPicker.tsx
 │   │   │   ├── slashCommands.ts
 │   │   │   ├── SlashPicker.tsx
+│   │   │   ├── ThreadSwitcher.tsx
 │   │   │   └── turnDispatcher.ts
 │   │   ├── chatView.tsx
 │   │   ├── contextCommand.ts

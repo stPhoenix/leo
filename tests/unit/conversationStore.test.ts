@@ -82,7 +82,7 @@ describe('ConversationStore', () => {
     const thread = await store.load();
     expect(thread.messages).toEqual([]);
     expect(thread.schemaVersion).toBe(1);
-    expect(thread.metadata).toEqual({ allowedTools: [], skillId: null });
+    expect(thread.metadata).toEqual({ allowedTools: [] });
     expect(records.find((r) => r.event === 'conversation.load')).toBeDefined();
   });
 
@@ -117,7 +117,7 @@ describe('ConversationStore', () => {
     await store.load();
     store.mutate((prev) => ({
       ...prev,
-      metadata: { allowedTools: ['read_note'], skillId: null },
+      metadata: { allowedTools: ['read_note'] },
     }));
     await store.flush();
     expect(adapter.files.has('.leo/conversations/default.json')).toBe(true);
@@ -143,7 +143,7 @@ describe('ConversationStore', () => {
           tokens: { input: 1, output: 1, total: 2, source: 'api' },
         },
       ],
-      metadata: { allowedTools: ['search_vault'], skillId: 'general' },
+      metadata: { allowedTools: ['search_vault'] },
     }));
     await a.flush();
 
@@ -151,7 +151,7 @@ describe('ConversationStore', () => {
     const loaded = await b.load();
     expect(loaded.messages.length).toBe(2);
     expect(loaded.messages[1]?.tokens).toEqual({ input: 1, output: 1, total: 2, source: 'api' });
-    expect(loaded.metadata).toEqual({ allowedTools: ['search_vault'], skillId: 'general' });
+    expect(loaded.metadata).toEqual({ allowedTools: ['search_vault'] });
   });
 
   it('cleans up the .tmp file on rename failure', async () => {

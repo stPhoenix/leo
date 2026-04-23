@@ -23,7 +23,7 @@ describe('conversation schema round-trip', () => {
       schemaVersion: CONVERSATION_SCHEMA_VERSION,
       createdAt: '2026-04-21T00:00:00.000Z',
       updatedAt: '2026-04-21T00:01:00.000Z',
-      metadata: { allowedTools: ['read_note'], skillId: 'general' },
+      metadata: { allowedTools: ['read_note'] },
       messages: [
         { id: 'u1', role: 'user', content: 'hi', createdAt: '2026-04-21T00:00:30.000Z' },
         {
@@ -46,7 +46,7 @@ describe('conversation schema round-trip', () => {
       schemaVersion: CONVERSATION_SCHEMA_VERSION,
       createdAt: '2026-04-21T00:00:00.000Z',
       updatedAt: '2026-04-21T00:00:05.000Z',
-      metadata: { allowedTools: [], skillId: null },
+      metadata: { allowedTools: [] },
       messages: [
         {
           id: 'a1',
@@ -74,7 +74,7 @@ describe('conversation schema round-trip', () => {
       schemaVersion: 1,
       createdAt: 'x',
       updatedAt: 'y',
-      metadata: { allowedTools: [], skillId: null, futureKey: 'hello' },
+      metadata: { allowedTools: [], futureKey: 'hello' },
       messages: [
         {
           id: 'a1',
@@ -108,7 +108,6 @@ describe('conversation schema round-trip', () => {
       ctx,
     );
     expect(parsed.metadata.allowedTools).toEqual([]);
-    expect(parsed.metadata.skillId).toBeNull();
   });
 
   it('throws on structurally incompatible root (non-object)', () => {
@@ -128,7 +127,7 @@ describe('conversation schema round-trip', () => {
       schemaVersion: 1,
       createdAt: 'a',
       updatedAt: 'b',
-      metadata: { allowedTools: [], skillId: null, futureKey: 1 },
+      metadata: { allowedTools: [], futureKey: 1 },
       messages: [{ id: 'm1', role: 'user', content: 'x', createdAt: 'c', extraFuture: true }],
       extraRoot: { foo: 1 },
     };

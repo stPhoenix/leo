@@ -81,7 +81,7 @@ function thread(messages: readonly StoredMessage[]): StoredThread {
     schemaVersion: 1,
     createdAt: '2026-04-21T00:00:00Z',
     updatedAt: '2026-04-21T00:00:00Z',
-    metadata: { allowedTools: [], skillId: null },
+    metadata: { allowedTools: [] },
     messages,
   };
 }

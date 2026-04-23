@@ -12,6 +12,7 @@ import {
   type PlanMarkdownRenderFn,
 } from './PlanApprovalDialog';
 import { SkillPicker, type SkillPickerSource } from './SkillPicker';
+import { ThreadSwitcher, type ThreadsUiSource } from './ThreadSwitcher';
 import { IndexEmptyStateCta, type IndexStatusSource } from './IndexEmptyStateCta';
 import type { DrainListener } from '@/indexer/vaultIndexer';
 import { isCollapsed } from '../responsiveCollapse';
@@ -50,6 +51,7 @@ export interface ChatRootProps {
   readonly planApprovalSource?: PlanApprovalSource;
   readonly renderPlanMarkdown?: PlanMarkdownRenderFn;
   readonly skillPickerSource?: SkillPickerSource;
+  readonly threadsSource?: ThreadsUiSource;
   readonly indexStatusSource?: IndexStatusSource;
   readonly indexDrainSubscribe?: (listener: DrainListener) => () => void;
   readonly onIndexVault?: () => void;
@@ -101,6 +103,9 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
         onOverflowMenu={props.onOverflowMenu}
         {...(props.skillPickerSource !== undefined
           ? { skillPicker: <SkillPicker source={props.skillPickerSource} collapsed={collapsed} /> }
+          : {})}
+        {...(props.threadsSource !== undefined
+          ? { threadSwitcher: <ThreadSwitcher source={props.threadsSource} /> }
           : {})}
       />
       <ContextIndicator

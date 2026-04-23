@@ -22,16 +22,17 @@ import {
   type CompactToolMessage,
 } from './microcompact';
 import {
-  GENERAL_SKILL,
   type AgentAssistantMessage,
   type AgentHistoryMessage,
   type AgentTurnEvent,
   type AgentUserMessage,
   type RagHit,
-  type Skill,
+  type SkillListingSegment,
   type ThreadId,
   type TurnInput,
 } from './types';
+import { isSkillInvocationEnvelope } from '@/tools/builtin/skillTool';
+import type { ContextModifier } from '@/skills/types';
 
 export interface AgentRunnerProvider {
   stream(req: ProviderChatRequest, signal: AbortSignal): AsyncIterable<StreamEvent>;
@@ -59,12 +60,19 @@ export interface RagEngineLike {
   ): Promise<readonly RagEngineHit[]>;
 }
 
+export interface SkillListingProvider {
+  buildFor(args: {
+    readonly thread: ThreadId;
+    readonly agentId: string | null;
+  }): SkillListingSegment | null;
+}
+
 export interface AgentRunnerOptions {
   readonly provider: AgentRunnerProvider;
   readonly focusedContext: FocusedContextSource;
   readonly logger: Logger;
   readonly model: () => string;
-  readonly skill?: (thread: ThreadId) => Skill;
+  readonly skillListing?: SkillListingProvider;
   readonly rag?: RagHitsProvider;
   readonly ragEngine?: RagEngineLike;
   readonly budget?: number;
@@ -110,7 +118,7 @@ export class AgentRunner {
   private readonly focus: FocusedContextSource;
   private readonly logger: Logger;
   private readonly model: () => string;
-  private readonly skill: (thread: ThreadId) => Skill;
+  private readonly skillListing: SkillListingProvider | null;
   private readonly rag: RagHitsProvider;
   private readonly ragEngine: RagEngineLike | null;
   private readonly budget: number;
@@ -137,7 +145,7 @@ export class AgentRunner {
     this.focus = opts.focusedContext;
     this.logger = opts.logger;
     this.model = opts.model;
-    this.skill = opts.skill ?? ((): Skill => GENERAL_SKILL);
+    this.skillListing = opts.skillListing ?? null;
     this.rag = opts.rag ?? { query: async () => [] };
     this.ragEngine = opts.ragEngine ?? null;
     this.budget = opts.budget ?? DEFAULT_BUDGET_TOKENS;
@@ -262,25 +270,21 @@ export class AgentRunner {
       thread,
       hits: ragHits.length,
     });
-    const activeSkill = this.skill(thread);
+    const agentId = this.agentIdFor(thread);
+    const skillListing = this.skillListing?.buildFor({ thread, agentId }) ?? null;
     const prompt = assembleContext({
-      skill: activeSkill,
       focus: slot.focus,
       ragHits,
       history: historyWithUser,
+      skillListing,
     });
     const truncation: TruncationResult = truncate(prompt.segments, this.budget);
-    if (
-      truncation.dropped.skillExamples > 0 ||
-      truncation.dropped.history > 0 ||
-      truncation.dropped.ragHits > 0
-    ) {
+    if (truncation.dropped.history > 0 || truncation.dropped.ragHits > 0) {
       this.logger.info('agent.turn.truncate', {
         thread,
         tokensBefore: truncation.tokensBefore,
         tokensAfter: truncation.tokensAfter,
         budget: truncation.budget,
-        droppedSkillExamples: truncation.dropped.skillExamples,
         droppedHistory: truncation.dropped.history,
         droppedRagHits: truncation.dropped.ragHits,
       });
@@ -289,7 +293,6 @@ export class AgentRunner {
       segments: truncation.segments,
       focus: slot.focus,
     });
-    const agentId = this.agentIdFor(thread);
     if (this.planMode !== null) {
       const attachments = this.planMode.drainAttachments(thread);
       for (const reminder of attachments) {
@@ -300,19 +303,25 @@ export class AgentRunner {
         baseMessages.push({ role: 'system', content: staleReminder });
       }
     }
-    let tools: readonly OpenAITool[] =
+    const allToolSpecs: readonly OpenAITool[] =
       this.toolRegistry !== null ? this.toolRegistry.toOpenAITools(thread) : [];
-    if (activeSkill.allowedTools !== undefined) {
-      const allowed = new Set(activeSkill.allowedTools);
-      tools = tools.filter((t) => allowed.has(t.function.name));
-    }
-    const effectiveModel = activeSkill.defaultModel ?? this.model();
+    let toolAllowlist: ReadonlySet<string> | null = null;
+    let effectiveModel = this.model();
+    const applyContextModifier = (modifier: ContextModifier): void => {
+      if (modifier.allowedTools !== undefined && modifier.allowedTools.length > 0) {
+        toolAllowlist = new Set(modifier.allowedTools);
+      }
+      if (modifier.model !== undefined) effectiveModel = modifier.model;
+    };
+    const tools = (): readonly OpenAITool[] =>
+      toolAllowlist === null
+        ? allToolSpecs
+        : allToolSpecs.filter((t) => toolAllowlist!.has(t.function.name));
     this.logger.info('agent.turn.start', {
       thread,
       model: effectiveModel,
-      skillId: activeSkill.id,
       messages: baseMessages.length,
-      tools: tools.length,
+      tools: allToolSpecs.length,
       focusFile: slot.focus.file,
       enqueuedAt: slot.enqueuedAt,
     });
@@ -329,10 +338,11 @@ export class AgentRunner {
         break;
       }
       this.applyMicrocompactPass(workingMessages, workingTimestamps);
+      const activeTools = tools();
       const req: ProviderChatRequest = {
         model: effectiveModel,
         messages: workingMessages,
-        ...(tools.length > 0 ? { tools } : {}),
+        ...(activeTools.length > 0 ? { tools: activeTools } : {}),
       };
       const pendingToolCalls: ToolCallRequest[] = [];
       let iterationAssistant = '';
@@ -398,13 +408,34 @@ export class AgentRunner {
         const gated = this.applyPlanModeGate(call.name, thread);
         const result =
           gated ?? (await this.invokeWithConfirmation(call, thread, slot.abort.signal, agentId));
+        const skillEnvelope =
+          result.ok && isSkillInvocationEnvelope(result.data) ? result.data : null;
+        const toolResultContent =
+          skillEnvelope !== null
+            ? JSON.stringify({
+                ok: true,
+                data: { skill: skillEnvelope.skillName, status: 'injected' },
+              })
+            : JSON.stringify(result);
         workingMessages.push({
           role: 'tool',
           toolCallId: call.id,
           name: call.name,
-          content: JSON.stringify(result),
+          content: toolResultContent,
         });
         workingTimestamps.push(this.clock().getTime());
+        if (skillEnvelope !== null) {
+          for (const msg of skillEnvelope.messages) {
+            workingMessages.push({
+              role: msg.role === 'system' ? 'system' : 'user',
+              content: msg.marker !== undefined ? `${msg.marker}\n${msg.content}` : msg.content,
+            });
+            workingTimestamps.push(this.clock().getTime());
+          }
+          if (skillEnvelope.contextModifier !== undefined) {
+            applyContextModifier(skillEnvelope.contextModifier);
+          }
+        }
       }
       if (cancelled) break;
     }

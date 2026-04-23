@@ -127,7 +127,7 @@ describe('ThreadsStore', () => {
         schemaVersion: 1,
         createdAt: '2026-04-01T00:00:00.000Z',
         updatedAt: '2026-04-01T00:00:00.000Z',
-        metadata: { allowedTools: [], skillId: null, title: 'First' },
+        metadata: { allowedTools: [], title: 'First' },
         messages: [],
       }),
     );
@@ -138,7 +138,7 @@ describe('ThreadsStore', () => {
         schemaVersion: 1,
         createdAt: '2026-04-02T00:00:00.000Z',
         updatedAt: '2026-04-05T00:00:00.000Z',
-        metadata: { allowedTools: [], skillId: null, title: 'Second' },
+        metadata: { allowedTools: [], title: 'Second' },
         messages: [
           { id: 'm1', role: 'user', content: 'hi', createdAt: '2026-04-05T00:00:00.000Z' },
         ],
@@ -151,7 +151,7 @@ describe('ThreadsStore', () => {
         schemaVersion: 1,
         createdAt: 'x',
         updatedAt: 'x',
-        metadata: { allowedTools: [], skillId: null },
+        metadata: { allowedTools: [] },
         messages: [],
       }),
     );
@@ -171,7 +171,6 @@ describe('ThreadsStore', () => {
     expect(parsed.id).toBe(id);
     const meta = parsed.metadata as Record<string, unknown>;
     expect(meta.title).toBe(DEFAULT_THREAD_TITLE);
-    expect(meta.skillId).toBe('general');
     expect(meta.allowedTools).toEqual([]);
     expect(parsed.messages).toEqual([]);
     expect(store.activeIdOrNull()).toBe(id);
@@ -277,7 +276,7 @@ describe('ThreadsStore', () => {
         schemaVersion: 1,
         createdAt: 't',
         updatedAt: 't',
-        metadata: { allowedTools: [], skillId: 'general', title: DEFAULT_THREAD_TITLE },
+        metadata: { allowedTools: [], title: DEFAULT_THREAD_TITLE },
         messages: [],
       }),
     );
@@ -303,7 +302,7 @@ describe('ThreadsStore', () => {
         schemaVersion: 1,
         createdAt: '2026-04-10T00:00:00.000Z',
         updatedAt: '2026-04-10T00:00:00.000Z',
-        metadata: { allowedTools: [], skillId: null, title: 'Newer' },
+        metadata: { allowedTools: [], title: 'Newer' },
         messages: [],
       }),
     );
@@ -314,7 +313,7 @@ describe('ThreadsStore', () => {
         schemaVersion: 1,
         createdAt: '2026-04-01T00:00:00.000Z',
         updatedAt: '2026-04-01T00:00:00.000Z',
-        metadata: { allowedTools: [], skillId: null, title: 'Older' },
+        metadata: { allowedTools: [], title: 'Older' },
         messages: [],
       }),
     );
@@ -334,26 +333,25 @@ describe('ThreadsStore', () => {
     ).toBe(true);
   });
 
-  it('per-thread metadata (allowedTools, skillId) is isolated across switch', async () => {
+  it('per-thread metadata (allowedTools) is isolated across switch', async () => {
     const { store } = buildStore();
     const a = await store.create();
     const storeA = await store.active();
     storeA.mutate((t) => ({
       ...t,
-      metadata: { ...t.metadata, allowedTools: ['read_note'], skillId: 'writer' },
+      metadata: { ...t.metadata, allowedTools: ['read_note'] },
     }));
     await storeA.flush();
     const b = await store.create();
     const storeB = await store.active();
     storeB.mutate((t) => ({
       ...t,
-      metadata: { ...t.metadata, allowedTools: ['search_vault'], skillId: 'research' },
+      metadata: { ...t.metadata, allowedTools: ['search_vault'] },
     }));
     await storeB.flush();
     await store.switch(a);
     const restored = (await store.active()).getThread();
     expect(restored.metadata.allowedTools).toEqual(['read_note']);
-    expect(restored.metadata.skillId).toBe('writer');
     expect(b).not.toBe(a);
   });
 
@@ -374,6 +372,54 @@ describe('ThreadsStore', () => {
       expect(JSON.stringify(ev?.fields)).not.toContain('Secret Plans');
     }
     expect(other).not.toBe(id);
+  });
+
+  it('subscribe fires on create/switch/rename/delete with fresh snapshot', async () => {
+    const { store } = buildStore();
+    const a = await store.create();
+    let calls = 0;
+    const snapshots: Array<{ activeId: string | null; ids: string[] }> = [];
+    const unsub = store.subscribe(() => {
+      calls += 1;
+      const snap = store.getSnapshot();
+      snapshots.push({
+        activeId: snap.activeId,
+        ids: snap.summaries.map((s) => s.id),
+      });
+    });
+    const b = await store.create();
+    expect(calls).toBeGreaterThanOrEqual(1);
+    expect(store.getSnapshot().activeId).toBe(b);
+    expect(
+      store
+        .getSnapshot()
+        .summaries.map((s) => s.id)
+        .sort(),
+    ).toEqual([a, b].sort());
+
+    await store.switch(a);
+    expect(store.getSnapshot().activeId).toBe(a);
+
+    await store.rename(a, 'Renamed');
+    const renamed = store.getSnapshot().summaries.find((s) => s.id === a);
+    expect(renamed?.title).toBe('Renamed');
+
+    await store.delete(a);
+    expect(store.getSnapshot().summaries.some((s) => s.id === a)).toBe(false);
+
+    unsub();
+    const before = calls;
+    await store.create();
+    expect(calls).toBe(before);
+    expect(snapshots.length).toBeGreaterThan(0);
+  });
+
+  it('getSnapshot after init returns the active id and current summaries', async () => {
+    const { store } = buildStore();
+    await store.init();
+    const snap = store.getSnapshot();
+    expect(snap.activeId).toBe(store.activeIdOrNull());
+    expect(snap.summaries.length).toBe(1);
   });
 });
 

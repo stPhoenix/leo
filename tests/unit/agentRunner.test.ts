@@ -580,47 +580,22 @@ describe('AgentRunner', () => {
     expect(records.some((r) => r.event === 'tool.confirmation.deny')).toBe(true);
   });
 
-  it('filters the tools array by the active skill allowedTools and overrides model with defaultModel', async () => {
+  it('injects the skill listing attachment when a provider is wired', async () => {
     const provider = new FakeProvider();
     const { logger } = makeLogger();
-    const { ToolRegistry } = await import('@/tools/toolRegistry');
-    const registry = new ToolRegistry();
-    registry.register({
-      id: 'tool_a',
-      description: 'a',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-      requiresConfirmation: false,
-      source: 'builtin',
-      validate: () => ({ ok: true, data: {} }),
-      invoke: async () => ({ ok: true, data: null }),
-    });
-    registry.register({
-      id: 'tool_b',
-      description: 'b',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-      requiresConfirmation: false,
-      source: 'builtin',
-      validate: () => ({ ok: true, data: {} }),
-      invoke: async () => ({ ok: true, data: null }),
-    });
     const runner = new AgentRunner({
       provider,
       focusedContext: new MutableFocus(),
       logger,
       model: () => 'default-model',
-      toolRegistry: registry,
-      skill: () => ({
-        id: 's',
-        systemPrompt: 'sys',
-        allowedTools: ['tool_b'],
-        defaultModel: 'custom-model',
-      }),
+      skillListing: {
+        buildFor: () => ({ content: 'SKILLS', skillCount: 1 }),
+      },
     });
     provider.plan({ events: [{ type: 'done' }] });
     await collect(runner.send({ thread: 't', message: { role: 'user', content: 'q' } }));
-    const call = provider.calls[0]!;
-    expect(call.model).toBe('custom-model');
-    expect(call.tools?.map((t) => t.function.name)).toEqual(['tool_b']);
+    const systemMessages = provider.calls[0]!.messages.filter((m) => m.role === 'system');
+    expect(systemMessages.some((m) => m.content.includes('SKILLS'))).toBe(true);
   });
 
   it('plan-mode permission gate blocks non-allowlisted tools without invoking confirmation', async () => {

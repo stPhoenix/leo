@@ -47,11 +47,14 @@ import type { ToolSpec } from '@/tools/types';
 import { ConfirmationController, prettifyArgs } from '@/agent/confirmationController';
 import { AcceptRejectController } from '@/agent/acceptRejectController';
 import { SkillsStore } from '@/skills/skillsStore';
-import { GENERAL_SKILL, type Skill as AgentSkill } from '@/agent/types';
-import type { SkillPickerSource } from '@/ui/chat/SkillPicker';
-import type { ChatStreamStarter } from '@/ui/chatView';
+import { SkillRegistry, MAIN_AGENT_ID } from '@/skills/registry';
+import { createInvokedSkillsStore, type InvokedSkillsStore } from '@/skills/invokedSkills';
+import { createSlashProcessor } from '@/skills/slashProcessor';
+import { buildSkillListingAttachment } from '@/skills/listingAttachment';
+import { createSkillTool } from '@/tools/builtin/skillTool';
+import type { ChatStreamStarter, ThreadsSource } from '@/ui/chatView';
 import { ChatMessageStore } from '@/chat/messageStore';
-import { ConversationStore, DEFAULT_THREAD_ID } from '@/storage/conversationStore';
+import { DEFAULT_THREAD_ID, type ConversationStore } from '@/storage/conversationStore';
 import { createObsidianVaultAdapter } from '@/storage/vaultAdapter';
 import type { StoredMessage } from '@/storage/conversationSchema';
 import type { ChatMessageRecord } from '@/chat/types';
@@ -112,9 +115,13 @@ export default class LeoPlugin extends Plugin {
   attachments: AttachmentsWiring | null = null;
   uiHelpers: UiHelpersWiring | null = null;
   contextStatusLine: ContextStatusLineWiring | null = null;
-  private readonly skillListeners = new Set<() => void>();
+  skillRegistry!: SkillRegistry;
+  invokedSkills!: InvokedSkillsStore;
   private editorBridge!: EditorBridge;
   private chatStoreUnsub: (() => void) | null = null;
+  private threadsSubUnsub: (() => void) | null = null;
+  private hydrateActiveThread: (() => Promise<void>) | null = null;
+  private lastActiveThreadId: string | null = null;
   private sink!: RotatingFileSink;
   private providerStatusEl: HTMLElement | null = null;
   private connectionUnsub: (() => void) | null = null;
@@ -258,29 +265,54 @@ export default class LeoPlugin extends Plugin {
     });
     await this.skillsStore.loadAll();
 
+    this.skillRegistry = new SkillRegistry({
+      store: this.skillsStore,
+      logger: this.logger,
+    });
+    this.invokedSkills = createInvokedSkillsStore();
+    const slashProcessor = createSlashProcessor({
+      registry: this.skillRegistry,
+      invoked: this.invokedSkills,
+      logger: this.logger,
+    });
+    this.toolRegistry.register(
+      createSkillTool({
+        registry: this.skillRegistry,
+        processor: slashProcessor,
+        resolveAgentId: () => MAIN_AGENT_ID,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+
     this.skillEditor = new SkillEditorController({
       store: this.skillsStore,
       logger: this.logger,
       notice: { notify: (msg) => new Notice(msg) },
     });
 
-    this.conversationStore = new ConversationStore({
-      adapter: vaultAdapter,
-      logger: this.logger,
-    });
-    const loadedThread = await this.conversationStore.load();
     this.chatMessageStore = new ChatMessageStore();
-    this.chatMessageStore.set(storedToRecords(loadedThread.messages));
+    const agentHistory = new Map<string, AgentHistoryMessage[]>();
+    let suspendPersist = false;
     this.chatStoreUnsub = this.chatMessageStore.subscribe(() => {
+      if (suspendPersist) return;
       const snapshot = this.chatMessageStore.getSnapshot();
       this.conversationStore.mutate((prev) => ({
         ...prev,
         messages: recordsToStored(snapshot),
       }));
     });
-
-    const agentHistory = new Map<string, AgentHistoryMessage[]>();
-    agentHistory.set(DEFAULT_THREAD_ID, deriveAgentHistory(loadedThread.messages));
+    this.hydrateActiveThread = async (): Promise<void> => {
+      if (this.threadsStore === null) return;
+      const active = await this.threadsStore.active();
+      this.conversationStore = active;
+      const thread = active.getThread();
+      suspendPersist = true;
+      try {
+        this.chatMessageStore.set(storedToRecords(thread.messages));
+      } finally {
+        suspendPersist = false;
+      }
+      agentHistory.set(DEFAULT_THREAD_ID, deriveAgentHistory(thread.messages));
+    };
 
     this.confirmationController = new ConfirmationController();
     this.todoStore = new TodoStore();
@@ -333,6 +365,14 @@ export default class LeoPlugin extends Plugin {
         },
       });
       await this.threadsStore.init();
+      this.lastActiveThreadId = this.threadsStore.activeIdOrNull();
+      await this.hydrateActiveThread?.();
+      this.threadsSubUnsub = this.threadsStore.subscribe(() => {
+        const next = this.threadsStore?.activeIdOrNull() ?? null;
+        if (next === this.lastActiveThreadId) return;
+        this.lastActiveThreadId = next;
+        void this.hydrateActiveThread?.();
+      });
     } catch (err) {
       this.logger.warn('threads.wire.failed', {
         error: err instanceof Error ? err.message : String(err),
@@ -512,7 +552,16 @@ export default class LeoPlugin extends Plugin {
       toolRegistry: this.toolRegistry,
       planMode: this.planModeController,
       ragEngine: this.indexerRag.ragEngine,
-      skill: () => this.resolveActiveSkill(),
+      skillListing: {
+        buildFor: ({ agentId }) => {
+          const listing = buildSkillListingAttachment({
+            registry: this.skillRegistry,
+            agentId: agentId ?? MAIN_AGENT_ID,
+          });
+          if (listing === null) return null;
+          return { content: listing.content, skillCount: listing.skillCount };
+        },
+      },
       confirmTool: (req) =>
         this.confirmationController.request({
           toolId: req.toolId,
@@ -570,9 +619,34 @@ export default class LeoPlugin extends Plugin {
           focusedContext: this.focusedContext,
           streamStarter,
           messageStore: this.chatMessageStore,
+          ...(this.threadsStore !== null
+            ? { threadsSource: this.buildThreadsSource(this.threadsStore) }
+            : {}),
           confirmationController: this.confirmationController,
           acceptRejectController: this.acceptRejectController,
-          skillPickerSource: this.buildSkillPickerSource(),
+          skillSlash: {
+            list: () =>
+              this.skillRegistry.availableSkills().map((skill) => ({
+                name: skill.name,
+                description: skill.description,
+                ...(skill.whenToUse !== undefined ? { whenToUse: skill.whenToUse } : {}),
+              })),
+            run: async (name, args) => {
+              const processed = await slashProcessor.process({
+                skillName: name,
+                args,
+                agentId: MAIN_AGENT_ID,
+                trigger: 'user',
+                invocationContext: { threadId: DEFAULT_THREAD_ID },
+              });
+              if (!processed.ok) {
+                new Notice(`Skill failed: ${processed.error}`);
+                return null;
+              }
+              const content = processed.messages.map((m) => m.content).join('\n\n');
+              return content;
+            },
+          },
           planMode: {
             enter: () => this.planModeController.enterPlan(DEFAULT_THREAD_ID),
             exit: () => this.planModeController.exitPlan(DEFAULT_THREAD_ID),
@@ -650,14 +724,15 @@ export default class LeoPlugin extends Plugin {
 
   override async onunload(): Promise<void> {
     this.logger?.info('plugin.unload', {});
+    this.threadsSubUnsub?.();
+    this.threadsSubUnsub = null;
     this.chatStoreUnsub?.();
     this.chatStoreUnsub = null;
     try {
-      await this.conversationStore?.flush();
+      await this.threadsStore?.shutdown();
     } catch {
       /* logged by store */
     }
-    this.conversationStore?.dispose();
     this.confirmationController?.dispose();
     this.acceptRejectController?.dispose();
     this.agentRunner?.dispose();
@@ -688,6 +763,20 @@ export default class LeoPlugin extends Plugin {
       /* logged by wiring */
     }
     await this.sink?.flush();
+  }
+
+  private buildThreadsSource(store: ThreadsStore): ThreadsSource {
+    return {
+      subscribe: (cb) => store.subscribe(cb),
+      getSnapshot: () => store.getSnapshot(),
+      create: async () => {
+        const id = await store.create();
+        return id;
+      },
+      switch: (id) => store.switch(id),
+      rename: (id, title) => store.rename(id, title),
+      delete: (id) => store.delete(id),
+    };
   }
 
   private async analyzeContextForChat(signal: AbortSignal): Promise<ContextData> {
@@ -725,21 +814,6 @@ export default class LeoPlugin extends Plugin {
     });
   }
 
-  private resolveActiveSkill(): AgentSkill {
-    const id = this.conversationStore?.getThread().metadata.skillId ?? 'general';
-    const resolved = id !== null ? this.skillsStore?.get(id) : undefined;
-    if (resolved !== undefined) {
-      return {
-        id: resolved.id,
-        systemPrompt: resolved.systemPrompt,
-        ...(resolved.allowedTools !== undefined ? { allowedTools: resolved.allowedTools } : {}),
-        ...(resolved.defaultModel !== undefined ? { defaultModel: resolved.defaultModel } : {}),
-        examples: resolved.examples?.map((e) => `${e.user} → ${e.assistant}`) ?? [],
-      };
-    }
-    return GENERAL_SKILL;
-  }
-
   private buildIndexStatusSource(): {
     hasIndex: () => boolean;
     subscribe: (cb: () => void) => () => void;
@@ -770,26 +844,6 @@ export default class LeoPlugin extends Plugin {
         return () => {
           listeners.delete(cb);
         };
-      },
-    };
-  }
-
-  private buildSkillPickerSource(): SkillPickerSource {
-    return {
-      listSkills: () => this.skillsStore.list(),
-      currentSkillId: () => this.conversationStore.getThread().metadata.skillId ?? 'general',
-      subscribe: (cb) => {
-        this.skillListeners.add(cb);
-        return (): void => {
-          this.skillListeners.delete(cb);
-        };
-      },
-      select: (id) => {
-        this.conversationStore.mutate((prev) => {
-          if (prev.metadata.skillId === id) return prev;
-          return { ...prev, metadata: { ...prev.metadata, skillId: id } };
-        });
-        for (const l of this.skillListeners) l();
       },
     };
   }

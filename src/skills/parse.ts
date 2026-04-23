@@ -1,147 +1,252 @@
-import type { Skill, SkillExample, SkillParseResult, SkillSource } from './types';
+// Parses SKILL.md per doc §3. Frontmatter is YAML-like but intentionally small:
+// top-level scalar, boolean, number, inline array, or block list ("- item" lines).
+// Object values are captured as raw strings and ignored unless a later stage
+// claims them.
 
-export interface SkillParseOptions {
-  readonly source: SkillSource;
+import type {
+  EffortValue,
+  ShellSpec,
+  SkillArgument,
+  SkillBlueprint,
+  SkillContext,
+  SkillParseResult,
+} from './types';
+
+export interface ParsedFrontmatter {
+  readonly fields: Readonly<Record<string, unknown>>;
+  readonly body: string;
 }
 
-export function parseSkillFile(
-  contents: string,
-  filename: string,
-  opts: SkillParseOptions,
-): SkillParseResult {
-  if (filename.endsWith('.json')) return parseJsonSkill(contents, opts);
-  if (filename.endsWith('.md')) return parseMarkdownSkill(contents, opts);
-  return { ok: false, error: `unsupported skill file extension: ${filename}` };
-}
-
-function parseJsonSkill(contents: string, opts: SkillParseOptions): SkillParseResult {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(contents);
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-  return validateSkill(raw, opts);
-}
-
-function parseMarkdownSkill(contents: string, opts: SkillParseOptions): SkillParseResult {
-  const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?([\s\S]*)$/.exec(contents);
+export function parseFrontmatter(source: string): ParsedFrontmatter {
+  const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?([\s\S]*)$/.exec(source);
   if (match === null) {
-    return { ok: false, error: 'markdown skill requires YAML frontmatter' };
+    return { fields: {}, body: source.replace(/^\s+/, '') };
   }
-  const fm = match[1] ?? '';
+  const yaml = match[1] ?? '';
   const body = (match[2] ?? '').replace(/^\s+/, '').trimEnd();
-  const meta = parseSimpleYaml(fm);
-  if (!meta.ok) return { ok: false, error: meta.error };
-  const raw: Record<string, unknown> = { ...meta.value, systemPrompt: body };
-  return validateSkill(raw, opts);
+  const fields = parseSimpleYaml(yaml);
+  return { fields, body };
 }
 
-interface YamlParse {
-  readonly ok: true;
-  readonly value: Record<string, unknown>;
-}
-interface YamlFailure {
-  readonly ok: false;
-  readonly error: string;
-}
-
-function parseSimpleYaml(text: string): YamlParse | YamlFailure {
+export function parseSimpleYaml(text: string): Readonly<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
   const lines = text.split(/\r?\n/);
+  let currentKey: string | null = null;
+  let blockList: string[] | null = null;
   for (const rawLine of lines) {
-    const line = rawLine.trimEnd();
+    const line = rawLine.replace(/\s+$/, '');
     if (line.length === 0) continue;
-    if (line.startsWith('#')) continue;
+    if (/^\s*#/.test(line)) continue;
+    if (blockList !== null && /^\s+-\s+/.test(line)) {
+      const item = line.replace(/^\s+-\s+/, '');
+      blockList.push(stripQuotes(item));
+      continue;
+    }
+    if (blockList !== null) {
+      if (currentKey !== null) {
+        out[currentKey] = blockList;
+      }
+      blockList = null;
+      currentKey = null;
+    }
     const idx = line.indexOf(':');
-    if (idx < 0) return { ok: false, error: `invalid YAML line: ${line}` };
+    if (idx < 0) continue;
     const key = line.slice(0, idx).trim();
     const valueRaw = line.slice(idx + 1).trim();
-    if (key.length === 0) return { ok: false, error: 'empty YAML key' };
-    out[key] = parseYamlValue(valueRaw);
+    if (key.length === 0) continue;
+    if (valueRaw.length === 0) {
+      currentKey = key;
+      blockList = [];
+      continue;
+    }
+    out[key] = parseScalar(valueRaw);
   }
-  return { ok: true, value: out };
+  if (blockList !== null && currentKey !== null) {
+    out[currentKey] = blockList;
+  }
+  return out;
 }
 
-function parseYamlValue(raw: string): unknown {
-  if (raw.length === 0) return '';
+function parseScalar(raw: string): unknown {
   if (raw.startsWith('[') && raw.endsWith(']')) {
     const inner = raw.slice(1, -1).trim();
     if (inner.length === 0) return [];
-    return inner.split(',').map((s) => s.trim().replace(/^"|"$/g, '').replace(/^'|'$/g, ''));
+    return inner.split(',').map((s) => stripQuotes(s.trim()));
   }
-  if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
+  if (raw.startsWith('{') && raw.endsWith('}')) {
+    return raw;
+  }
+  if (/^-?\d+$/.test(raw)) return Number.parseInt(raw, 10);
+  if (/^-?\d+\.\d+$/.test(raw)) return Number.parseFloat(raw);
   if (raw === 'true') return true;
   if (raw === 'false') return false;
-  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+  if (raw === 'null' || raw === '~') return null;
+  return stripQuotes(raw);
+}
+
+function stripQuotes(raw: string): string {
+  if (raw.length < 2) return raw;
+  const first = raw[0];
+  const last = raw[raw.length - 1];
+  if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
     return raw.slice(1, -1);
   }
   return raw;
 }
 
-export function validateSkill(raw: unknown, opts: SkillParseOptions): SkillParseResult {
-  if (raw === null || typeof raw !== 'object') {
-    return { ok: false, error: 'skill root must be an object' };
-  }
-  const obj = raw as Record<string, unknown>;
-  if (typeof obj.id !== 'string' || obj.id.length === 0)
-    return { ok: false, error: 'id must be a non-empty string' };
-  if (!/^[a-z0-9][a-z0-9-]*$/i.test(obj.id))
-    return { ok: false, error: `id must be slug-like: ${obj.id}` };
-  if (typeof obj.name !== 'string' || obj.name.length === 0)
-    return { ok: false, error: 'name must be a non-empty string' };
-  if (typeof obj.description !== 'string')
-    return { ok: false, error: 'description must be a string' };
-  if (typeof obj.systemPrompt !== 'string' || obj.systemPrompt.length === 0)
-    return { ok: false, error: 'systemPrompt must be a non-empty string' };
-  const allowedTools = obj.allowedTools;
-  if (allowedTools !== undefined) {
-    if (!Array.isArray(allowedTools) || !allowedTools.every((x) => typeof x === 'string')) {
-      return { ok: false, error: 'allowedTools must be string[]' };
-    }
-  }
-  const defaultModel = obj.defaultModel;
-  if (defaultModel !== undefined && typeof defaultModel !== 'string') {
-    return { ok: false, error: 'defaultModel must be a string' };
-  }
-  const examples = obj.examples;
-  let normalizedExamples: readonly SkillExample[] | undefined;
-  if (examples !== undefined) {
-    if (!Array.isArray(examples)) return { ok: false, error: 'examples must be an array' };
-    const out: SkillExample[] = [];
-    for (const entry of examples) {
-      if (entry === null || typeof entry !== 'object')
-        return { ok: false, error: 'invalid example' };
-      const e = entry as Record<string, unknown>;
-      if (typeof e.user !== 'string' || typeof e.assistant !== 'string') {
-        return { ok: false, error: 'example requires string user + assistant' };
-      }
-      out.push({ user: e.user, assistant: e.assistant });
-    }
-    normalizedExamples = out;
-  }
-  const skill: Skill = {
-    id: obj.id,
-    name: obj.name,
-    description: obj.description,
-    systemPrompt: obj.systemPrompt,
-    source: opts.source,
-    ...(allowedTools !== undefined ? { allowedTools: allowedTools as readonly string[] } : {}),
-    ...(normalizedExamples !== undefined ? { examples: normalizedExamples } : {}),
-    ...(defaultModel !== undefined ? { defaultModel: defaultModel as string } : {}),
-  };
-  return { ok: true, skill };
+export interface ParseSkillOptions {
+  readonly canonicalName: string;
 }
 
-export function serializeSkillJson(skill: Skill): string {
-  const raw: Record<string, unknown> = {
-    id: skill.id,
-    name: skill.name,
-    description: skill.description,
-    systemPrompt: skill.systemPrompt,
+export function parseSkillMarkdown(source: string, opts: ParseSkillOptions): SkillParseResult {
+  const { fields, body } = parseFrontmatter(source);
+  if (body.length === 0) {
+    return { ok: false, error: 'skill body is empty' };
+  }
+
+  const nameField = typeof fields['name'] === 'string' ? (fields['name'] as string) : undefined;
+  const description = deriveDescription(fields, body);
+  if (description === null) {
+    return { ok: false, error: 'skill description is missing' };
+  }
+  const paths = asStringArray(fields['paths']);
+  const normalizedPaths = paths !== undefined ? normalizePaths(paths) : undefined;
+  const argumentNames = asStringArray(fields['arguments']);
+  const allowedTools =
+    asStringArray(fields['allowed-tools']) ?? asStringArray(fields['allowedTools']) ?? [];
+  const whenToUse = pickString(fields, 'when_to_use', 'whenToUse');
+  const argumentHint = pickString(fields, 'argument-hint', 'argumentHint');
+  const modelRaw = pickString(fields, 'model');
+  const model = modelRaw === 'inherit' ? undefined : modelRaw;
+  const effort = parseEffort(fields['effort']);
+  const context = parseContext(fields['context']);
+  const agent = pickString(fields, 'agent');
+  const version = pickString(fields, 'version');
+  const shell = parseShellSpec(fields['shell']);
+  const disableModelInvocation =
+    pickBoolean(fields, 'disable-model-invocation', 'disableModelInvocation') ?? false;
+  const userInvocable = pickBoolean(fields, 'user-invocable', 'userInvocable') ?? true;
+  const aliases = asStringArray(fields['aliases']);
+
+  const blueprint: SkillBlueprint = {
+    name: opts.canonicalName,
+    displayName: nameField ?? opts.canonicalName,
+    description,
+    ...(whenToUse !== undefined ? { whenToUse } : {}),
+    ...(aliases !== undefined ? { aliases } : {}),
+    ...(argumentHint !== undefined ? { argumentHint } : {}),
+    ...(argumentNames !== undefined ? { argNames: argumentNames } : {}),
+    allowedTools,
+    ...(model !== undefined ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
+    ...(context !== undefined ? { context } : {}),
+    ...(agent !== undefined ? { agent } : {}),
+    ...(normalizedPaths !== undefined ? { paths: normalizedPaths } : {}),
+    ...(shell !== undefined ? { shell } : {}),
+    disableModelInvocation,
+    userInvocable,
+    ...(version !== undefined ? { version } : {}),
+    body,
   };
-  if (skill.allowedTools !== undefined) raw.allowedTools = [...skill.allowedTools];
-  if (skill.examples !== undefined) raw.examples = skill.examples.map((e) => ({ ...e }));
-  if (skill.defaultModel !== undefined) raw.defaultModel = skill.defaultModel;
-  return JSON.stringify(raw, null, 2);
+  return { ok: true, skill: blueprint };
+}
+
+function deriveDescription(fields: Readonly<Record<string, unknown>>, body: string): string | null {
+  const declared =
+    typeof fields['description'] === 'string' ? (fields['description'] as string) : '';
+  if (declared.trim().length > 0) return declared.trim();
+  const firstSentence = body
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith('#'))[0];
+  if (firstSentence === undefined) return null;
+  const end = firstSentence.match(/[.!?]/)?.index;
+  return end !== undefined ? firstSentence.slice(0, end + 1) : firstSentence;
+}
+
+function asStringArray(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item === 'string' && item.length > 0) out.push(item);
+  }
+  return out;
+}
+
+function pickString(
+  fields: Readonly<Record<string, unknown>>,
+  ...keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = fields[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+function pickBoolean(
+  fields: Readonly<Record<string, unknown>>,
+  ...keys: string[]
+): boolean | undefined {
+  for (const key of keys) {
+    const value = fields[key];
+    if (typeof value === 'boolean') return value;
+  }
+  return undefined;
+}
+
+function parseEffort(value: unknown): EffortValue | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    if (value === 'low' || value === 'medium' || value === 'high') return value;
+    const asNumber = Number.parseInt(value, 10);
+    if (!Number.isNaN(asNumber)) return asNumber;
+  }
+  return undefined;
+}
+
+function parseContext(value: unknown): SkillContext | undefined {
+  if (value === 'fork' || value === 'inline') return value;
+  return undefined;
+}
+
+function parseShellSpec(value: unknown): ShellSpec | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string') {
+    const match = /timeoutMs\s*:\s*(\d+)/.exec(value);
+    if (match !== null) return { timeoutMs: Number.parseInt(match[1]!, 10) };
+    return undefined;
+  }
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const timeout = typeof obj['timeoutMs'] === 'number' ? (obj['timeoutMs'] as number) : undefined;
+    const allowed = Array.isArray(obj['allowedCommands'])
+      ? (obj['allowedCommands'] as unknown[]).filter((x): x is string => typeof x === 'string')
+      : undefined;
+    if (timeout === undefined && allowed === undefined) return undefined;
+    return {
+      ...(timeout !== undefined ? { timeoutMs: timeout } : {}),
+      ...(allowed !== undefined ? { allowedCommands: allowed } : {}),
+    };
+  }
+  return undefined;
+}
+
+export function normalizePaths(paths: readonly string[]): readonly string[] {
+  const out: string[] = [];
+  for (const raw of paths) {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) continue;
+    if (trimmed === '**' || trimmed === '**/*') continue;
+    out.push(trimmed.endsWith('/**') ? trimmed.slice(0, -3) : trimmed);
+  }
+  return out;
+}
+
+// Stable helper kept to ease tests that want to pull a single argument name.
+export function getArgument(blueprint: SkillBlueprint, index: number): SkillArgument | undefined {
+  const name = blueprint.argNames?.[index];
+  if (name === undefined) return undefined;
+  return { name };
 }

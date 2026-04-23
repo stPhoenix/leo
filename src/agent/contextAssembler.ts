@@ -5,25 +5,24 @@ import {
   type AssembledPrompt,
   type AssembledPromptSegments,
   type RagHit,
-  type Skill,
+  type SkillListingSegment,
 } from './types';
 import type { ChatMessage } from '@/providers/types';
 
 export interface AssembleInput {
-  readonly skill: Skill;
   readonly focus: FocusedContext;
   readonly ragHits: readonly RagHit[];
   readonly history: readonly AgentHistoryMessage[];
+  readonly skillListing?: SkillListingSegment | null;
 }
 
 export function assembleContext(input: AssembleInput): AssembledPrompt {
   const activeNote = deriveActiveNote(input.focus);
   const segments: AssembledPromptSegments = {
-    skillSystem: input.skill.systemPrompt,
     activeNote,
     ragHits: input.ragHits,
     history: input.history,
-    skillExamples: input.skill.examples ?? [],
+    skillListing: input.skillListing ?? null,
   };
   return { segments, focus: input.focus };
 }
@@ -45,17 +44,20 @@ function deriveActiveNote(focus: FocusedContext): string | null {
 
 export function renderPrompt(prompt: AssembledPrompt): ChatMessage[] {
   const { segments } = prompt;
-  const systemParts: string[] = [LEO_PREAMBLE, segments.skillSystem];
+  const systemParts: string[] = [LEO_PREAMBLE];
   if (segments.activeNote !== null) {
     systemParts.push(segments.activeNote);
   }
   if (segments.ragHits.length > 0) {
     systemParts.push(renderRagHits(segments.ragHits));
   }
-  if (segments.skillExamples.length > 0) {
-    systemParts.push('Examples:\n' + segments.skillExamples.map((e) => `- ${e}`).join('\n'));
-  }
   const out: ChatMessage[] = [{ role: 'system', content: systemParts.join('\n\n') }];
+  if (segments.skillListing !== null && segments.skillListing.skillCount > 0) {
+    out.push({
+      role: 'system',
+      content: `<system-reminder>\n${segments.skillListing.content}\n</system-reminder>`,
+    });
+  }
   for (const msg of segments.history) {
     out.push({ role: msg.role, content: msg.content });
   }

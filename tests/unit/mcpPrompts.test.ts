@@ -1,12 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CompositeSkillSource,
   McpPromptCache,
-  adaptPromptToSkill,
   resolvePromptBody,
   type McpPromptEnvelope,
 } from '@/mcp/promptSkillAdapter';
-import type { Skill } from '@/agent/types';
 import {
   MCPClient,
   type McpPromptContent,
@@ -41,22 +38,7 @@ class NullSafeStorage implements SafeStorageLike {
   }
 }
 
-describe('adaptPromptToSkill — AC2', () => {
-  it('maps prompt descriptor to Skill with namespaced id + source=mcp + empty systemPrompt', () => {
-    const env: McpPromptEnvelope = {
-      serverId: 'ide',
-      prompt: { name: 'explain_code', description: 'walk through code' },
-    };
-    const skill = adaptPromptToSkill(env);
-    expect(skill.id).toBe('mcp.ide.explain_code');
-    expect(skill.source).toBe('mcp');
-    expect(skill.mcpServerId).toBe('ide');
-    expect(skill.systemPrompt).toBe('');
-    expect(skill.resolved).toBe(false);
-  });
-});
-
-describe('resolvePromptBody — AC3', () => {
+describe('resolvePromptBody', () => {
   it('concatenates description + messages by role', () => {
     const content: McpPromptContent = {
       description: 'Code explainer prompt',
@@ -86,20 +68,7 @@ describe('McpPromptCache', () => {
   });
 });
 
-describe('CompositeSkillSource — AC1', () => {
-  it('merges built-in + MCP-adapted skills, MCP appended after', () => {
-    const builtIn = [{ id: 'general', systemPrompt: 'hi' } as Skill];
-    const mcpEnvs: McpPromptEnvelope[] = [
-      { serverId: 's1', prompt: { name: 'a' } },
-      { serverId: 's1', prompt: { name: 'b' } },
-    ];
-    const src = new CompositeSkillSource({ list: () => builtIn }, { list: () => mcpEnvs });
-    const all = src.list();
-    expect(all.map((s) => s.id)).toEqual(['general', 'mcp.s1.a', 'mcp.s1.b']);
-  });
-});
-
-describe('MCPClient.getPrompt — AC3/AC6/AC7', () => {
+describe('MCPClient.getPrompt', () => {
   function makeFactory(
     handlers: Record<
       string,
@@ -178,3 +147,7 @@ describe('MCPClient.getPrompt — AC3/AC6/AC7', () => {
     expect(records.some((r) => r.event === 'skill.mcp.resolve.err')).toBe(true);
   });
 });
+
+// Suppress unused-import lint for the envelope type (kept for doc purposes).
+const _envelope: McpPromptEnvelope | null = null;
+void _envelope;

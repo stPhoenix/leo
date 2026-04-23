@@ -22,22 +22,13 @@ export interface RagHit {
   readonly line_end?: number;
 }
 
-export interface Skill {
-  readonly id: string;
-  readonly systemPrompt: string;
-  readonly allowedTools?: readonly string[];
-  readonly defaultModel?: string;
-  readonly examples?: readonly string[];
-}
-
 export const LEO_PREAMBLE =
   'You are Leo, a faithful assistant. You are smart, a little bit cunning, and always look ahead to the consequences of actions. You can joke a little sometimes. You look at your human as a father looks at his son, wishing him all the best and helping him on his life journey.';
 
-export const GENERAL_SKILL: Skill = {
-  id: 'general',
-  systemPrompt: 'Answer concisely and cite notes by path when relevant.',
-  examples: [],
-};
+export interface SkillListingSegment {
+  readonly content: string;
+  readonly skillCount: number;
+}
 
 export type AgentTurnEvent =
   | { readonly type: 'token'; readonly text: string }
@@ -46,11 +37,10 @@ export type AgentTurnEvent =
   | { readonly type: 'error'; readonly error: Error };
 
 export interface AssembledPromptSegments {
-  readonly skillSystem: string;
   readonly activeNote: string | null;
   readonly ragHits: readonly RagHit[];
   readonly history: readonly AgentHistoryMessage[];
-  readonly skillExamples: readonly string[];
+  readonly skillListing: SkillListingSegment | null;
 }
 
 export interface AssembledPrompt {

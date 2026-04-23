@@ -23,6 +23,7 @@ import { makeInlineConfirmationSource } from './chat/InlineConfirmation';
 import { makeAcceptRejectSource } from './chat/InlineDialog';
 import { makePlanApprovalSource } from './chat/PlanApprovalDialog';
 import type { SkillPickerSource } from './chat/SkillPicker';
+import type { ThreadsSnapshot } from '@/storage/threadsStore';
 import { ChatRoot } from './chat/ChatRoot';
 import type { CodeBlockClipboard } from './chat/codeBlockEnhancer';
 import { TurnDispatcher } from './chat/turnDispatcher';
@@ -43,9 +44,19 @@ export interface ChatPlanModeAdapter {
   exit?(): void;
 }
 
+export interface ThreadsSource {
+  readonly subscribe: (cb: () => void) => () => void;
+  readonly getSnapshot: () => ThreadsSnapshot;
+  readonly create: () => Promise<string>;
+  readonly switch: (id: string) => Promise<void>;
+  readonly rename: (id: string, title: string) => Promise<void>;
+  readonly delete: (id: string) => Promise<void>;
+}
+
 export interface ChatViewDeps {
   readonly logger?: Logger;
   readonly messageStore?: ChatMessageStore;
+  readonly threadsSource?: ThreadsSource;
   readonly streamStarter?: ChatStreamStarter;
   readonly focusedContext?: FocusedContextChannel;
   readonly confirmationController?: ConfirmationController;
@@ -58,6 +69,18 @@ export interface ChatViewDeps {
   readonly onIndexVault?: () => void;
   readonly planApprovalController?: PlanApprovalController;
   readonly resolveCostUSD?: (usage: { input: number; output: number }) => number | null;
+  readonly skillSlash?: SkillSlashAdapter;
+}
+
+export interface SkillSlashCommandInfo {
+  readonly name: string;
+  readonly description: string;
+  readonly whenToUse?: string;
+}
+
+export interface SkillSlashAdapter {
+  readonly list: () => readonly SkillSlashCommandInfo[];
+  readonly run: (name: string, args: string) => Promise<string | null>;
 }
 
 export class ChatView extends ItemView {
@@ -200,6 +223,9 @@ export class ChatView extends ItemView {
         ...(this.deps.skillPickerSource !== undefined
           ? { skillPickerSource: this.deps.skillPickerSource }
           : {}),
+        ...(this.deps.threadsSource !== undefined
+          ? { threadsSource: this.deps.threadsSource }
+          : {}),
         ...(this.deps.indexStatusSource !== undefined
           ? { indexStatusSource: this.deps.indexStatusSource }
           : {}),
@@ -297,6 +323,25 @@ export class ChatView extends ItemView {
         description: 'Enter plan mode (read-only tools until ExitPlanMode)',
         run: () => planMode.enter(),
       });
+    }
+    const skillSlash = this.deps.skillSlash;
+    if (skillSlash !== undefined) {
+      for (const cmd of skillSlash.list()) {
+        const description =
+          cmd.whenToUse !== undefined && cmd.whenToUse.length > 0
+            ? `${cmd.description} — ${cmd.whenToUse}`
+            : cmd.description;
+        registry.register({
+          name: cmd.name,
+          description,
+          match: (ctx) => ctx.name === cmd.name.toLowerCase(),
+          run: async (ctx): Promise<void> => {
+            const content = await skillSlash.run(cmd.name, ctx.args);
+            if (content === null) return;
+            this.beginTurn(content);
+          },
+        });
+      }
     }
     const analyze = this.deps.analyzeContext;
     if (analyze !== undefined) {

@@ -7,13 +7,20 @@ export const THREADS_DIR = '.leo/conversations';
 export const TRASH_SUBDIR = '.trash';
 export const DEFAULT_UNDO_WINDOW_MS = 10_000;
 export const DEFAULT_THREAD_TITLE = 'New thread';
-export const DEFAULT_SKILL_ID = 'general';
+// Skills no longer bind to threads (doc §1 model). Kept as a deprecated export
+// while downstream consumers migrate off the constant.
+export const DEFAULT_SKILL_ID = null;
 
 export interface ThreadSummary {
   readonly id: string;
   readonly title: string;
   readonly updatedAt: string;
   readonly messageCount: number;
+}
+
+export interface ThreadsSnapshot {
+  readonly activeId: string | null;
+  readonly summaries: readonly ThreadSummary[];
 }
 
 export interface ActiveIdPersistence {
@@ -60,6 +67,9 @@ export class ThreadsStore {
   private readonly storeCache = new Map<string, ConversationStore>();
   private readonly pendingDeletions = new Map<string, PendingDeletion>();
   private activeId: string | null = null;
+  private cachedSnapshot: ThreadsSnapshot = { activeId: null, summaries: [] };
+  private readonly subscribers = new Set<() => void>();
+  private refreshing: Promise<void> | null = null;
 
   constructor(opts: ThreadsStoreOptions) {
     this.adapter = opts.adapter;
@@ -99,16 +109,49 @@ export class ThreadsStore {
     const summaries = await this.list();
     if (stored !== null && summaries.some((s) => s.id === stored)) {
       await this.setActive(stored);
+      await this.refreshSnapshot();
       return stored;
     }
     if (summaries.length > 0) {
       const freshest = summaries[0]!;
       await this.setActive(freshest.id);
       this.logger.info('thread.fallback', { id: freshest.id, reason: 'stored-missing' });
+      await this.refreshSnapshot();
       return freshest.id;
     }
     const created = await this.create();
     return created;
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.subscribers.add(listener);
+    return () => {
+      this.subscribers.delete(listener);
+    };
+  }
+
+  getSnapshot = (): ThreadsSnapshot => this.cachedSnapshot;
+
+  async refreshSnapshot(): Promise<void> {
+    if (this.refreshing !== null) {
+      await this.refreshing;
+      return;
+    }
+    const run = (async (): Promise<void> => {
+      try {
+        const summaries = await this.list();
+        this.cachedSnapshot = { activeId: this.activeId, summaries };
+        this.notify();
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    this.refreshing = run;
+    await run;
+  }
+
+  private notify(): void {
+    for (const l of this.subscribers) l();
   }
 
   async list(): Promise<readonly ThreadSummary[]> {
@@ -148,7 +191,6 @@ export class ThreadsStore {
       ...emptyThread(id, nowIso),
       metadata: {
         allowedTools: [],
-        skillId: DEFAULT_SKILL_ID,
         title: DEFAULT_THREAD_TITLE,
       },
     };
@@ -156,6 +198,7 @@ export class ThreadsStore {
     await this.adapter.write(this.pathFor(id), serializeThread(fresh));
     await this.setActive(id);
     this.logger.info('thread.create', { id });
+    await this.refreshSnapshot();
     return id;
   }
 
@@ -168,6 +211,7 @@ export class ThreadsStore {
     }
     await this.setActive(id);
     this.logger.info('thread.switch', { id });
+    await this.refreshSnapshot();
   }
 
   async rename(id: string, name: string): Promise<void> {
@@ -180,6 +224,7 @@ export class ThreadsStore {
     }));
     await store.flush();
     this.logger.info('thread.rename', { id });
+    await this.refreshSnapshot();
   }
 
   async delete(id: string): Promise<void> {
@@ -222,8 +267,10 @@ export class ThreadsStore {
         await this.setActive(remaining[0]!.id);
       } else {
         await this.create();
+        return;
       }
     }
+    await this.refreshSnapshot();
   }
 
   async restore(id: string): Promise<void> {
@@ -238,6 +285,7 @@ export class ThreadsStore {
     await this.adapter.rename(trashPath, target);
     await this.setActive(id);
     this.logger.info('thread.delete.undo', { id });
+    await this.refreshSnapshot();
   }
 
   activeIdOrNull(): string | null {
