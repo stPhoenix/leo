@@ -32,6 +32,12 @@ export type ToolResult<T = unknown> =
   | { readonly ok: true; readonly data: T }
   | { readonly ok: false; readonly error: string };
 
+export interface ToolProgressEvent {
+  readonly kind: 'bash' | 'web_search' | 'task_output' | 'mcp' | 'agent' | 'skill';
+  readonly toolUseId: string;
+  readonly [key: string]: unknown;
+}
+
 export interface ToolCtx {
   readonly thread: string;
   readonly signal: AbortSignal;
@@ -39,6 +45,11 @@ export interface ToolCtx {
   readonly editor: EditNoteBridge;
   readonly logger?: Logger;
   readonly agentId?: string | null;
+  readonly progress?: (event: ToolProgressEvent) => void;
+}
+
+export interface ToolSpecBase {
+  readonly isReadOnly?: boolean;
 }
 
 export type ToolSource = 'builtin' | 'user' | 'mcp';
@@ -47,7 +58,7 @@ export interface ToolValidate<TArgs> {
   (raw: unknown): ToolResult<TArgs>;
 }
 
-export interface ToolSpec<TArgs = unknown, TData = unknown> {
+export interface ToolSpec<TArgs = unknown, TData = unknown> extends ToolSpecBase {
   readonly id: string;
   readonly description: string;
   readonly schema: z.ZodType<TArgs>;

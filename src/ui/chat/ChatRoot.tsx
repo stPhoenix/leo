@@ -4,7 +4,7 @@ import { ContextIndicator, type ContextIndicatorSource } from './ContextIndicato
 import { MessageList, type MarkdownRenderFn } from './MessageList';
 import type { MessageActions } from './MessageActionBar';
 import { ComposerInput, type ComposerInputProps } from './ComposerInput';
-import { InlineConfirmation, type InlineConfirmationSource } from './InlineConfirmation';
+import type { InlineConfirmationSource } from './InlineConfirmation';
 import { InlineDialog, type AcceptRejectSource } from './InlineDialog';
 import {
   PlanApprovalDialog,
@@ -18,6 +18,9 @@ import { isCollapsed } from '../responsiveCollapse';
 import type { ChatMessageStore } from '@/chat/messageStore';
 import type { StreamingPhase } from '@/chat/streamingController';
 import type { CodeBlockClipboard } from './codeBlockEnhancer';
+import type { ToolUseBlockSlots } from './blocks';
+import type { RunStateSource } from './blocks/toolUseStatus';
+import { BottomLiveIndicator } from './BottomLiveIndicator';
 
 export type ComposerHooks = Partial<Omit<ComposerInputProps, 'collapsed' | 'setIcon'>>;
 
@@ -56,6 +59,11 @@ export interface ChatRootProps {
   readonly onReindexAll?: () => void;
   readonly onReindexChanged?: () => void;
   readonly resolveCostUSD?: (usage: { input: number; output: number }) => number | null;
+  readonly toolUseSlots?: ToolUseBlockSlots;
+  readonly liveIndicatorRunState?: RunStateSource;
+  readonly lastEventAtSource?: () => number | null;
+  readonly onCancelLive?: () => void;
+  readonly resolveToolName?: (id: string) => string;
 }
 
 const STATIC_IDLE_PHASE: StreamingPhase = 'idle';
@@ -132,9 +140,7 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
         {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
         {...(props.messageActions !== undefined ? { actions: props.messageActions } : {})}
         {...(props.resolveCostUSD !== undefined ? { resolveCostUSD: props.resolveCostUSD } : {})}
-      />
-      <InlineConfirmation
-        {...(props.confirmationSource !== undefined ? { source: props.confirmationSource } : {})}
+        {...(props.toolUseSlots !== undefined ? { toolUseSlots: props.toolUseSlots } : {})}
       />
       <InlineDialog
         {...(props.acceptRejectSource !== undefined ? { source: props.acceptRejectSource } : {})}
@@ -144,6 +150,18 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
         {...(props.renderPlanMarkdown !== undefined
           ? { renderMarkdown: props.renderPlanMarkdown }
           : {})}
+      />
+      <BottomLiveIndicator
+        messageStore={props.messageStore}
+        phaseSource={phaseSource}
+        {...(props.liveIndicatorRunState !== undefined
+          ? { runState: props.liveIndicatorRunState }
+          : {})}
+        {...(props.lastEventAtSource !== undefined
+          ? { lastEventAtSource: props.lastEventAtSource }
+          : {})}
+        {...(props.onCancelLive !== undefined ? { onCancel: props.onCancelLive } : {})}
+        {...(props.resolveToolName !== undefined ? { resolveToolName: props.resolveToolName } : {})}
       />
       <ComposerInput
         collapsed={collapsed}

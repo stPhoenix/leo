@@ -15,6 +15,62 @@ import { ToolRegistry } from '@/tools/toolRegistry';
 import type { ToolSpec } from '@/tools/types';
 import { CLEARED_CONTENT_MARKER } from '@/agent/microcompact';
 
+function expandLegacyEvents(events: readonly StreamEvent[]): StreamEvent[] {
+  const out: StreamEvent[] = [];
+  let textIdx = -1;
+  let textOpen = false;
+  let nextIdx = 0;
+  let pendingUsage: { input: number; output: number } | null = null;
+  for (const ev of events) {
+    if (ev.type === 'token') {
+      if (!textOpen) {
+        textIdx = nextIdx;
+        nextIdx += 1;
+        textOpen = true;
+        out.push({ type: 'block_start', index: textIdx, block: { type: 'text' } });
+      }
+      out.push({
+        type: 'block_delta',
+        index: textIdx,
+        delta: { type: 'text_delta', text: ev.text },
+      });
+    } else if (ev.type === 'tool_call') {
+      const idx = nextIdx;
+      nextIdx += 1;
+      out.push({
+        type: 'block_start',
+        index: idx,
+        block: { type: 'tool_use', id: ev.call.id, name: ev.call.name },
+      });
+      if (ev.call.argsJson.length > 0) {
+        out.push({
+          type: 'block_delta',
+          index: idx,
+          delta: { type: 'input_json_delta', partial_json: ev.call.argsJson },
+        });
+      }
+      out.push({ type: 'block_stop', index: idx });
+    } else if (ev.type === 'usage') {
+      pendingUsage = { input: ev.input, output: ev.output };
+    } else if (ev.type === 'done' || ev.type === 'error') {
+      if (textOpen) {
+        out.push({ type: 'block_stop', index: textIdx });
+        textOpen = false;
+      }
+      if (pendingUsage !== null) {
+        out.push({ type: 'message_delta', usage: pendingUsage });
+        pendingUsage = null;
+      }
+      out.push(ev);
+    } else {
+      out.push(ev);
+    }
+  }
+  if (textOpen) out.push({ type: 'block_stop', index: textIdx });
+  if (pendingUsage !== null) out.push({ type: 'message_delta', usage: pendingUsage });
+  return out;
+}
+
 class SequencedProvider implements AgentRunnerProvider {
   readonly calls: ProviderChatRequest[] = [];
   private readonly rounds: StreamEvent[][];
@@ -25,7 +81,7 @@ class SequencedProvider implements AgentRunnerProvider {
   async *stream(req: ProviderChatRequest): AsyncIterable<StreamEvent> {
     this.calls.push({ ...req, messages: [...req.messages] });
     const events = this.rounds[this.idx++] ?? [{ type: 'done' }];
-    for (const ev of events) yield ev;
+    for (const ev of expandLegacyEvents(events)) yield ev;
   }
 }
 

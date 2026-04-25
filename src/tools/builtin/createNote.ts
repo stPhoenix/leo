@@ -11,6 +11,8 @@ export interface CreateNoteArgs {
 export interface CreateNoteResult {
   readonly path: string;
   readonly bytesWritten: number;
+  readonly before: string;
+  readonly after: string;
 }
 
 const CreateNoteSchema: z.ZodType<CreateNoteArgs> = z
@@ -57,7 +59,12 @@ export function createCreateNoteTool(): ToolSpec<CreateNoteArgs, CreateNoteResul
         await ctx.vault.write(args.path, args.content);
         return {
           ok: true,
-          data: { path: args.path, bytesWritten: byteLength(args.content) },
+          data: {
+            path: args.path,
+            bytesWritten: byteLength(args.content),
+            before: '',
+            after: args.content,
+          },
         };
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };

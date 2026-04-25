@@ -212,6 +212,16 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_p, n) => n,
     default: () => false,
   }),
+  /**
+   * Running offset added to every block_* index forwarded to the UI channel,
+   * so successive callModel iterations within the same turn write to fresh
+   * indices instead of overwriting earlier blocks (e.g. tool_use from
+   * iteration 1 vs final text from iteration 2).
+   */
+  blockIndexOffset: Annotation<number>({
+    reducer: (_p, n) => n,
+    default: () => 0,
+  }),
 });
 
 export type AgentState = typeof AgentStateAnnotation.State;
@@ -441,6 +451,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       roundTrip: 0,
       turnHadToolCall: false,
       turnCalledTodoWrite: false,
+      blockIndexOffset: 0,
       cancelled: false,
       errored: false,
     };
@@ -484,17 +495,41 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     };
     const pendingToolCalls: ToolCallRequest[] = [];
     let iterationAssistant = '';
+    const offset = state.blockIndexOffset;
+    let maxIndexInIteration = -1;
     try {
+      const toolBufs = new Map<number, { id: string; name: string; args: string }>();
       for await (const ev of deps.provider.stream(req, turn.signal)) {
         if (turn.signal.aborted) break;
-        if (ev.type === 'token') {
-          iterationAssistant += ev.text;
-          turn.events.push({ type: 'token', text: ev.text });
-        } else if (ev.type === 'tool_call') {
-          pendingToolCalls.push(ev.call);
-          turn.events.push({ type: 'tool_call', call: ev.call });
-        } else if (ev.type === 'usage') {
-          turn.events.push({ type: 'usage', input: ev.input, output: ev.output });
+        if (ev.type === 'block_start') {
+          if (ev.block.type === 'tool_use') {
+            toolBufs.set(ev.index, { id: ev.block.id, name: ev.block.name, args: '' });
+          }
+          if (ev.index > maxIndexInIteration) maxIndexInIteration = ev.index;
+          turn.events.push({ ...ev, index: ev.index + offset });
+        } else if (ev.type === 'block_delta') {
+          if (ev.delta.type === 'text_delta') {
+            iterationAssistant += ev.delta.text;
+          } else if (ev.delta.type === 'input_json_delta') {
+            const buf = toolBufs.get(ev.index);
+            if (buf !== undefined) buf.args += ev.delta.partial_json;
+          }
+          if (ev.index > maxIndexInIteration) maxIndexInIteration = ev.index;
+          turn.events.push({ ...ev, index: ev.index + offset });
+        } else if (ev.type === 'block_stop') {
+          const buf = toolBufs.get(ev.index);
+          if (buf !== undefined) {
+            pendingToolCalls.push({
+              id: buf.id,
+              name: buf.name,
+              argsJson: buf.args.length === 0 ? '{}' : buf.args,
+            });
+            toolBufs.delete(ev.index);
+          }
+          if (ev.index > maxIndexInIteration) maxIndexInIteration = ev.index;
+          turn.events.push({ ...ev, index: ev.index + offset });
+        } else if (ev.type === 'message_delta' || ev.type === 'progress') {
+          turn.events.push(ev);
         } else if (ev.type === 'error') {
           turn.events.push({ type: 'error', error: ev.error });
           deps.logger.error('agent.turn.done', {
@@ -526,12 +561,14 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     for (const c of pendingToolCalls) {
       if (c.name === 'TodoWrite') turnCalledTodoWrite = true;
     }
+    const nextOffset = maxIndexInIteration >= 0 ? offset + maxIndexInIteration + 1 : offset;
     return {
       assistantText: state.assistantText + iterationAssistant,
       iterationAssistantText: iterationAssistant,
       pendingToolCalls,
       turnHadToolCall: state.turnHadToolCall || pendingToolCalls.length > 0,
       turnCalledTodoWrite,
+      blockIndexOffset: nextOffset,
     };
   };
 

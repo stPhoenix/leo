@@ -19,6 +19,65 @@ interface PlannedTurn {
   readonly onStart?: (req: ProviderChatRequest, signal: AbortSignal) => void;
 }
 
+/** Translate a legacy event sequence to the block-shaped stream the providers now emit. */
+function expandLegacyEvents(events: readonly StreamEvent[]): StreamEvent[] {
+  const out: StreamEvent[] = [];
+  let textIdx = -1;
+  let textOpen = false;
+  let nextIdx = 0;
+  const toolByLegacyId = new Map<string, number>();
+  let pendingUsage: { input: number; output: number } | null = null;
+  for (const ev of events) {
+    if (ev.type === 'token') {
+      if (!textOpen) {
+        textIdx = nextIdx;
+        nextIdx += 1;
+        textOpen = true;
+        out.push({ type: 'block_start', index: textIdx, block: { type: 'text' } });
+      }
+      out.push({
+        type: 'block_delta',
+        index: textIdx,
+        delta: { type: 'text_delta', text: ev.text },
+      });
+    } else if (ev.type === 'tool_call') {
+      const idx = nextIdx;
+      nextIdx += 1;
+      toolByLegacyId.set(ev.call.id, idx);
+      out.push({
+        type: 'block_start',
+        index: idx,
+        block: { type: 'tool_use', id: ev.call.id, name: ev.call.name },
+      });
+      if (ev.call.argsJson.length > 0) {
+        out.push({
+          type: 'block_delta',
+          index: idx,
+          delta: { type: 'input_json_delta', partial_json: ev.call.argsJson },
+        });
+      }
+      out.push({ type: 'block_stop', index: idx });
+    } else if (ev.type === 'usage') {
+      pendingUsage = { input: ev.input, output: ev.output };
+    } else if (ev.type === 'done' || ev.type === 'error') {
+      if (textOpen) {
+        out.push({ type: 'block_stop', index: textIdx });
+        textOpen = false;
+      }
+      if (pendingUsage !== null) {
+        out.push({ type: 'message_delta', usage: pendingUsage });
+        pendingUsage = null;
+      }
+      out.push(ev);
+    } else {
+      out.push(ev);
+    }
+  }
+  if (textOpen) out.push({ type: 'block_stop', index: textIdx });
+  if (pendingUsage !== null) out.push({ type: 'message_delta', usage: pendingUsage });
+  return out;
+}
+
 class FakeProvider implements AgentRunnerProvider {
   readonly calls: ProviderChatRequest[] = [];
   readonly signals: AbortSignal[] = [];
@@ -41,7 +100,8 @@ class FakeProvider implements AgentRunnerProvider {
     }
     const turn = this.queue.shift()!;
     turn.onStart?.(req, signal);
-    for (const ev of turn.events) {
+    const expanded = expandLegacyEvents(turn.events);
+    for (const ev of expanded) {
       if (signal.aborted) return;
       if (turn.betweenEachMs !== undefined && turn.betweenEachMs > 0) {
         await new Promise((r) => setTimeout(r, turn.betweenEachMs));
@@ -123,7 +183,14 @@ describe('AgentRunner', () => {
       ],
     });
     const events = await collect(runner.send({ role: 'user', content: 'hi' }, 't1'));
-    expect(events.map((e) => e.type)).toEqual(['token', 'token', 'usage', 'done']);
+    expect(events.map((e) => e.type)).toEqual([
+      'block_start',
+      'block_delta',
+      'block_delta',
+      'block_stop',
+      'message_delta',
+      'done',
+    ]);
     const lastDone = events[events.length - 1]!;
     expect(lastDone).toEqual({ type: 'done', cancelled: false });
     expect(records.find((r) => r.event === 'agent.turn.start')).toBeDefined();
@@ -233,7 +300,7 @@ describe('AgentRunner', () => {
     const iterator = iter[Symbol.asyncIterator]();
     const first = await iterator.next();
     expect(first.done).toBe(false);
-    expect(first.value?.type).toBe('token');
+    expect(first.value?.type).toBe('block_start');
     events.push(first.value!);
     runner.cancel('t');
     for (;;) {
@@ -390,7 +457,9 @@ describe('AgentRunner', () => {
       events: [{ type: 'token', text: 'final answer' }, { type: 'done' }],
     });
     const out = await collect(runner.send({ role: 'user', content: 'q' }, 't'));
-    const tokens = out.filter((e) => e.type === 'token').map((e) => (e as { text: string }).text);
+    const tokens = out
+      .filter((e) => e.type === 'block_delta' && e.delta.type === 'text_delta')
+      .map((e) => (e.type === 'block_delta' && e.delta.type === 'text_delta' ? e.delta.text : ''));
     expect(tokens.join('')).toBe('final answer');
     expect(provider.calls).toHaveLength(2);
     const secondCall = provider.calls[1]!.messages;
@@ -400,7 +469,7 @@ describe('AgentRunner', () => {
     expect(toolMsg.content).toContain('"ok":true');
     expect(toolMsg.content).toContain('echoed');
     const toolCallIdx = out.findIndex(
-      (e) => e.type === 'tool_call' && (e as { call: { id: string } }).call.id === 'c1',
+      (e) => e.type === 'block_start' && e.block.type === 'tool_use' && e.block.id === 'c1',
     );
     const toolResultIdx = out.findIndex(
       (e) => e.type === 'tool_result' && (e as { id: string }).id === 'c1',

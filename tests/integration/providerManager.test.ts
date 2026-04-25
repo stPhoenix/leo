@@ -1,26 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
-import { http, HttpResponse } from 'msw';
-import { LMStudioProvider } from '@/providers/lmStudioProvider';
 import { ProviderManager } from '@/providers/providerManager';
 import type { ProviderManagerOptions } from '@/providers/providerManager';
 import type { StreamEvent } from '@/providers/types';
+import type { Provider, ProviderChatRequest, ProviderModel } from '@/providers/types';
 import type { Logger } from '@/platform/Logger';
-import { chatChunk, SSE_DONE, setupMswServer } from './_mswServer';
+import { ProviderConnectError } from '@/providers/types';
 
-const ENDPOINT = 'http://127.0.0.1:1234';
-const server = setupMswServer();
+interface FakeProviderOpts {
+  readonly id?: string;
+  readonly stream: (req: ProviderChatRequest, signal: AbortSignal) => AsyncIterable<StreamEvent>;
+  readonly listModels?: () => Promise<ProviderModel[]>;
+}
 
-function sseResponse(parts: readonly string[]): Response {
-  const enc = new TextEncoder();
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const p of parts) controller.enqueue(enc.encode(p));
-      controller.close();
-    },
-  });
-  return new HttpResponse(stream, {
-    headers: { 'Content-Type': 'text/event-stream' },
-  });
+function makeFakeProvider(opts: FakeProviderOpts): Provider {
+  return {
+    id: opts.id ?? 'fake',
+    stream: opts.stream,
+    listModels: opts.listModels ?? (async () => []),
+  };
 }
 
 async function collect(it: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
@@ -29,8 +26,10 @@ async function collect(it: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
   return out;
 }
 
-function makeManager(opts: Partial<ProviderManagerOptions> = {}): ProviderManager {
-  const provider = new LMStudioProvider({ endpoint: () => ENDPOINT });
+function makeManager(
+  provider: Provider,
+  opts: Partial<ProviderManagerOptions> = {},
+): ProviderManager {
   return new ProviderManager({
     provider,
     firstEventTimeoutMs: 200,
@@ -43,25 +42,28 @@ function makeManager(opts: Partial<ProviderManagerOptions> = {}): ProviderManage
 }
 
 describe('ProviderManager — FIFO queue (AC3, FR-PROV-05)', () => {
-  it('serializes concurrent stream() calls so only one request reaches the server at a time', async () => {
+  it('serialises concurrent stream() calls so only one provider call runs at a time', async () => {
     let active = 0;
     let peakActive = 0;
     const enterOrder: string[] = [];
 
-    server.use(
-      http.post(`${ENDPOINT}/v1/chat/completions`, async ({ request }) => {
-        const body = (await request.json()) as { messages: { content: string }[] };
-        const tag = body.messages[0]!.content;
+    const provider = makeFakeProvider({
+      async *stream(req) {
+        const tag = req.messages[0]!.content;
         active += 1;
         peakActive = Math.max(peakActive, active);
         enterOrder.push(tag);
-        await new Promise((r) => setTimeout(r, 30));
-        active -= 1;
-        return sseResponse([chatChunk(tag), SSE_DONE]);
-      }),
-    );
+        try {
+          await new Promise((r) => setTimeout(r, 30));
+          yield { type: 'token', text: tag };
+          yield { type: 'done' };
+        } finally {
+          active -= 1;
+        }
+      },
+    });
 
-    const mgr = makeManager();
+    const mgr = makeManager(provider);
     const ctl = new AbortController();
     const runs = ['a', 'b', 'c'].map((tag) =>
       collect(mgr.stream({ model: 'm', messages: [{ role: 'user', content: tag }] }, ctl.signal)),
@@ -78,22 +80,20 @@ describe('ProviderManager — FIFO queue (AC3, FR-PROV-05)', () => {
   });
 
   it('aborts an attempt when firstEventTimeoutMs elapses without a terminal event', async () => {
-    server.use(
-      http.post(`${ENDPOINT}/v1/chat/completions`, ({ request }) => {
-        const stream = new ReadableStream<Uint8Array>({
-          async start(controller) {
-            await new Promise((resolve, reject) => {
-              const onAbort = (): void => reject(new Error('aborted'));
-              request.signal.addEventListener('abort', onAbort);
-            }).catch(() => undefined);
-            controller.close();
-          },
+    const provider = makeFakeProvider({
+      async *stream(_req, signal) {
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason ?? new Error('aborted')));
         });
-        return new HttpResponse(stream, { headers: { 'Content-Type': 'text/event-stream' } });
-      }),
-    );
+        yield { type: 'done' };
+      },
+    });
 
-    const mgr = makeManager({ firstEventTimeoutMs: 50, idleTimeoutMs: 50, maxAttempts: 1 });
+    const mgr = makeManager(provider, {
+      firstEventTimeoutMs: 50,
+      idleTimeoutMs: 50,
+      maxAttempts: 1,
+    });
     const events = await collect(
       mgr.stream(
         { model: 'm', messages: [{ role: 'user', content: 'x' }] },
@@ -111,15 +111,16 @@ describe('ProviderManager — FIFO queue (AC3, FR-PROV-05)', () => {
 describe('ProviderManager — retry/backoff (AC4, FR-PROV-06)', () => {
   it('retries connection-level failures up to 3 times then succeeds', async () => {
     let calls = 0;
-    server.use(
-      http.post(`${ENDPOINT}/v1/chat/completions`, () => {
+    const provider = makeFakeProvider({
+      async *stream() {
         calls += 1;
-        if (calls <= 3) return new HttpResponse('nope', { status: 502 });
-        return sseResponse([chatChunk('ok'), SSE_DONE]);
-      }),
-    );
+        if (calls <= 3) throw new ProviderConnectError(`HTTP 502 (attempt ${calls})`);
+        yield { type: 'token', text: 'ok' };
+        yield { type: 'done' };
+      },
+    });
 
-    const mgr = makeManager({ baseBackoffMs: 1, maxBackoffMs: 5 });
+    const mgr = makeManager(provider, { baseBackoffMs: 1, maxBackoffMs: 5 });
     const events = await collect(
       mgr.stream(
         { model: 'm', messages: [{ role: 'user', content: 'x' }] },
@@ -133,12 +134,13 @@ describe('ProviderManager — retry/backoff (AC4, FR-PROV-06)', () => {
 
   it('a fourth persistent failure surfaces a userFacing error and marks unreachable', async () => {
     let calls = 0;
-    server.use(
-      http.post(`${ENDPOINT}/v1/chat/completions`, () => {
+    const provider = makeFakeProvider({
+      async *stream() {
         calls += 1;
-        return new HttpResponse('nope', { status: 502 });
-      }),
-    );
+        throw new ProviderConnectError(`HTTP 502 (attempt ${calls})`);
+        yield { type: 'done' }; // unreachable; satisfies generator typing
+      },
+    });
     const userFacing = vi.fn();
     const logger = {
       info: vi.fn(),
@@ -148,7 +150,7 @@ describe('ProviderManager — retry/backoff (AC4, FR-PROV-06)', () => {
       }),
     };
 
-    const mgr = makeManager({
+    const mgr = makeManager(provider, {
       baseBackoffMs: 1,
       maxBackoffMs: 5,
       logger: logger as unknown as Logger,
@@ -169,10 +171,15 @@ describe('ProviderManager — retry/backoff (AC4, FR-PROV-06)', () => {
 
 describe('ProviderManager — unreachable state machine (AC7, NFR-REL-01)', () => {
   it('fast-fails new streams while unreachable', async () => {
-    server.use(
-      http.post(`${ENDPOINT}/v1/chat/completions`, () => new HttpResponse(null, { status: 502 })),
-    );
-    const mgr = makeManager({ baseBackoffMs: 1, maxBackoffMs: 5 });
+    let providerCalls = 0;
+    const provider = makeFakeProvider({
+      async *stream() {
+        providerCalls += 1;
+        throw new ProviderConnectError('HTTP 502');
+        yield { type: 'done' };
+      },
+    });
+    const mgr = makeManager(provider, { baseBackoffMs: 1, maxBackoffMs: 5 });
     await collect(
       mgr.stream(
         { model: 'm', messages: [{ role: 'user', content: 'x' }] },
@@ -181,36 +188,33 @@ describe('ProviderManager — unreachable state machine (AC7, NFR-REL-01)', () =
     );
     expect(mgr.connection.current).toBe('unreachable');
 
-    let serverHits = 0;
-    server.use(
-      http.post(`${ENDPOINT}/v1/chat/completions`, () => {
-        serverHits += 1;
-        return new HttpResponse(null, { status: 502 });
-      }),
-    );
+    const callsAfterFail = providerCalls;
     const events = await collect(
       mgr.stream(
         { model: 'm', messages: [{ role: 'user', content: 'x' }] },
         new AbortController().signal,
       ),
     );
-    expect(serverHits).toBe(0);
+    expect(providerCalls).toBe(callsAfterFail);
     expect(events).toEqual([{ type: 'error', error: expect.any(Error) }]);
     mgr.dispose();
   });
 
   it('clears unreachable when the periodic probe succeeds', async () => {
     let probeReady = false;
-    server.use(
-      http.post(`${ENDPOINT}/v1/chat/completions`, () => new HttpResponse(null, { status: 502 })),
-      http.get(`${ENDPOINT}/v1/models`, () => {
-        if (!probeReady) return new HttpResponse(null, { status: 502 });
-        return HttpResponse.json({ data: [{ id: 'm' }] });
-      }),
-    );
+    const provider = makeFakeProvider({
+      async *stream() {
+        throw new ProviderConnectError('HTTP 502');
+        yield { type: 'done' };
+      },
+      listModels: async () => {
+        if (!probeReady) throw new ProviderConnectError('HTTP 502');
+        return [{ id: 'm' }];
+      },
+    });
 
     const transitions: string[] = [];
-    const mgr = makeManager({ baseBackoffMs: 1, maxBackoffMs: 5, probeIntervalMs: 20 });
+    const mgr = makeManager(provider, { baseBackoffMs: 1, maxBackoffMs: 5, probeIntervalMs: 20 });
     mgr.connection.on((s) => transitions.push(s));
     await collect(
       mgr.stream(

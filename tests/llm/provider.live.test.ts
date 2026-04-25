@@ -21,7 +21,9 @@ liveDescribe('live: LMStudioProvider.stream', (getCtx) => {
       ctx.env.timeoutMs,
     );
 
-    expect(events.some((e) => e.type === 'token')).toBe(true);
+    expect(events.some((e) => e.type === 'block_delta' && e.delta.type === 'text_delta')).toBe(
+      true,
+    );
     expect(events.at(-1)?.type).toBe('done');
     expect(text.trim().length).toBeGreaterThan(0);
     expect(text.toLowerCase()).toContain('paris');
@@ -71,7 +73,10 @@ liveDescribe('live: LMStudioProvider.stream', (getCtx) => {
       );
       for await (const ev of iter) {
         received.push(ev);
-        if (ev.type === 'token' && received.filter((e) => e.type === 'token').length >= 2) {
+        const textDeltas = received.filter(
+          (e) => e.type === 'block_delta' && e.delta.type === 'text_delta',
+        );
+        if (ev.type === 'block_delta' && ev.delta.type === 'text_delta' && textDeltas.length >= 2) {
           ctl.abort();
         }
       }
@@ -79,7 +84,9 @@ liveDescribe('live: LMStudioProvider.stream', (getCtx) => {
       aborted = true;
       expect(String(err)).toMatch(/abort/i);
     }
-    expect(received.some((e) => e.type === 'token')).toBe(true);
+    expect(received.some((e) => e.type === 'block_delta' && e.delta.type === 'text_delta')).toBe(
+      true,
+    );
     // Either the iterator surfaces the abort or ends cleanly after abort — both valid.
     expect(aborted || ctl.signal.aborted).toBe(true);
   }, 90_000);
@@ -98,7 +105,7 @@ async function collectStream(
   try {
     for await (const ev of provider.stream({ model, messages }, ctl.signal)) {
       events.push(ev);
-      if (ev.type === 'token') text += ev.text;
+      if (ev.type === 'block_delta' && ev.delta.type === 'text_delta') text += ev.delta.text;
     }
   } finally {
     clearTimeout(timer);

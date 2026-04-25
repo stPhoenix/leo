@@ -252,8 +252,17 @@ describe('ChatRoot + StreamingTurnController — end-to-end tail growth (AC1, FR
     );
     act(() => {
       controller.startTurn('a1');
-      controller.consume({ type: 'token', text: 'one ' });
-      controller.consume({ type: 'token', text: 'two' });
+      controller.consume({ type: 'block_start', index: 0, block: { type: 'text' } });
+      controller.consume({
+        type: 'block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'one ' },
+      });
+      controller.consume({
+        type: 'block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'two' },
+      });
     });
     act(() => raf.flush());
     const bubbles = container.querySelectorAll('[data-slot="assistant-markdown"]');

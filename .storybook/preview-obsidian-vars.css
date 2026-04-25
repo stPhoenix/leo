@@ -17,8 +17,14 @@
   --interactive-accent: #7f6df2;
   --interactive-accent-hover: #6a57e6;
 
+  --color-red: #c23f3f;
   --color-orange: #d87a2a;
   --color-yellow: #c8a618;
+  --color-green: #2c8d5d;
+  --color-cyan: #2c8d8d;
+  --color-blue: #2c5d8d;
+  --color-purple: #6f4ec7;
+  --color-pink: #c44d8d;
 
   --font-interface: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-text: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -62,4 +68,13 @@ html[data-theme='dark'],
 
   --interactive-accent: #7f6df2;
   --interactive-accent-hover: #9483ff;
+
+  --color-red: #e56b6b;
+  --color-orange: #e08e3a;
+  --color-yellow: #d6b94f;
+  --color-green: #4cb37a;
+  --color-cyan: #4cb3b3;
+  --color-blue: #4c8eb3;
+  --color-purple: #9d80e6;
+  --color-pink: #d878a8;
 }

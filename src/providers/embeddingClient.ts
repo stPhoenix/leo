@@ -1,12 +1,15 @@
+import { OpenAIEmbeddings } from '@langchain/openai';
 import type { Logger } from '@/platform/Logger';
 import type { ConnectionState } from './connectionState';
-import type { FetchLike } from './lmStudioProvider';
 import { ProviderConnectError, ProviderTimeoutError } from './types';
 import { delay } from '@/util/delay';
+
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface EmbeddingClientOptions {
   readonly endpoint: () => string;
   readonly model: () => string;
+  readonly apiKey?: () => string;
   readonly connection?: ConnectionState;
   readonly fetch?: FetchLike;
   readonly logger?: Logger;
@@ -14,10 +17,7 @@ export interface EmbeddingClientOptions {
   readonly maxAttempts?: number;
   readonly baseBackoffMs?: number;
   readonly maxBackoffMs?: number;
-}
-
-interface EmbeddingsResponse {
-  readonly data?: ReadonlyArray<{ readonly embedding?: unknown }>;
+  readonly embedDocuments?: (texts: string[], signal?: AbortSignal) => Promise<number[][]>;
 }
 
 const DEFAULTS = {
@@ -30,10 +30,10 @@ const DEFAULTS = {
 export const EMBED_BATCH_SIZE = 32 as const;
 
 export class EmbeddingClient {
-  private readonly fetchImpl: FetchLike;
+  private readonly embedDocsImpl: (texts: string[], signal?: AbortSignal) => Promise<number[][]>;
 
   constructor(private readonly opts: EmbeddingClientOptions) {
-    this.fetchImpl = opts.fetch ?? ((input, init) => fetch(input, init));
+    this.embedDocsImpl = opts.embedDocuments ?? this.defaultEmbedDocs.bind(this);
   }
 
   async embed(texts: readonly string[], signal?: AbortSignal): Promise<number[][]> {
@@ -94,7 +94,6 @@ export class EmbeddingClient {
   }
 
   private async embedOnce(texts: readonly string[], signal?: AbortSignal): Promise<number[][]> {
-    const url = `${this.opts.endpoint().replace(/\/+$/, '')}/v1/embeddings`;
     const ctl = new AbortController();
     const onAbort = (): void => ctl.abort(signal?.reason);
     if (signal !== undefined) {
@@ -103,38 +102,34 @@ export class EmbeddingClient {
     }
     const timeoutMs = this.opts.timeoutMs ?? DEFAULTS.timeoutMs;
     const timer = setTimeout(() => ctl.abort(new ProviderTimeoutError()), timeoutMs);
-
     try {
-      let response: Response;
-      try {
-        response = await this.fetchImpl(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: this.opts.model(), input: [...texts] }),
-          signal: ctl.signal,
-        });
-      } catch (err) {
-        if (ctl.signal.aborted && ctl.signal.reason instanceof ProviderTimeoutError) {
-          throw ctl.signal.reason;
-        }
-        throw err instanceof ProviderConnectError
-          ? err
-          : new ProviderConnectError(errMessage(err), { cause: err });
+      return await this.embedDocsImpl([...texts], ctl.signal);
+    } catch (err) {
+      if (ctl.signal.aborted && ctl.signal.reason instanceof ProviderTimeoutError) {
+        throw ctl.signal.reason;
       }
-      if (!response.ok) throw new ProviderConnectError(`HTTP ${response.status}`);
-      const json = (await response.json()) as EmbeddingsResponse;
-      const data = json.data ?? [];
-      const out: number[][] = [];
-      for (const row of data) {
-        if (Array.isArray(row.embedding)) {
-          out.push(row.embedding.filter((n): n is number => typeof n === 'number'));
-        }
-      }
-      return out;
+      if (err instanceof ProviderConnectError || err instanceof ProviderTimeoutError) throw err;
+      throw new ProviderConnectError(errMessage(err), { cause: err });
     } finally {
       clearTimeout(timer);
       if (signal !== undefined) signal.removeEventListener('abort', onAbort);
     }
+  }
+
+  private async defaultEmbedDocs(texts: string[], signal?: AbortSignal): Promise<number[][]> {
+    const baseURL = `${this.opts.endpoint().replace(/\/+$/, '')}/v1`;
+    const apiKey = this.opts.apiKey?.() ?? 'placeholder';
+    const embeddings = new OpenAIEmbeddings({
+      model: this.opts.model(),
+      apiKey,
+      encodingFormat: 'float',
+      configuration: {
+        baseURL,
+        dangerouslyAllowBrowser: true,
+      },
+    });
+    if (signal?.aborted === true) throw signal.reason ?? new Error('aborted');
+    return embeddings.embedDocuments(texts);
   }
 }
 

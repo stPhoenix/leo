@@ -56,13 +56,31 @@ function makeController(overrides?: {
   return { store, raf, controller, announce };
 }
 
-describe('StreamingTurnController — token append order + keyed reconciliation (AC1, FR-CHAT-04)', () => {
-  it('appends tokens to the tail assistant bubble in arrival order and only flushes on rAF', () => {
+/** Drive a text block using the new block-event protocol. Returns `() => void` to close the block. */
+function streamText(controller: StreamingTurnController, index: number, text: string): void {
+  controller.consume({ type: 'block_start', index, block: { type: 'text' } });
+  controller.consume({
+    type: 'block_delta',
+    index,
+    delta: { type: 'text_delta', text },
+  });
+}
+
+function streamTextDelta(controller: StreamingTurnController, index: number, text: string): void {
+  controller.consume({
+    type: 'block_delta',
+    index,
+    delta: { type: 'text_delta', text },
+  });
+}
+
+describe('StreamingTurnController — text append order + keyed reconciliation (AC1, FR-CHAT-04)', () => {
+  it('appends text deltas to the tail assistant bubble in arrival order and only flushes on rAF', () => {
     const { store, raf, controller } = makeController();
     controller.startTurn('a1');
-    controller.consume({ type: 'token', text: 'Hello, ' } satisfies StreamEvent);
-    controller.consume({ type: 'token', text: 'world' });
-    controller.consume({ type: 'token', text: '!' });
+    streamText(controller, 0, 'Hello, ');
+    streamTextDelta(controller, 0, 'world');
+    streamTextDelta(controller, 0, '!');
 
     expect(store.getSnapshot().find((m) => m.id === 'a1')?.content).toBe('');
     expect(raf.pending.size).toBe(1);
@@ -83,7 +101,7 @@ describe('StreamingTurnController — token append order + keyed reconciliation 
       },
     ]);
     controller.startTurn('a1');
-    controller.consume({ type: 'token', text: 'new' });
+    streamText(controller, 0, 'new');
     raf.flush();
     const snap = store.getSnapshot();
     expect(snap.find((m) => m.id === 'a0')?.content).toBe('earlier');
@@ -92,11 +110,12 @@ describe('StreamingTurnController — token append order + keyed reconciliation 
 });
 
 describe('StreamingTurnController — rAF batching under bursts (AC3, NFR-PERF-05)', () => {
-  it('batches a burst of 100 token events into a single rAF flush', () => {
+  it('batches a burst of 100 text_delta events into a single rAF flush', () => {
     const { store, raf, controller } = makeController();
     controller.startTurn('a1');
+    controller.consume({ type: 'block_start', index: 0, block: { type: 'text' } });
     for (let i = 0; i < 100; i++) {
-      controller.consume({ type: 'token', text: 'x' });
+      streamTextDelta(controller, 0, 'x');
     }
     expect(raf.pending.size).toBe(1);
     raf.flush();
@@ -106,23 +125,23 @@ describe('StreamingTurnController — rAF batching under bursts (AC3, NFR-PERF-0
   it('reschedules rAF on the next burst after a flush', () => {
     const { raf, controller } = makeController();
     controller.startTurn('a1');
-    controller.consume({ type: 'token', text: 'a' });
+    streamText(controller, 0, 'a');
     raf.flush();
     expect(raf.pending.size).toBe(0);
-    controller.consume({ type: 'token', text: 'b' });
+    streamTextDelta(controller, 0, 'b');
     expect(raf.pending.size).toBe(1);
   });
 });
 
 describe('StreamingTurnController — stop aborts shared controller (AC4, FR-CHAT-05)', () => {
-  it('stop() aborts the per-turn AbortController and suppresses further token appends', () => {
+  it('stop() aborts the per-turn AbortController and suppresses further text appends', () => {
     const { store, raf, controller } = makeController();
     const signal = controller.startTurn('a1');
     expect(signal.aborted).toBe(false);
-    controller.consume({ type: 'token', text: 'partial' });
+    streamText(controller, 0, 'partial');
     controller.stop();
     expect(signal.aborted).toBe(true);
-    controller.consume({ type: 'token', text: 'late' });
+    streamTextDelta(controller, 0, 'late');
     raf.flush();
     expect(store.getSnapshot().find((m) => m.id === 'a1')?.content).toBe('partial');
   });
@@ -130,7 +149,7 @@ describe('StreamingTurnController — stop aborts shared controller (AC4, FR-CHA
   it('treats provider terminal `done` after stop as cancellation (emits the banner)', () => {
     const { store, raf, controller } = makeController();
     controller.startTurn('a1');
-    controller.consume({ type: 'token', text: 'partial' });
+    streamText(controller, 0, 'partial');
     controller.stop();
     controller.consume({ type: 'done' });
     raf.flush();
@@ -221,7 +240,7 @@ describe('StreamingTurnController — teardown aborts + cancels rAF (AC7, FR-CHA
     const raf = makeManualRaf();
     const { controller } = makeController({ raf });
     const signal = controller.startTurn('a1');
-    controller.consume({ type: 'token', text: 'x' });
+    streamText(controller, 0, 'x');
     expect(raf.pending.size).toBe(1);
     controller.dispose();
     expect(signal.aborted).toBe(true);
@@ -238,21 +257,22 @@ describe('StreamingTurnController — teardown aborts + cancels rAF (AC7, FR-CHA
 });
 
 describe('StreamingTurnController — consumeIterable (integration with provider AsyncIterable)', () => {
-  it('flushes all tokens and finalises `done` on natural stream end', async () => {
+  it('flushes all text and finalises `done` on natural stream end', async () => {
     const raf = makeManualRaf();
     const { store, controller } = makeController({ raf });
     controller.startTurn('a1');
     const events: StreamEvent[] = [
-      { type: 'token', text: 'A' },
-      { type: 'token', text: 'B' },
-      { type: 'token', text: 'C' },
+      { type: 'block_start', index: 0, block: { type: 'text' } },
+      { type: 'block_delta', index: 0, delta: { type: 'text_delta', text: 'A' } },
+      { type: 'block_delta', index: 0, delta: { type: 'text_delta', text: 'B' } },
+      { type: 'block_delta', index: 0, delta: { type: 'text_delta', text: 'C' } },
+      { type: 'block_stop', index: 0 },
       { type: 'done' },
     ];
     async function* iter(): AsyncIterable<StreamEvent> {
       for (const e of events) yield e;
     }
     await controller.consumeIterable(iter());
-    // `done` flushes pending before finalising
     expect(store.getSnapshot().find((m) => m.id === 'a1')?.content).toBe('ABC');
     expect(store.getSnapshot().find((m) => m.id === 'a1')?.status).toBe('done');
   });
@@ -261,7 +281,8 @@ describe('StreamingTurnController — consumeIterable (integration with provider
     const { store, controller } = makeController();
     controller.startTurn('a1');
     async function* iter(): AsyncIterable<StreamEvent> {
-      yield { type: 'token', text: 'part' };
+      yield { type: 'block_start', index: 0, block: { type: 'text' } };
+      yield { type: 'block_delta', index: 0, delta: { type: 'text_delta', text: 'part' } };
       throw new Error('pipe closed');
     }
     await controller.consumeIterable(iter());
@@ -275,7 +296,8 @@ describe('StreamingTurnController — consumeIterable (integration with provider
     const { store, controller } = makeController();
     const signal = controller.startTurn('a1');
     async function* iter(): AsyncIterable<StreamEvent> {
-      yield { type: 'token', text: 'part' };
+      yield { type: 'block_start', index: 0, block: { type: 'text' } };
+      yield { type: 'block_delta', index: 0, delta: { type: 'text_delta', text: 'part' } };
       controller.stop();
       const reason = (signal as AbortSignal & { reason?: unknown }).reason;
       throw reason instanceof Error ? reason : new Error('aborted');

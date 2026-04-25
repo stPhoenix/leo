@@ -1,5 +1,13 @@
 import type { ChatMessageStore } from './messageStore';
-import type { StreamEvent } from '@/agent/streamEvents';
+import type {
+  ContentBlock,
+  TextBlock,
+  ThinkingBlock,
+  ToolUseBlock,
+  ToolResultBlock,
+  RedactedThinkingBlock,
+} from './types';
+import type { StreamEvent, ContentBlockStart } from '@/agent/streamEvents';
 
 export type StreamingPhase = 'idle' | 'streaming' | 'cancelling' | 'cancelled' | 'done' | 'error';
 
@@ -19,6 +27,8 @@ export interface StreamingTurnControllerDeps {
   readonly onPhaseChange?: (phase: StreamingPhase) => void;
   readonly nowIso?: () => string;
   readonly schedulers?: StreamingSchedulers;
+  readonly onParseError?: (info: { toolUseIndex: number; raw: string; error: string }) => void;
+  readonly onEvent?: (event: StreamEvent) => void;
 }
 
 interface ActiveTurn {
@@ -26,9 +36,14 @@ interface ActiveTurn {
   readonly controller: AbortController;
   toolCount: number;
   phase: StreamingPhase;
-  pending: string;
   rafHandle: number | null;
   finalised: boolean;
+  blocks: ContentBlock[];
+  jsonBuffers: Map<number, string>;
+  pendingTextByIndex: Map<number, string>;
+  pendingThinkingByIndex: Map<number, string>;
+  pendingSignatureByIndex: Map<number, string>;
+  lastEventAt: number;
 }
 
 const defaultSchedulers = (): StreamingSchedulers => {
@@ -73,6 +88,10 @@ export class StreamingTurnController {
     return this.active?.controller.signal ?? null;
   }
 
+  get lastEventAt(): number | null {
+    return this.active?.lastEventAt ?? null;
+  }
+
   startTurn(assistantId: string): AbortSignal {
     if (this.active !== null) this.cleanupActive('cancelled');
     const now = this.deps.nowIso?.() ?? new Date().toISOString();
@@ -82,6 +101,7 @@ export class StreamingTurnController {
       content: '',
       createdAt: now,
       status: 'streaming',
+      blocks: [],
     });
     const controller = new AbortController();
     this.active = {
@@ -89,9 +109,14 @@ export class StreamingTurnController {
       controller,
       toolCount: 0,
       phase: 'streaming',
-      pending: '',
       rafHandle: null,
       finalised: false,
+      blocks: [],
+      jsonBuffers: new Map(),
+      pendingTextByIndex: new Map(),
+      pendingThinkingByIndex: new Map(),
+      pendingSignatureByIndex: new Map(),
+      lastEventAt: this.nowMs(),
     };
     this.deps.onPhaseChange?.('streaming');
     this.deps.announce('streaming started');
@@ -102,14 +127,44 @@ export class StreamingTurnController {
     const turn = this.active;
     if (turn === null) return;
     if (turn.phase === 'cancelled' || turn.phase === 'done' || turn.phase === 'error') return;
+    turn.lastEventAt = this.nowMs();
+    this.deps.onEvent?.(event);
 
-    if (event.type === 'token') {
+    if (event.type === 'block_start') {
+      this.applyBlockStart(turn, event.index, event.block);
+      return;
+    }
+    if (event.type === 'block_delta') {
+      const d = event.delta;
       if (turn.phase === 'cancelling') return;
-      turn.pending += event.text;
+      if (d.type === 'text_delta') {
+        const prev = turn.pendingTextByIndex.get(event.index) ?? '';
+        turn.pendingTextByIndex.set(event.index, prev + d.text);
+      } else if (d.type === 'thinking_delta') {
+        const prev = turn.pendingThinkingByIndex.get(event.index) ?? '';
+        turn.pendingThinkingByIndex.set(event.index, prev + d.thinking);
+      } else if (d.type === 'signature_delta') {
+        turn.pendingSignatureByIndex.set(event.index, d.signature);
+      } else if (d.type === 'input_json_delta') {
+        const prev = turn.jsonBuffers.get(event.index) ?? '';
+        turn.jsonBuffers.set(event.index, prev + d.partial_json);
+      } else if (d.type === 'tool_result_delta') {
+        const prev = turn.pendingTextByIndex.get(event.index) ?? '';
+        turn.pendingTextByIndex.set(event.index, prev + d.text);
+      }
       this.ensureRafScheduled();
       return;
     }
-    if (event.type === 'usage') {
+    if (event.type === 'block_stop') {
+      this.applyBlockStop(turn, event.index);
+      return;
+    }
+    if (event.type === 'message_delta') {
+      // usage merge — never overwrite a non-zero input/output with a zero
+      return;
+    }
+    if (event.type === 'progress') {
+      // F08 hooks runStateStore externally via deps.onEvent
       return;
     }
     if (event.type === 'done') {
@@ -203,13 +258,114 @@ export class StreamingTurnController {
   private flushPending(): void {
     const turn = this.active;
     if (turn === null) return;
-    const text = turn.pending;
-    if (text.length === 0) return;
-    turn.pending = '';
-    this.deps.messageStore.update(turn.assistantId, (prev) => ({
-      ...prev,
-      content: prev.content + text,
-    }));
+    const text = new Map(turn.pendingTextByIndex);
+    const thinking = new Map(turn.pendingThinkingByIndex);
+    const signature = new Map(turn.pendingSignatureByIndex);
+    turn.pendingTextByIndex.clear();
+    turn.pendingThinkingByIndex.clear();
+    turn.pendingSignatureByIndex.clear();
+    if (text.size === 0 && thinking.size === 0 && signature.size === 0) return;
+
+    this.deps.messageStore.update(turn.assistantId, (prev) => {
+      const blocks = prev.blocks ?? [];
+      const nextBlocks = blocks.slice();
+      let assistantTextAppend = '';
+      const ensure = (idx: number, fallback: ContentBlock): ContentBlock => {
+        while (nextBlocks.length <= idx) nextBlocks.push({ type: 'text', text: '' });
+        const existing = nextBlocks[idx];
+        return existing ?? fallback;
+      };
+      for (const [idx, append] of text) {
+        const existing = ensure(idx, { type: 'text', text: '' });
+        if (existing.type === 'text') {
+          nextBlocks[idx] = { ...existing, text: existing.text + append };
+          assistantTextAppend += append;
+        } else if (existing.type === 'tool_result') {
+          nextBlocks[idx] = { ...existing, content: existing.content + append };
+        } else {
+          nextBlocks[idx] = { type: 'text', text: append } as TextBlock;
+          assistantTextAppend += append;
+        }
+      }
+      for (const [idx, append] of thinking) {
+        const existing = ensure(idx, { type: 'thinking', thinking: '' });
+        if (existing.type === 'thinking') {
+          nextBlocks[idx] = { ...existing, thinking: existing.thinking + append };
+        } else {
+          nextBlocks[idx] = { type: 'thinking', thinking: append } as ThinkingBlock;
+        }
+      }
+      for (const [idx, sig] of signature) {
+        const existing = ensure(idx, { type: 'thinking', thinking: '' });
+        if (existing.type === 'thinking') {
+          nextBlocks[idx] = { ...existing, signature: sig };
+        } else {
+          nextBlocks[idx] = { type: 'thinking', thinking: '', signature: sig } as ThinkingBlock;
+        }
+      }
+      return {
+        ...prev,
+        blocks: nextBlocks,
+        content: assistantTextAppend.length > 0 ? prev.content + assistantTextAppend : prev.content,
+      };
+    });
+  }
+
+  private applyBlockStart(turn: ActiveTurn, index: number, block: ContentBlockStart): void {
+    if (block.type === 'text') {
+      const text = block.text ?? '';
+      this.deps.messageStore.updateBlock(turn.assistantId, index, { type: 'text', text });
+    } else if (block.type === 'thinking') {
+      const initial: ThinkingBlock = {
+        type: 'thinking',
+        thinking: block.thinking ?? '',
+        ...(block.signature !== undefined ? { signature: block.signature } : {}),
+      };
+      this.deps.messageStore.updateBlock(turn.assistantId, index, initial);
+    } else if (block.type === 'redacted_thinking') {
+      const initial: RedactedThinkingBlock = { type: 'redacted_thinking', data: block.data };
+      this.deps.messageStore.updateBlock(turn.assistantId, index, initial);
+    } else if (block.type === 'tool_use') {
+      const initial: ToolUseBlock = {
+        type: 'tool_use',
+        id: block.id,
+        name: block.name,
+        input: {},
+      };
+      this.deps.messageStore.updateBlock(turn.assistantId, index, initial);
+      turn.jsonBuffers.set(index, '');
+    } else if (block.type === 'tool_result') {
+      const initial: ToolResultBlock = {
+        type: 'tool_result',
+        tool_use_id: block.tool_use_id,
+        content: '',
+        ...(block.is_error !== undefined ? { is_error: block.is_error } : {}),
+      };
+      this.deps.messageStore.updateBlock(turn.assistantId, index, initial);
+    }
+  }
+
+  private applyBlockStop(turn: ActiveTurn, index: number): void {
+    this.flushPending();
+    if (!turn.jsonBuffers.has(index)) return;
+    const raw = turn.jsonBuffers.get(index) ?? '';
+    turn.jsonBuffers.delete(index);
+    this.deps.messageStore.updateBlock(turn.assistantId, index, (prev) => {
+      if (prev?.type !== 'tool_use') return prev as ContentBlock;
+      try {
+        const parsed = raw.length === 0 ? {} : (JSON.parse(raw) as unknown);
+        return { ...prev, input: parsed };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.deps.onParseError?.({ toolUseIndex: index, raw, error: msg });
+        return { ...prev, input: {}, raw };
+      }
+    });
+  }
+
+  private nowMs(): number {
+    if (this.schedulers.now !== undefined) return this.schedulers.now();
+    return Date.now();
   }
 
   private finalise(kind: 'done' | 'cancelled'): void {
@@ -220,6 +376,7 @@ export class StreamingTurnController {
       this.schedulers.caf(turn.rafHandle);
       turn.rafHandle = null;
     }
+    this.flushPending();
     const nextStatus: 'done' | 'cancelled' = kind;
     this.deps.messageStore.update(turn.assistantId, (prev) => ({ ...prev, status: nextStatus }));
     if (kind === 'cancelled') {

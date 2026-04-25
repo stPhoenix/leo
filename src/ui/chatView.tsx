@@ -12,6 +12,21 @@ import { HeaderStatsLive } from './chat/HeaderStatsLive';
 import { makeContextUsageSource } from './chat/headerStatsSources';
 import type { Logger } from '@/platform/Logger';
 import { ChatMessageStore } from '@/chat/messageStore';
+import { toLegacyContent } from '@/chat/types';
+import type { ToolUseBlock } from '@/chat/types';
+import { RunStateStore } from '@/chat/runStateStore';
+import { InlinePermissionPrompt } from './chat/blocks/InlinePermissionPrompt';
+import { ProgressLines } from './chat/blocks/ProgressLines';
+import { DiffView } from './chat/blocks/DiffView';
+
+const EDIT_TOOL_NAMES = new Set([
+  'edit_note',
+  'create_note',
+  'append_to_note',
+  'editNote',
+  'createNote',
+  'appendToNote',
+]);
 import { StreamingTurnController, type StreamingPhase } from '@/chat/streamingController';
 import type { StreamEvent } from '@/agent/streamEvents';
 import type { FocusedContextChannel } from '@/editor/focusedContextChannel';
@@ -87,6 +102,7 @@ export interface SkillSlashAdapter {
 
 export class ChatView extends ItemView {
   readonly messageStore: ChatMessageStore;
+  readonly runStateStore: RunStateStore = new RunStateStore();
   private root: Root | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private widthListeners = new Set<(w: number) => void>();
@@ -141,6 +157,32 @@ export class ChatView extends ItemView {
       onPhaseChange: (p) => {
         this.lastPhase = p;
         for (const l of this.phaseListeners) l(p);
+      },
+      onEvent: (event) => {
+        const rs = this.runStateStore;
+        if (event.type === 'block_start' && event.block.type === 'tool_use') {
+          rs.markRunning(event.block.id);
+          return;
+        }
+        if (event.type === 'tool_result') {
+          const isError = event.result.ok === false;
+          rs.markResolved(event.id, isError, event.result);
+          return;
+        }
+        if (event.type === 'tool_confirmation') {
+          rs.recordPermissionRequest(event.request.toolId, {
+            toolUseId: event.request.toolId,
+            toolId: event.request.toolId,
+            thread: event.request.thread,
+            argsJson: event.request.argsJson,
+            category: event.request.category,
+          });
+          return;
+        }
+        if (event.type === 'progress') {
+          rs.appendProgress(event.event.toolUseId, event.event);
+          return;
+        }
       },
     });
     this.turnDispatcher = new TurnDispatcher({
@@ -214,6 +256,14 @@ export class ChatView extends ItemView {
         messageStore: this.messageStore,
         renderMarkdown,
         clipboard,
+        toolUseSlots: this.buildToolUseSlots(),
+        liveIndicatorRunState: this.runStateStore,
+        lastEventAtSource: () => this.streamingController?.lastEventAt ?? null,
+        onCancelLive: () => {
+          this.runStateStore.cancelAllInProgress();
+          this.streamingController?.stop();
+        },
+        resolveToolName: (id: string) => this.resolveToolName(id),
         setIcon: (el, name) => setIcon(el, name),
         ...(focusedContextSource !== null
           ? {
@@ -265,6 +315,7 @@ export class ChatView extends ItemView {
           },
           onStopIntent: () => {
             this.deps.logger?.info('composer.stop_intent', {});
+            this.runStateStore.cancelAllInProgress();
             this.streamingController?.stop();
           },
           onOpenCommandPalette: () => this.openCommandPalette(),
@@ -399,6 +450,58 @@ export class ChatView extends ItemView {
     commands?.executeCommandById?.('command-palette:open');
   }
 
+  private buildToolUseSlots(): {
+    runState: RunStateStore;
+    renderPermission: (block: ToolUseBlock) => JSX.Element;
+    renderProgress: (block: ToolUseBlock) => JSX.Element;
+    renderResult: (block: ToolUseBlock) => JSX.Element | null;
+  } {
+    const runState = this.runStateStore;
+    const controller = this.deps.confirmationController;
+    return {
+      runState,
+      renderPermission: (block) =>
+        createElement(InlinePermissionPrompt, {
+          block,
+          runState,
+          onResolve: (decision) => {
+            if (decision === 'deny') runState.markRejected(block.id);
+            runState.clearPermissionRequest(block.id);
+            controller?.resolve(decision);
+          },
+        }),
+      renderProgress: (block) =>
+        createElement(ProgressLines, {
+          toolUseId: block.id,
+          runState,
+        }),
+      renderResult: (block) => this.renderEditDiffIfAvailable(block),
+    };
+  }
+
+  private renderEditDiffIfAvailable(block: ToolUseBlock): JSX.Element | null {
+    if (!EDIT_TOOL_NAMES.has(block.name)) return null;
+    const result = this.runStateStore.getSnapshot().toolResults.get(block.id);
+    if (result === undefined || result.ok !== true) return null;
+    const data = result.data as { before?: unknown; after?: unknown; path?: unknown };
+    if (typeof data?.before !== 'string' || typeof data?.after !== 'string') return null;
+    return createElement(DiffView, {
+      before: data.before,
+      after: data.after,
+      ...(typeof data.path === 'string' ? { path: data.path } : {}),
+    });
+  }
+
+  private resolveToolName(id: string): string {
+    for (const m of this.messageStore.getSnapshot()) {
+      if (m.blocks === undefined) continue;
+      for (const b of m.blocks) {
+        if (b.type === 'tool_use' && b.id === id) return b.name;
+      }
+    }
+    return id;
+  }
+
   private buildHeaderStats(): JSX.Element | null {
     const getWindow = this.deps.getContextWindow;
     if (getWindow === undefined) return null;
@@ -426,7 +529,7 @@ export class ChatView extends ItemView {
     return {
       copy: async (record) => {
         try {
-          await navigator.clipboard.writeText(record.content);
+          await navigator.clipboard.writeText(toLegacyContent(record));
           new Notice('Copied message');
         } catch {
           new Notice('Copy failed');

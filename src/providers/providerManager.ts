@@ -131,9 +131,18 @@ export class ProviderManager {
       try {
         for await (const ev of this.activeProvider.stream(req, attemptCtl.signal)) {
           bumpTimer();
-          if (ev.type === 'token' || ev.type === 'usage') started = true;
-          if (ev.type === 'usage') {
-            this.opts.logger?.info('provider.usage', { input: ev.input, output: ev.output });
+          if (
+            ev.type === 'block_start' ||
+            ev.type === 'block_delta' ||
+            ev.type === 'message_delta'
+          ) {
+            started = true;
+          }
+          if (ev.type === 'message_delta' && ev.usage !== undefined) {
+            this.opts.logger?.info('provider.usage', {
+              input: ev.usage.input ?? 0,
+              output: ev.usage.output ?? 0,
+            });
           }
           yield ev;
           if (ev.type === 'done') {

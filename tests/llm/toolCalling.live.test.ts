@@ -116,10 +116,27 @@ async function collectStreamWithTools(
   const events: StreamEvent[] = [];
   let text = '';
   try {
+    const toolBufs = new Map<number, { id: string; name: string; args: string }>();
     for await (const ev of provider.stream({ model, messages, tools }, ctl.signal)) {
       events.push(ev);
-      if (ev.type === 'tool_call') calls.push(ev.call);
-      if (ev.type === 'token') text += ev.text;
+      if (ev.type === 'block_start' && ev.block.type === 'tool_use') {
+        toolBufs.set(ev.index, { id: ev.block.id, name: ev.block.name, args: '' });
+      } else if (ev.type === 'block_delta' && ev.delta.type === 'input_json_delta') {
+        const buf = toolBufs.get(ev.index);
+        if (buf !== undefined) buf.args += ev.delta.partial_json;
+      } else if (ev.type === 'block_stop') {
+        const buf = toolBufs.get(ev.index);
+        if (buf !== undefined) {
+          calls.push({
+            id: buf.id,
+            name: buf.name,
+            argsJson: buf.args.length === 0 ? '{}' : buf.args,
+          });
+          toolBufs.delete(ev.index);
+        }
+      } else if (ev.type === 'block_delta' && ev.delta.type === 'text_delta') {
+        text += ev.delta.text;
+      }
     }
   } finally {
     clearTimeout(timer);

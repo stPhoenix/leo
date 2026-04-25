@@ -44,7 +44,7 @@ describe('create_note tool', () => {
     const result = await tool.invoke(v.data, makeToolCtx({ vault }));
     expect(result).toEqual({
       ok: true,
-      data: { path: 'Notes/a.md', bytesWritten: 5 },
+      data: { path: 'Notes/a.md', bytesWritten: 5, before: '', after: 'hello' },
     });
     expect(vault.writeCalls).toBe(1);
     expect(vault.files.get('Notes/a.md')).toBe('hello');

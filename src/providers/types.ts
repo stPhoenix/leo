@@ -35,12 +35,8 @@ export interface ProviderModel {
   readonly id: string;
 }
 
-export type StreamEvent =
-  | { readonly type: 'token'; readonly text: string }
-  | { readonly type: 'tool_call'; readonly call: ToolCallRequest }
-  | { readonly type: 'usage'; readonly input: number; readonly output: number }
-  | { readonly type: 'done' }
-  | { readonly type: 'error'; readonly error: Error };
+import type { StreamEvent } from '@/agent/streamEvents';
+export type { StreamEvent };
 
 export interface Provider {
   readonly id: string;

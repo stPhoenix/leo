@@ -3,6 +3,7 @@ import { ConversationStore } from '@/storage/conversationStore';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import { Logger } from '@/platform/Logger';
 import type { LogRecord, LogSink } from '@/platform/logTypes';
+import { CONVERSATION_SCHEMA_VERSION } from '@/storage/conversationSchema';
 
 class FakeVault implements VaultAdapter {
   readonly files = new Map<string, string>();
@@ -75,13 +76,13 @@ function makeLogger(): { logger: Logger; records: LogRecord[] } {
 }
 
 describe('ConversationStore', () => {
-  it('load on missing file returns an empty thread with schemaVersion 1 and does not error', async () => {
+  it('load on missing file returns an empty thread with the current schemaVersion and does not error', async () => {
     const adapter = new FakeVault();
     const { logger, records } = makeLogger();
     const store = new ConversationStore({ adapter, logger });
     const thread = await store.load();
     expect(thread.messages).toEqual([]);
-    expect(thread.schemaVersion).toBe(1);
+    expect(thread.schemaVersion).toBe(CONVERSATION_SCHEMA_VERSION);
     expect(thread.metadata).toEqual({ allowedTools: [] });
     expect(records.find((r) => r.event === 'conversation.load')).toBeDefined();
   });

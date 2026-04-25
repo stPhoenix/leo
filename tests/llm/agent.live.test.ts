@@ -111,7 +111,7 @@ async function runTurn(runner: AgentRunner, thread: string, content: string): Pr
   let text = '';
   for await (const ev of runner.send({ role: 'user', content }, thread)) {
     events.push(ev);
-    if (ev.type === 'token') text += ev.text;
+    if (ev.type === 'block_delta' && ev.delta.type === 'text_delta') text += ev.delta.text;
     if (ev.type === 'tool_confirmation') ev.resolve('allow-once');
     if (ev.type === 'error') {
       throw ev.error;

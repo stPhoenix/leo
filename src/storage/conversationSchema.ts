@@ -1,6 +1,7 @@
 import type { Logger } from '@/platform/Logger';
+import type { ContentBlock } from '@/chat/types';
 
-export const CONVERSATION_SCHEMA_VERSION = 1;
+export const CONVERSATION_SCHEMA_VERSION = 2;
 
 export type StoredRole = 'user' | 'assistant' | 'tool' | 'banner' | 'widget';
 
@@ -29,6 +30,7 @@ export interface StoredMessage {
   };
   readonly toolUse?: unknown;
   readonly toolResult?: unknown;
+  readonly blocks?: readonly ContentBlock[];
   readonly extras?: Readonly<Record<string, unknown>>;
 }
 
@@ -68,6 +70,7 @@ const MESSAGE_KEYS = new Set([
   'widget',
   'toolUse',
   'toolResult',
+  'blocks',
 ]);
 
 const METADATA_KEYS = new Set(['allowedTools', 'skillId', 'title']);
@@ -153,6 +156,7 @@ function parseMessage(raw: unknown, ctx: ParseContext, index: number): StoredMes
   const tokens = parseTokens(obj.tokens);
   const banner = parseBanner(obj.banner);
   const widget = parseWidget(obj.widget);
+  const blocks = parseBlocks(obj.blocks);
   const extras = collectExtras(obj, MESSAGE_KEYS, ctx, `messages[${index}]`);
   return {
     id,
@@ -165,8 +169,76 @@ function parseMessage(raw: unknown, ctx: ParseContext, index: number): StoredMes
     ...(widget !== undefined ? { widget } : {}),
     ...(obj.toolUse !== undefined ? { toolUse: obj.toolUse } : {}),
     ...(obj.toolResult !== undefined ? { toolResult: obj.toolResult } : {}),
+    ...(blocks !== undefined ? { blocks } : {}),
     ...(extras !== undefined ? { extras } : {}),
   };
+}
+
+function parseBlocks(raw: unknown): readonly ContentBlock[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ContentBlock[] = [];
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const obj = entry as Record<string, unknown>;
+    const type = obj.type;
+    if (type === 'text' && typeof obj.text === 'string') {
+      out.push({ type: 'text', text: obj.text });
+    } else if (type === 'thinking' && typeof obj.thinking === 'string') {
+      out.push({
+        type: 'thinking',
+        thinking: obj.thinking,
+        ...(typeof obj.signature === 'string' ? { signature: obj.signature } : {}),
+      });
+    } else if (type === 'redacted_thinking' && typeof obj.data === 'string') {
+      out.push({ type: 'redacted_thinking', data: obj.data });
+    } else if (type === 'tool_use' && typeof obj.id === 'string' && typeof obj.name === 'string') {
+      out.push({
+        type: 'tool_use',
+        id: obj.id,
+        name: obj.name,
+        input: obj.input,
+        ...(typeof obj.raw === 'string' ? { raw: obj.raw } : {}),
+        ...(obj.decision === 'allow-once' ||
+        obj.decision === 'allow-thread' ||
+        obj.decision === 'deny'
+          ? { decision: obj.decision }
+          : {}),
+      });
+    } else if (type === 'tool_result' && typeof obj.tool_use_id === 'string') {
+      out.push({
+        type: 'tool_result',
+        tool_use_id: obj.tool_use_id,
+        content: typeof obj.content === 'string' ? obj.content : '',
+        ...(typeof obj.is_error === 'boolean' ? { is_error: obj.is_error } : {}),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Synthesize canceled tool_result blocks for any tool_use without a paired
+ * tool_result. Returns the augmented block list. Used by the conversation
+ * loader so `statusOf` resolves to `canceled` on resume without any run-state
+ * mutation.
+ */
+export function applyReplayCancelMarkers(blocks: readonly ContentBlock[]): readonly ContentBlock[] {
+  const haveResult = new Set<string>();
+  for (const b of blocks) {
+    if (b.type === 'tool_result') haveResult.add(b.tool_use_id);
+  }
+  const out: ContentBlock[] = blocks.slice();
+  for (const b of blocks) {
+    if (b.type !== 'tool_use') continue;
+    if (haveResult.has(b.id)) continue;
+    out.push({
+      type: 'tool_result',
+      tool_use_id: b.id,
+      content: '(canceled)',
+      is_error: true,
+    });
+  }
+  return out;
 }
 
 function parseWidget(raw: unknown): StoredMessage['widget'] {
@@ -266,6 +338,7 @@ function serializeMessage(msg: StoredMessage): Record<string, unknown> {
   if (msg.widget !== undefined) raw.widget = { ...msg.widget };
   if (msg.toolUse !== undefined) raw.toolUse = msg.toolUse;
   if (msg.toolResult !== undefined) raw.toolResult = msg.toolResult;
+  if (msg.blocks !== undefined) raw.blocks = msg.blocks.map((b) => ({ ...b }));
   if (msg.extras !== undefined) {
     for (const [k, v] of Object.entries(msg.extras)) raw[k] = v;
   }

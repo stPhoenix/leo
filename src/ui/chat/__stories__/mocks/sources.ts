@@ -1,7 +1,8 @@
 import type { FocusedContext } from '@/editor/types';
 import { NULL_FOCUSED_CONTEXT } from '@/editor/types';
-import type { ChatMessageRecord } from '@/chat/types';
+import type { ChatMessageRecord, ContentBlock, ToolUseBlock } from '@/chat/types';
 import { ChatMessageStore } from '@/chat/messageStore';
+import { RunStateStore, type ProgressEvent, type PermissionRequest } from '@/chat/runStateStore';
 import type { StreamingPhase } from '@/chat/streamingController';
 import type { ThreadsSnapshot } from '@/storage/threadsStore';
 import type { ContextIndicatorSource } from '../../ContextIndicator';
@@ -264,6 +265,115 @@ export const contextWidgetConversation: readonly ChatMessageRecord[] = [
       },
     },
   },
+];
+
+export interface MockRunStateInput {
+  readonly inProgress?: readonly string[];
+  readonly resolved?: readonly string[];
+  readonly errored?: readonly string[];
+  readonly rejected?: readonly string[];
+  readonly canceled?: readonly string[];
+  readonly progress?: ReadonlyArray<readonly [string, ProgressEvent]>;
+  readonly permissions?: ReadonlyArray<readonly [string, PermissionRequest]>;
+}
+
+export function makeRunStateStore(input: MockRunStateInput = {}): RunStateStore {
+  const rs = new RunStateStore();
+  for (const id of input.inProgress ?? []) rs.markRunning(id);
+  for (const id of input.resolved ?? []) {
+    rs.markRunning(id);
+    rs.markResolved(id, false);
+  }
+  for (const id of input.errored ?? []) {
+    rs.markRunning(id);
+    rs.markResolved(id, true);
+  }
+  for (const id of input.rejected ?? []) rs.markRejected(id);
+  for (const id of input.canceled ?? []) {
+    rs.markRunning(id);
+    rs.markCanceled(id);
+  }
+  for (const [id, ev] of input.progress ?? []) rs.appendProgress(id, ev);
+  for (const [id, req] of input.permissions ?? []) rs.recordPermissionRequest(id, req);
+  return rs;
+}
+
+export function mockProgressEvents(
+  toolUseId: string,
+  kind: ProgressEvent['kind'],
+  count: number,
+): ProgressEvent[] {
+  const out: ProgressEvent[] = [];
+  for (let i = 0; i < count; i += 1) {
+    if (kind === 'bash') out.push({ kind: 'bash', toolUseId, stdout: `line ${i}` });
+    else if (kind === 'web_search')
+      out.push({ kind: 'web_search', toolUseId, query: 'q', resultsSoFar: i });
+    else if (kind === 'mcp')
+      out.push({ kind: 'mcp', toolUseId, serverName: 'srv', methodCall: `call/${i}` });
+    else if (kind === 'agent')
+      out.push({
+        kind: 'agent',
+        toolUseId,
+        agentId: `a${i}`,
+        agentType: 'Explore',
+        toolUseCount: i,
+      });
+    else if (kind === 'skill')
+      out.push({ kind: 'skill', toolUseId, skillName: 'plan', status: `step-${i}` });
+    else out.push({ kind: 'task_output', toolUseId, taskId: `T${i}`, status: 'progress' });
+  }
+  return out;
+}
+
+export const mockEditDiff = {
+  before: 'const x = 1;\nconst y = 2;\nconst z = 4;',
+  after: 'const x = 1;\nconst y = 3;\nconst z = 4;',
+} as const;
+
+export interface MockClock {
+  readonly now: () => number;
+  readonly advance: (ms: number) => void;
+  readonly setInterval: (cb: () => void, ms: number) => unknown;
+  readonly clearInterval: (h: unknown) => void;
+}
+
+export function mockClock(t0 = 0): MockClock {
+  let t = t0;
+  const callbacks = new Map<unknown, { cb: () => void; ms: number; lastFire: number }>();
+  let nextHandle = 1;
+  return {
+    now: () => t,
+    advance: (ms) => {
+      t += ms;
+      for (const entry of callbacks.values()) {
+        while (t - entry.lastFire >= entry.ms) {
+          entry.lastFire += entry.ms;
+          entry.cb();
+        }
+      }
+    },
+    setInterval: (cb, ms) => {
+      const handle = nextHandle;
+      nextHandle += 1;
+      callbacks.set(handle, { cb, ms, lastFire: t });
+      return handle;
+    },
+    clearInterval: (h) => {
+      callbacks.delete(h);
+    },
+  };
+}
+
+export const exampleToolUseBlocks: ContentBlock[] = [
+  { type: 'text', text: 'I will read the file then summarize.' },
+  {
+    type: 'tool_use',
+    id: 't1',
+    name: 'readNote',
+    input: { path: 'README.md' },
+  } satisfies ToolUseBlock,
+  { type: 'tool_result', tool_use_id: 't1', content: '# Leo\nLocal-first plugin.' },
+  { type: 'text', text: 'Got it. Here is the summary…' },
 ];
 
 export const errorConversation: readonly ChatMessageRecord[] = [

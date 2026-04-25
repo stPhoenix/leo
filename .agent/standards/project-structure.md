@@ -6,12 +6,15 @@ leo/
 │   ├── architecture/
 │   │   └── architecture.md              # Module map, contracts, data flows
 │   ├── features/
-│   │   └── leo_slice_20260419-190449/   # Sliced feature planning workspace (per-feature docs)
+│   │   ├── arch-alignment_plan_20260424-005915/
+│   │   ├── leo_slice_20260419-190449/   # Sliced feature planning workspace (per-feature docs)
+│   │   └── livestatus_plan_20260425-185758/
 │   ├── scripts/
 │   │   └── precommit.md                 # Precommit runbook
 │   ├── srs/
 │   │   ├── compact.md
 │   │   ├── context.md
+│   │   ├── livestatus.md
 │   │   ├── plan.md
 │   │   ├── skill-doc.md
 │   │   └── srs.md                       # Software requirements spec
@@ -43,10 +46,13 @@ leo/
 │   │   ├── tokenEstimator.ts
 │   │   ├── truncator.ts
 │   │   └── types.ts
-│   ├── chat/                            # Chat message store, streaming, attachments, usage
+│   ├── chat/                            # Chat message store, streaming, attachments, usage, diff, run state, group read-only
 │   │   ├── attachments.ts
 │   │   ├── attachmentsStore.ts
+│   │   ├── diff.ts
+│   │   ├── groupReadOnly.ts
 │   │   ├── messageStore.ts
+│   │   ├── runStateStore.ts
 │   │   ├── streamingController.ts
 │   │   ├── tokenUsage.ts
 │   │   ├── types.ts
@@ -88,16 +94,17 @@ leo/
 │   │   ├── obsidianSinkFs.ts
 │   │   ├── obsidianUserErrorChannel.ts
 │   │   └── rotatingFileSink.ts
-│   ├── providers/                       # LLM + embedding providers, SSE, pricing, manager, registry
+│   ├── providers/                       # LLM + embedding providers, langchain bridge, pricing, manager, registry
 │   │   ├── anthropicProvider.ts
 │   │   ├── connectionState.ts
 │   │   ├── embeddingClient.ts
+│   │   ├── langchainMessages.ts
+│   │   ├── langchainStream.ts
 │   │   ├── lmStudioProvider.ts
 │   │   ├── openAICompatibleProvider.ts
 │   │   ├── pricing.ts
 │   │   ├── providerManager.ts
 │   │   ├── registry.ts
-│   │   ├── sseParser.ts
 │   │   └── types.ts
 │   ├── rag/                             # RAG engine, graph traversal, scoring, exclude/tag matchers
 │   │   ├── excludeMatcher.ts
@@ -162,10 +169,36 @@ leo/
 │   │   │   ├── __stories__/
 │   │   │   │   └── mocks/
 │   │   │   │       └── sources.ts       # Shared Storybook mocks (sources, conversations, renderers)
+│   │   │   ├── blocks/                  # Assistant message block views (text, thinking, tool use/result, diff, progress, agent tree, grouped tools, inline permission)
+│   │   │   │   ├── AgentProgressTree.stories.tsx
+│   │   │   │   ├── AgentProgressTree.tsx
+│   │   │   │   ├── AssistantBlocks.tsx
+│   │   │   │   ├── DiffView.stories.tsx
+│   │   │   │   ├── DiffView.tsx
+│   │   │   │   ├── GroupedToolUses.stories.tsx
+│   │   │   │   ├── GroupedToolUses.tsx
+│   │   │   │   ├── index.ts
+│   │   │   │   ├── InlinePermissionPrompt.stories.tsx
+│   │   │   │   ├── InlinePermissionPrompt.tsx
+│   │   │   │   ├── ProgressLines.stories.tsx
+│   │   │   │   ├── ProgressLines.tsx
+│   │   │   │   ├── TextBlockView.tsx
+│   │   │   │   ├── ThinkingBlockView.stories.tsx
+│   │   │   │   ├── ThinkingBlockView.tsx
+│   │   │   │   ├── ToolResultBlockView.stories.tsx
+│   │   │   │   ├── ToolResultBlockView.tsx
+│   │   │   │   ├── ToolUseBlockView.stories.tsx
+│   │   │   │   ├── ToolUseBlockView.tsx
+│   │   │   │   └── toolUseStatus.tsx
+│   │   │   ├── hooks/
+│   │   │   │   └── useBlink.ts
 │   │   │   ├── widgets/
 │   │   │   │   ├── ContextWidget.tsx
 │   │   │   │   └── registry.ts
+│   │   │   ├── BottomLiveIndicator.stories.tsx
+│   │   │   ├── BottomLiveIndicator.tsx
 │   │   │   ├── ChatRoot.stories.tsx
+│   │   │   ├── ChatRootBlocks.stories.tsx
 │   │   │   ├── ChatRoot.tsx
 │   │   │   ├── codeBlockEnhancer.ts
 │   │   │   ├── ComposerInput.stories.tsx
@@ -217,7 +250,6 @@ leo/
 │   ├── integration/                     # MSW-backed provider/embedding integration
 │   │   ├── _mswServer.ts
 │   │   ├── embeddingClient.test.ts
-│   │   ├── lmStudioProvider.test.ts
 │   │   └── providerManager.test.ts
 │   ├── smoke/                           # Release smoke + CM6 checklist + tinyVault fixture
 │   │   ├── fixtures/

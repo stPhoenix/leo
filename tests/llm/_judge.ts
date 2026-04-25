@@ -61,7 +61,7 @@ async function callJudge(
   let text = '';
   try {
     for await (const ev of provider.stream(req, ctl.signal)) {
-      if (ev.type === 'token') text += ev.text;
+      if (ev.type === 'block_delta' && ev.delta.type === 'text_delta') text += ev.delta.text;
     }
   } finally {
     clearTimeout(timer);

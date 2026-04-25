@@ -11,6 +11,8 @@ export interface AppendToNoteArgs {
 export interface AppendToNoteResult {
   readonly path: string;
   readonly bytesAppended: number;
+  readonly before: string;
+  readonly after: string;
 }
 
 const AppendToNoteSchema: z.ZodType<AppendToNoteArgs> = z
@@ -65,6 +67,8 @@ export function createAppendToNoteTool(): ToolSpec<AppendToNoteArgs, AppendToNot
           data: {
             path: args.path,
             bytesAppended: byteLength(separator + args.content),
+            before: existing,
+            after: next,
           },
         };
       } catch (err) {

@@ -19,6 +19,8 @@ export interface EditNoteResult {
   readonly routedVia: 'editor' | 'vault';
   readonly bytesWritten: number;
   readonly decision: 'accept' | 'reject';
+  readonly before: string;
+  readonly after: string;
 }
 
 export interface EditNoteToolOptions {
@@ -93,10 +95,19 @@ export function createEditNoteTool(
       const start = now();
       const routedVia: 'editor' | 'vault' = ctx.editor.isActiveNote(args.path) ? 'editor' : 'vault';
       opts.logger?.debug('edit_note.route', { path: args.path, routedVia });
+      let beforeText = '';
+      let afterText = '';
       let commitResult:
         | { ok: true; bytesWritten: number; revert: () => void | Promise<void> }
         | { ok: false; error: string };
       if (routedVia === 'editor') {
+        try {
+          if (await ctx.vault.exists(args.path)) {
+            beforeText = await ctx.vault.read(args.path);
+          }
+        } catch {
+          // best-effort snapshot; falls through to empty before
+        }
         const applied = await ctx.editor.applyActiveEdit({
           path: args.path,
           lineStart: args.line_start,
@@ -107,6 +118,13 @@ export function createEditNoteTool(
         if (!applied.ok) {
           return { ok: false, error: applied.error };
         }
+        const splicedAfter = spliceLines(
+          beforeText,
+          args.line_start,
+          args.line_end,
+          args.new_content,
+        );
+        afterText = splicedAfter.ok ? splicedAfter.next : args.new_content;
         commitResult = {
           ok: true,
           bytesWritten: applied.bytesWritten,
@@ -118,8 +136,10 @@ export function createEditNoteTool(
             return { ok: false, error: 'not found' };
           }
           const before = await ctx.vault.read(args.path);
+          beforeText = before;
           const spliced = spliceLines(before, args.line_start, args.line_end, args.new_content);
           if (!spliced.ok) return { ok: false, error: spliced.error };
+          afterText = spliced.next;
           await ctx.vault.write(args.path, spliced.next);
           commitResult = {
             ok: true,
@@ -174,6 +194,8 @@ export function createEditNoteTool(
           routedVia,
           bytesWritten: commitResult.bytesWritten,
           decision: reverted ? 'reject' : 'accept',
+          before: beforeText,
+          after: reverted ? beforeText : afterText,
         },
       };
     },

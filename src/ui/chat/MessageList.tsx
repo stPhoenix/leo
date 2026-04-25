@@ -12,6 +12,7 @@ import { enhanceCodeBlocks, type CodeBlockClipboard } from './codeBlockEnhancer'
 import { isNearBottom } from './scrollAnchoring';
 import { InlineEditor, MessageActionBar, type MessageActions } from './MessageActionBar';
 import { lookupWidget } from './widgets/registry';
+import { AssistantBlocks, type ToolUseBlockSlots } from './blocks';
 
 export interface MarkdownRenderFn {
   (text: string, container: HTMLElement): (() => void) | void;
@@ -35,6 +36,7 @@ export interface MessageListProps {
   readonly setIcon?: (el: HTMLElement, name: string) => void;
   readonly actions?: MessageActions;
   readonly resolveCostUSD?: (usage: { input: number; output: number }) => number | null;
+  readonly toolUseSlots?: ToolUseBlockSlots;
 }
 
 export function MessageList(props: MessageListProps): JSX.Element {
@@ -130,6 +132,9 @@ export function MessageList(props: MessageListProps): JSX.Element {
                     {...(props.resolveCostUSD !== undefined
                       ? { resolveCostUSD: props.resolveCostUSD }
                       : {})}
+                    {...(props.toolUseSlots !== undefined
+                      ? { toolUseSlots: props.toolUseSlots }
+                      : {})}
                   />
                 )}
               </li>
@@ -212,12 +217,16 @@ interface AssistantBubbleProps {
   readonly setIcon?: (el: HTMLElement, name: string) => void;
   readonly actions?: MessageActions;
   readonly resolveCostUSD?: (usage: { input: number; output: number }) => number | null;
+  readonly toolUseSlots?: ToolUseBlockSlots;
 }
 
 function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null);
+  const blocks = props.record.blocks;
+  const useBlocks = blocks !== undefined && blocks.length > 0;
 
   useEffect(() => {
+    if (useBlocks) return;
     const host = hostRef.current;
     if (host === null) return;
     host.replaceChildren();
@@ -231,7 +240,14 @@ function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
       if (typeof cleanupMarkdown === 'function') cleanupMarkdown();
       host.replaceChildren();
     };
-  }, [props.record.id, props.record.content, props.renderMarkdown, props.clipboard, props.setIcon]);
+  }, [
+    useBlocks,
+    props.record.id,
+    props.record.content,
+    props.renderMarkdown,
+    props.clipboard,
+    props.setIcon,
+  ]);
 
   const status = props.record.status;
   const streaming = status === 'streaming';
@@ -244,6 +260,8 @@ function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
     .filter((s) => s.length > 0)
     .join(' ');
 
+  const lastBlockIsText = useBlocks && blocks![blocks!.length - 1]?.type === 'text';
+
   return (
     <div className={classes} data-status={status ?? 'done'}>
       <header className="leo-bubble-header">
@@ -252,9 +270,28 @@ function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
           {formatBubbleTime(props.record.createdAt)}
         </time>
       </header>
-      <div className="leo-bubble-body" data-slot="assistant-markdown" ref={hostRef} />
-      {streaming ? (
+      {useBlocks ? (
+        <AssistantBlocks
+          messageId={props.record.id}
+          blocks={blocks!}
+          streaming={streaming}
+          renderMarkdown={props.renderMarkdown}
+          clipboard={props.clipboard}
+          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+          {...(props.toolUseSlots !== undefined ? { toolUseSlots: props.toolUseSlots } : {})}
+        />
+      ) : (
+        <div className="leo-bubble-body" data-slot="assistant-markdown" ref={hostRef} />
+      )}
+      {streaming && !useBlocks ? (
         <span className="leo-streaming-cursor" data-slot="streaming-cursor" aria-hidden="true" />
+      ) : null}
+      {streaming && useBlocks && !lastBlockIsText ? (
+        <span
+          className="leo-streaming-cursor"
+          data-slot="streaming-cursor-trailing"
+          aria-hidden="true"
+        />
       ) : null}
       {!streaming && props.record.tokens !== undefined ? (
         <TokenUsageFooter
