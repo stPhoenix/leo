@@ -94,6 +94,22 @@ describe('migrate()', () => {
   it('floors fractional contextWindowOverride values', () => {
     expect(migrate({ contextWindowOverride: 123_456.9 }).contextWindowOverride).toBe(123_456);
   });
+
+  it('populates langfuse defaults when absent', () => {
+    const m = migrate({});
+    expect(m.langfuse).toEqual({ enabled: false, host: 'https://cloud.langfuse.com' });
+  });
+
+  it('preserves langfuse fields and falls back per-field', () => {
+    const m = migrate({
+      langfuse: { enabled: true, host: 'https://eu.langfuse.com' },
+    });
+    expect(m.langfuse).toEqual({ enabled: true, host: 'https://eu.langfuse.com' });
+
+    const partial = migrate({ langfuse: { enabled: 'yes', host: '   ' } });
+    expect(partial.langfuse.enabled).toBe(false);
+    expect(partial.langfuse.host).toBe('https://cloud.langfuse.com');
+  });
 });
 
 describe('SettingsStore', () => {

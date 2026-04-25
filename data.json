@@ -21,12 +21,17 @@
       "skills": true,
       "mcp": true,
       "plan": true,
-      "appearance": true,
-      "advanced": true
+      "langfuse": true,
+      "appearance": false,
+      "advanced": false
     }
   },
   "providerTimeouts": {
     "firstEventMs": 300000,
     "idleMs": 120000
+  },
+  "langfuse": {
+    "enabled": true,
+    "host": "http://localhost:3100"
   }
 }

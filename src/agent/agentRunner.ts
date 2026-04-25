@@ -24,9 +24,22 @@ import {
   USE_GRAPH_RUNTIME,
   type ConfirmationDecision,
   type GraphDeps,
+  type GraphTraceContext,
   type ToolConfirmationInterruptPayload,
   type TurnBinding,
 } from './graph';
+
+export interface AgentTracer {
+  beginTurn(input: {
+    readonly sessionId: string;
+    readonly metadata: Readonly<Record<string, unknown>>;
+    readonly tags: readonly string[];
+    readonly name?: string;
+  }): {
+    readonly traceContext: GraphTraceContext;
+    end(): Promise<void>;
+  };
+}
 
 export interface AgentRunnerProvider {
   stream(req: ProviderChatRequest, signal: AbortSignal): AsyncIterable<ProviderStreamEvent>;
@@ -81,6 +94,7 @@ export interface AgentRunnerOptions {
   readonly planMode?: PlanModeController;
   readonly agentIdFor?: (thread: ThreadId) => string | null;
   readonly microcompact?: MicrocompactAgentOptions;
+  readonly tracer?: AgentTracer;
 }
 
 export interface MicrocompactAgentOptions {
@@ -128,6 +142,7 @@ export class AgentRunner {
   private readonly microcompactGapMinutes: number | undefined;
   private readonly microcompactKeepRecent: number | undefined;
   private readonly microcompactIsCompactable: ((toolName: string) => boolean) | undefined;
+  private readonly tracer: AgentTracer | undefined;
   private readonly slots: TurnSlot[] = [];
   private inflight: TurnSlot | null = null;
   private tail: Promise<void> = Promise.resolve();
@@ -157,6 +172,7 @@ export class AgentRunner {
     this.microcompactGapMinutes = mc.gapThresholdMinutes;
     this.microcompactKeepRecent = mc.keepRecent;
     this.microcompactIsCompactable = mc.isCompactable;
+    this.tracer = opts.tracer;
   }
 
   send(msg: AgentUserMessage, thread: ThreadId): AsyncIterable<StreamEvent> {
@@ -231,6 +247,19 @@ export class AgentRunner {
   private async drive(slot: TurnSlot): Promise<void> {
     const thread = slot.input.thread;
     const agentId = this.agentIdFor(thread);
+    const turnHandle =
+      this.tracer !== undefined
+        ? this.tracer.beginTurn({
+            sessionId: thread,
+            metadata: {
+              threadId: thread,
+              agentId,
+              turnEnqueuedAt: slot.enqueuedAt,
+            },
+            tags: ['leo', `agent:${agentId ?? 'main'}`],
+            name: 'leo.turn',
+          })
+        : null;
     const turn: TurnBinding = {
       thread,
       message: slot.input.message,
@@ -239,6 +268,7 @@ export class AgentRunner {
       signal: slot.abort.signal,
       events: slot.events,
       agentId,
+      ...(turnHandle !== null ? { traceContext: turnHandle.traceContext } : {}),
     };
     const deps: GraphDeps = {
       provider: this.provider,
@@ -313,6 +343,14 @@ export class AgentRunner {
         errored: true,
         error: error.message,
       });
+    } finally {
+      if (turnHandle !== null) {
+        try {
+          await turnHandle.end();
+        } catch {
+          /* logged inside tracer */
+        }
+      }
     }
   }
 

@@ -5,6 +5,7 @@ import type { Provider, ProviderChatRequest, ProviderModel, StreamEvent } from '
 import { ProviderConnectError } from './types';
 import { toLangchainMessages } from './langchainMessages';
 import { toStreamEvents } from './langchainStream';
+import { toRunnableConfig } from './traceConfig';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -56,7 +57,7 @@ export class AnthropicProvider implements Provider {
     const messages = toLangchainMessages(req.messages);
     let stream: AsyncIterable<AIMessageChunk>;
     try {
-      stream = await callable.stream(messages, { signal });
+      stream = await callable.stream(messages, { signal, ...toRunnableConfig(req.trace) });
     } catch (err) {
       if (signal.aborted) throw abortReason(signal);
       throw asConnectError(err, 'stream failed');

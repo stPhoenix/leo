@@ -8,6 +8,7 @@ export type SectionId =
   | 'skills'
   | 'mcp'
   | 'plan'
+  | 'langfuse'
   | 'appearance'
   | 'advanced';
 
@@ -37,6 +38,11 @@ export interface ProviderTimeoutSettings {
   idleMs: number;
 }
 
+export interface LangfuseSettings {
+  enabled: boolean;
+  host: string;
+}
+
 export interface LeoSettings {
   schemaVersion: 1;
   logLevel: LogLevel;
@@ -44,12 +50,18 @@ export interface LeoSettings {
   indexing: IndexingSettings;
   ui: UiSettings;
   providerTimeouts: ProviderTimeoutSettings;
+  langfuse: LangfuseSettings;
   contextWindowOverride?: number;
 }
 
 export const DEFAULT_PROVIDER_TIMEOUTS: ProviderTimeoutSettings = {
   firstEventMs: 300_000,
   idleMs: 120_000,
+};
+
+export const DEFAULT_LANGFUSE: LangfuseSettings = {
+  enabled: false,
+  host: 'https://cloud.langfuse.com',
 };
 
 export const DEFAULT_INDEXING: IndexingSettings = {
@@ -79,6 +91,7 @@ export const DEFAULT_EXPANDED: Record<SectionId, boolean> = {
   skills: false,
   mcp: false,
   plan: false,
+  langfuse: false,
   appearance: false,
   advanced: false,
 };
@@ -94,6 +107,7 @@ export const DEFAULT_SETTINGS: LeoSettings = {
     expandedSections: DEFAULT_EXPANDED,
   },
   providerTimeouts: { ...DEFAULT_PROVIDER_TIMEOUTS },
+  langfuse: { ...DEFAULT_LANGFUSE },
 };
 
 export function migrate(raw: unknown): LeoSettings {
@@ -107,6 +121,7 @@ export function migrate(raw: unknown): LeoSettings {
   const indexing = mergeIndexing(obj.indexing);
   const ui = mergeUi(obj.ui, provider);
   const providerTimeouts = mergeProviderTimeouts(obj.providerTimeouts);
+  const langfuse = mergeLangfuse(obj.langfuse);
   const contextWindowOverride = parseContextWindowOverride(obj.contextWindowOverride);
 
   return {
@@ -116,7 +131,20 @@ export function migrate(raw: unknown): LeoSettings {
     indexing,
     ui,
     providerTimeouts,
+    langfuse,
     ...(contextWindowOverride !== undefined ? { contextWindowOverride } : {}),
+  };
+}
+
+function mergeLangfuse(raw: unknown): LangfuseSettings {
+  if (raw === null || typeof raw !== 'object') return { ...DEFAULT_LANGFUSE };
+  const o = raw as Record<string, unknown>;
+  return {
+    enabled: typeof o.enabled === 'boolean' ? o.enabled : DEFAULT_LANGFUSE.enabled,
+    host:
+      typeof o.host === 'string' && o.host.trim().length > 0
+        ? o.host.trim()
+        : DEFAULT_LANGFUSE.host,
   };
 }
 
@@ -218,6 +246,7 @@ function cloneDefaults(): LeoSettings {
       expandedSections: { ...DEFAULT_EXPANDED },
     },
     providerTimeouts: { ...DEFAULT_PROVIDER_TIMEOUTS },
+    langfuse: { ...DEFAULT_LANGFUSE },
   };
 }
 
@@ -260,6 +289,7 @@ export const SECTION_ORDER: readonly SectionId[] = [
   'skills',
   'mcp',
   'plan',
+  'langfuse',
   'appearance',
   'advanced',
 ] as const;
@@ -270,6 +300,7 @@ export const SECTION_LABELS: Record<SectionId, string> = {
   skills: 'Skills',
   mcp: 'MCP Servers',
   plan: 'Plan / Todos',
+  langfuse: 'Tracing (Langfuse)',
   appearance: 'Appearance',
   advanced: 'Advanced',
 };

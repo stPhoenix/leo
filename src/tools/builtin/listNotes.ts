@@ -17,6 +17,14 @@ export interface ListNotesResult {
 
 const MAX_ENTRIES = 5000;
 
+function hasHiddenSegment(p: string): boolean {
+  if (p.length === 0) return false;
+  for (const seg of p.split('/')) {
+    if (seg.startsWith('.')) return true;
+  }
+  return false;
+}
+
 const ListNotesSchema: z.ZodType<ListNotesArgs> = z
   .object({
     path: z
@@ -40,7 +48,7 @@ export function createListNotesTool(): ToolSpec<ListNotesArgs, ListNotesResult> 
   return {
     id: 'list_notes',
     description:
-      'List files and folders at a vault-relative path. Use to discover what exists when structure is unknown. `recursive: true` walks subtree. Empty/omitted path = vault root.',
+      'List files and folders at a vault-relative path. Use to discover what exists when structure is unknown. `recursive: true` walks subtree. Empty/omitted path = vault root. Hidden entries (any path segment starting with ".", e.g. .obsidian, .leo, .git) are excluded.',
     schema: ListNotesSchema,
     parameters: jsonSchemaFromZod(ListNotesSchema),
     requiresConfirmation: false,
@@ -57,7 +65,11 @@ export function createListNotesTool(): ToolSpec<ListNotesArgs, ListNotesResult> 
           const listing = await ctx.vault.list(root);
           return {
             ok: true,
-            data: { path: root, files: [...listing.files], folders: [...listing.folders] },
+            data: {
+              path: root,
+              files: listing.files.filter((f) => !hasHiddenSegment(f)),
+              folders: listing.folders.filter((d) => !hasHiddenSegment(d)),
+            },
           };
         }
         const files: string[] = [];
@@ -69,6 +81,7 @@ export function createListNotesTool(): ToolSpec<ListNotesArgs, ListNotesResult> 
           const cur = queue.shift() as string;
           const listing = await ctx.vault.list(cur);
           for (const f of listing.files) {
+            if (hasHiddenSegment(f)) continue;
             if (files.length + folders.length >= MAX_ENTRIES) {
               truncated = true;
               break;
@@ -77,6 +90,7 @@ export function createListNotesTool(): ToolSpec<ListNotesArgs, ListNotesResult> 
           }
           if (truncated) break;
           for (const d of listing.folders) {
+            if (hasHiddenSegment(d)) continue;
             if (files.length + folders.length >= MAX_ENTRIES) {
               truncated = true;
               break;

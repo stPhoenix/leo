@@ -23,12 +23,20 @@ export interface OpenAITool {
   };
 }
 
+export interface ProviderTraceContext {
+  readonly callbacks?: readonly unknown[];
+  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly tags?: readonly string[];
+  readonly runName?: string;
+}
+
 export interface ProviderChatRequest {
   readonly model: string;
   readonly messages: readonly ChatMessage[];
   readonly temperature?: number;
   readonly maxTokens?: number;
   readonly tools?: readonly OpenAITool[];
+  readonly trace?: ProviderTraceContext;
 }
 
 export interface ProviderModel {

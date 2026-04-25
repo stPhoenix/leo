@@ -1,5 +1,6 @@
 import { Notice, Plugin } from 'obsidian';
 import { Logger } from '@/platform/Logger';
+import { TracerService } from '@/platform/tracer';
 import { RotatingFileSink } from '@/platform/rotatingFileSink';
 import { createObsidianSinkFs } from '@/platform/obsidianSinkFs';
 import { createObsidianUserErrorChannel } from '@/platform/obsidianUserErrorChannel';
@@ -116,6 +117,7 @@ export default class LeoPlugin extends Plugin {
   planStore!: PlanStore;
   planApprovalController!: PlanApprovalController;
   safeStorage!: SafeStorage;
+  tracer!: TracerService;
   mcp: McpWiring | null = null;
   threadsStore: ThreadsStore | null = null;
   skillEditor: SkillEditorController | null = null;
@@ -169,6 +171,17 @@ export default class LeoPlugin extends Plugin {
         new Notice('Leo: OS keyring unavailable — API keys stored with obfuscation only.'),
     });
     await this.safeStorage.load();
+
+    this.tracer = new TracerService({
+      safeStorage: this.safeStorage,
+      logger: this.logger,
+    });
+    await this.tracer.refresh(this.store.get());
+    this.register(
+      this.store.on((next) => {
+        void this.tracer.refresh(next);
+      }),
+    );
 
     const currentApiKeyKey = (): string => `provider.${this.store.get().provider.kind}.apiKey`;
     const apiKeyCache = { value: '' };
@@ -415,6 +428,7 @@ export default class LeoPlugin extends Plugin {
       skillEditor: this.skillEditor ?? undefined,
       mcpSettingsStore: this.mcp?.settingsStore,
       mcpClient: this.mcp?.client,
+      tracer: this.tracer,
     });
     this.addSettingTab(settingsTab);
 
@@ -601,6 +615,7 @@ export default class LeoPlugin extends Plugin {
           };
         });
       },
+      tracer: this.tracer,
     });
 
     const confirmationController = this.confirmationController;
@@ -776,6 +791,11 @@ export default class LeoPlugin extends Plugin {
     this.confirmationController?.dispose();
     this.acceptRejectController?.dispose();
     this.agentRunner?.dispose();
+    try {
+      await this.tracer?.dispose();
+    } catch {
+      /* logged inside tracer */
+    }
     this.planModeController?.dispose();
     this.todoStore?.dispose();
     this.editorBridge?.dispose();

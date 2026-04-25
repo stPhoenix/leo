@@ -149,6 +149,12 @@ export interface GraphDeps {
   readonly appendHistory: (thread: ThreadId, msg: AgentHistoryMessage) => void;
 }
 
+export interface GraphTraceContext {
+  readonly callbacks?: readonly unknown[];
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly tags: readonly string[];
+}
+
 export interface TurnBinding {
   readonly thread: ThreadId;
   readonly message: AgentUserMessage;
@@ -157,6 +163,7 @@ export interface TurnBinding {
   readonly signal: AbortSignal;
   readonly events: EventChannel<StreamEvent>;
   readonly agentId: string | null;
+  readonly traceContext?: GraphTraceContext;
 }
 
 export const AgentStateAnnotation = Annotation.Root({
@@ -488,10 +495,20 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       state.toolAllowlist === null
         ? state.allToolSpecs
         : state.allToolSpecs.filter((t) => state.toolAllowlist!.has(t.function.name));
+    const traceCtx = turn.traceContext;
     const req: ProviderChatRequest = {
       model: state.effectiveModel,
       messages: state.workingMessages,
       ...(activeTools.length > 0 ? { tools: activeTools } : {}),
+      ...(traceCtx !== undefined
+        ? {
+            trace: {
+              ...(traceCtx.callbacks !== undefined ? { callbacks: traceCtx.callbacks } : {}),
+              metadata: traceCtx.metadata,
+              tags: [...traceCtx.tags],
+            },
+          }
+        : {}),
     };
     const pendingToolCalls: ToolCallRequest[] = [];
     let iterationAssistant = '';

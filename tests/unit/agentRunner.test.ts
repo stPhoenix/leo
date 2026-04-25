@@ -900,4 +900,36 @@ describe('AgentRunner', () => {
     expect(secondTurnMessages).toContain('REPLY-1');
     expect(secondTurnMessages).toContain('second?');
   });
+
+  it('propagates tracer trace context to provider req with sessionId = threadId', async () => {
+    const provider = new FakeProvider();
+    const { logger } = makeLogger();
+    const end = vi.fn(async () => undefined);
+    const beginTurn = vi.fn((input: { sessionId: string }) => ({
+      traceContext: {
+        callbacks: ['CB' as unknown],
+        metadata: { langfuseSessionId: input.sessionId, agentId: 'main' },
+        tags: ['leo'],
+      },
+      end,
+    }));
+    const runner = new AgentRunner({
+      provider,
+      focusedContext: new MutableFocus(),
+      logger,
+      model: () => 'm',
+      tracer: { beginTurn },
+    });
+    provider.plan({ events: [{ type: 'token', text: 'hi' }, { type: 'done' }] });
+    await collect(runner.send({ role: 'user', content: 'q' }, 'thread-abc'));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(beginTurn).toHaveBeenCalled();
+    const arg = beginTurn.mock.calls[0]![0];
+    expect(arg.sessionId).toBe('thread-abc');
+    const trace = provider.calls[0]!.trace;
+    expect(trace?.metadata?.langfuseSessionId).toBe('thread-abc');
+    expect(trace?.tags).toEqual(['leo']);
+    expect(trace?.callbacks).toEqual(['CB']);
+    expect(end).toHaveBeenCalled();
+  });
 });

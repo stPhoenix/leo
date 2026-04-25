@@ -122,4 +122,37 @@ describe('list_notes tool — invocation', () => {
     const r = await tool.invoke({}, makeToolCtx({ vault, signal: ac.signal }));
     expect(r).toEqual({ ok: false, error: 'aborted' });
   });
+
+  it('excludes hidden files and folders at root (non-recursive)', async () => {
+    const vault = new TreeVault({
+      '': {
+        files: ['Welcome.md', '.gitignore'],
+        folders: ['Notes', '.obsidian', '.leo'],
+      },
+    });
+    const tool = createListNotesTool();
+    const r = await tool.invoke({}, ctx(vault));
+    expect(r).toEqual({
+      ok: true,
+      data: { path: '', files: ['Welcome.md'], folders: ['Notes'] },
+    });
+  });
+
+  it('does not descend into hidden folders when recursive', async () => {
+    const vault = new TreeVault({
+      '': {
+        files: ['a.md', '.hidden.md'],
+        folders: ['sub', '.obsidian'],
+      },
+      sub: { files: ['sub/b.md'], folders: ['sub/.cache'] },
+      'sub/.cache': { files: ['sub/.cache/x.tmp'], folders: [] },
+      '.obsidian': { files: ['.obsidian/config.json'], folders: [] },
+    });
+    const tool = createListNotesTool();
+    const r = await tool.invoke({ recursive: true }, ctx(vault));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect([...r.data.files].sort()).toEqual(['a.md', 'sub/b.md']);
+    expect([...r.data.folders].sort()).toEqual(['sub']);
+  });
 });

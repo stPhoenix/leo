@@ -88,13 +88,14 @@ leo/
 │   │   ├── resourcePicker.ts
 │   │   ├── settingsStore.ts
 │   │   └── wireMcp.ts
-│   ├── platform/                        # Logger, sinks, error channel
+│   ├── platform/                        # Logger, sinks, error channel, langfuse tracer
 │   │   ├── Logger.ts
 │   │   ├── logTypes.ts
 │   │   ├── obsidianSinkFs.ts
 │   │   ├── obsidianUserErrorChannel.ts
-│   │   └── rotatingFileSink.ts
-│   ├── providers/                       # LLM + embedding providers, langchain bridge, pricing, manager, registry
+│   │   ├── rotatingFileSink.ts
+│   │   └── tracer.ts                    # TracerService — per-thread Langfuse trace, per-turn span
+│   ├── providers/                       # LLM + embedding providers, langchain bridge, pricing, manager, registry, trace config
 │   │   ├── anthropicProvider.ts
 │   │   ├── connectionState.ts
 │   │   ├── embeddingClient.ts
@@ -105,6 +106,7 @@ leo/
 │   │   ├── pricing.ts
 │   │   ├── providerManager.ts
 │   │   ├── registry.ts
+│   │   ├── traceConfig.ts               # ProviderTraceContext → LangChain RunnableConfig
 │   │   └── types.ts
 │   ├── rag/                             # RAG engine, graph traversal, scoring, exclude/tag matchers
 │   │   ├── excludeMatcher.ts

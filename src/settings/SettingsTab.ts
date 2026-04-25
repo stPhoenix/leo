@@ -27,6 +27,7 @@ import type {
 import type { McpSettingsStore } from '@/mcp/settingsStore';
 import type { MCPClient, ServerStatus } from '@/mcp/mcpClient';
 import type { McpServerConfig, McpTransportKind } from '@/mcp/config';
+import type { TracerService } from '@/platform/tracer';
 
 export interface SettingsTabDeps {
   readonly store: SettingsStore;
@@ -37,6 +38,7 @@ export interface SettingsTabDeps {
   readonly skillEditor?: SkillEditorController;
   readonly mcpSettingsStore?: McpSettingsStore;
   readonly mcpClient?: MCPClient;
+  readonly tracer?: TracerService;
 }
 
 interface McpDraft {
@@ -165,6 +167,10 @@ export class SettingsTab extends PluginSettingTab {
     }
     if (id === 'mcp' && this.deps.mcpSettingsStore !== undefined) {
       this.renderMcpBody(body, this.deps.mcpSettingsStore, this.deps.mcpClient);
+      return;
+    }
+    if (id === 'langfuse') {
+      this.renderLangfuseBody(body, settings);
       return;
     }
     if (id === 'advanced') {
@@ -442,6 +448,115 @@ export class SettingsTab extends PluginSettingTab {
         error: err instanceof Error ? err.message : String(err),
       });
       host.setText('Status: unreachable');
+    }
+  }
+
+  private renderLangfuseBody(body: HTMLElement, settings: LeoSettings): void {
+    body.createEl('p', {
+      cls: 'leo-section-help',
+      text:
+        'Send LLM traces to Langfuse for observability. Each Leo thread becomes a Langfuse session; ' +
+        'every turn within the thread becomes a trace under it.',
+    });
+
+    const tracer = this.deps.tracer;
+    const refreshTracer = async (): Promise<void> => {
+      if (tracer === undefined) return;
+      await tracer.refresh(this.deps.store.get());
+    };
+
+    new Setting(body)
+      .setName('Enable Langfuse tracing')
+      .setDesc('Off by default. Requires host + public key + secret key.')
+      .addToggle((t) => {
+        t.setValue(settings.langfuse.enabled).onChange(async (value) => {
+          await this.deps.store.update((prev) => ({
+            ...prev,
+            langfuse: { ...prev.langfuse, enabled: value },
+          }));
+          await refreshTracer();
+        });
+      });
+
+    new Setting(body)
+      .setName('Host')
+      .setDesc('Langfuse base URL. Use https://cloud.langfuse.com or your self-hosted endpoint.')
+      .addText((t) => {
+        t.setValue(settings.langfuse.host).onChange(async (value) => {
+          await this.deps.store.update((prev) => ({
+            ...prev,
+            langfuse: { ...prev.langfuse, host: value.trim() },
+          }));
+          await refreshTracer();
+        });
+      });
+
+    if (this.deps.safeStorage !== undefined) {
+      const safeStorage = this.deps.safeStorage;
+      const desc = safeStorage.keyringAvailable()
+        ? 'Stored via Electron safeStorage (OS keyring).'
+        : 'Stored with obfuscation only — OS keyring not available.';
+      void Promise.all([
+        safeStorage.get('langfuse.publicKey'),
+        safeStorage.get('langfuse.secretKey'),
+      ]).then(([pub, sec]) => {
+        new Setting(body)
+          .setName('Public key')
+          .setDesc(desc)
+          .addText((t) => {
+            t.inputEl.type = 'password';
+            t.setValue(pub ?? '').onChange(async (value) => {
+              if (value.length === 0) await safeStorage.delete('langfuse.publicKey');
+              else await safeStorage.set('langfuse.publicKey', value);
+              await refreshTracer();
+            });
+          });
+        new Setting(body)
+          .setName('Secret key')
+          .setDesc(desc)
+          .addText((t) => {
+            t.inputEl.type = 'password';
+            t.setValue(sec ?? '').onChange(async (value) => {
+              if (value.length === 0) await safeStorage.delete('langfuse.secretKey');
+              else await safeStorage.set('langfuse.secretKey', value);
+              await refreshTracer();
+            });
+          });
+      });
+    }
+
+    if (tracer !== undefined) {
+      const status = body.createDiv({ cls: 'leo-section-help' });
+      const renderStatus = (): void => {
+        status.setText(
+          tracer.isEnabled()
+            ? 'Tracer status: active (handler initialized).'
+            : 'Tracer status: inactive (disabled, missing keys, or init failed — see .leo/logs/leo.log).',
+        );
+      };
+      renderStatus();
+      new Setting(body)
+        .setName('Test connection')
+        .setDesc('Sends a one-off test trace and flushes. Check Langfuse UI for "leo.test" trace.')
+        .addButton((b) => {
+          b.setButtonText('Send test trace').onClick(async () => {
+            b.setDisabled(true);
+            try {
+              await refreshTracer();
+              renderStatus();
+              if (!tracer.isEnabled()) {
+                new Notice('Langfuse tracer is not active — check keys/host.');
+                return;
+              }
+              await tracer.testTrace();
+              new Notice('Test trace sent. Look for "leo.test" in Langfuse.');
+            } catch (err) {
+              new Notice(`Test trace failed: ${err instanceof Error ? err.message : String(err)}`);
+            } finally {
+              b.setDisabled(false);
+            }
+          });
+        });
     }
   }
 
