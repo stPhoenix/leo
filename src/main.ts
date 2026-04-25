@@ -42,6 +42,7 @@ import type { TokenMessage } from '@/agent/tokenEstimator';
 import type { ChatMessage } from '@/providers/types';
 import { ToolRegistry } from '@/tools/toolRegistry';
 import { createReadNoteTool } from '@/tools/builtin/readNote';
+import { createListNotesTool } from '@/tools/builtin/listNotes';
 import { createCreateNoteTool } from '@/tools/builtin/createNote';
 import { createAppendToNoteTool } from '@/tools/builtin/appendToNote';
 import { createCreateFolderTool } from '@/tools/builtin/createFolder';
@@ -62,7 +63,11 @@ import { createObsidianVaultAdapter } from '@/storage/vaultAdapter';
 import type { StoredMessage } from '@/storage/conversationSchema';
 import type { ChatMessageRecord } from '@/chat/types';
 import { wireIndexerRag, type AppLike, type IndexerRagWiring } from '@/indexer/wireIndexerRag';
-import { createSearchVaultTool, type SearchVaultHit } from '@/tools/builtin/searchVault';
+import {
+  createSearchVaultTool,
+  filenameMatch,
+  type SearchVaultHit,
+} from '@/tools/builtin/searchVault';
 import { EditLockController } from '@/editor/editLock';
 import { HighlightController } from '@/editor/highlights';
 import { createLockDecorationExtension } from '@/editor/cm6LockDecoration';
@@ -121,6 +126,10 @@ export default class LeoPlugin extends Plugin {
   skillRegistry!: SkillRegistry;
   invokedSkills!: InvokedSkillsStore;
   private editorBridge!: EditorBridge;
+  private indexStatus: {
+    hasIndex: () => boolean;
+    subscribe: (cb: () => void) => () => void;
+  } | null = null;
   private chatStoreUnsub: (() => void) | null = null;
   private threadsSubUnsub: (() => void) | null = null;
   private hydrateActiveThread: (() => Promise<void>) | null = null;
@@ -173,7 +182,13 @@ export default class LeoPlugin extends Plugin {
       apiKey: (): string => apiKeyCache.value,
     };
     const provider = createProviderForKind(this.store.get().provider.kind, providerCtx);
-    this.providerManager = new ProviderManager({ provider, logger: this.logger });
+    const initialTimeouts = this.store.get().providerTimeouts;
+    this.providerManager = new ProviderManager({
+      provider,
+      logger: this.logger,
+      firstEventTimeoutMs: initialTimeouts.firstEventMs,
+      idleTimeoutMs: initialTimeouts.idleMs,
+    });
     this.register(
       this.store.on((next) => {
         const nextKind = next.provider.kind;
@@ -182,6 +197,10 @@ export default class LeoPlugin extends Plugin {
           this.providerManager.setProvider(nextProvider);
           void loadApiKey();
         }
+        this.providerManager.setTimeouts({
+          firstEventMs: next.providerTimeouts.firstEventMs,
+          idleMs: next.providerTimeouts.idleMs,
+        });
       }),
     );
     this.embeddingClient = new EmbeddingClient({
@@ -212,6 +231,7 @@ export default class LeoPlugin extends Plugin {
     const vaultAdapter = createObsidianVaultAdapter(this.app.vault.adapter);
     this.toolRegistry = new ToolRegistry({ logger: this.logger });
     this.toolRegistry.register(createReadNoteTool() as unknown as ToolSpec<unknown, unknown>);
+    this.toolRegistry.register(createListNotesTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createCreateNoteTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createAppendToNoteTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createCreateFolderTool() as unknown as ToolSpec<unknown, unknown>);
@@ -440,13 +460,23 @@ export default class LeoPlugin extends Plugin {
     });
     this.register(settingsUnsub);
 
+    this.indexStatus = this.buildIndexStatusSource();
     const searchVaultTool = createSearchVaultTool({
       query: async (text, opts) => {
         const hits = await this.indexerRag.ragEngine.query(text, {
           ...(opts?.tags !== undefined ? { tags: opts.tags } : {}),
           ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
         });
-        return hits as readonly SearchVaultHit[];
+        if (hits.length > 0) return { hits: hits as readonly SearchVaultHit[] };
+        if (this.indexStatus !== null && this.indexStatus.hasIndex()) {
+          return { hits: [] };
+        }
+        const fallback = await filenameMatch(vaultAdapter, text, opts?.signal);
+        return {
+          hits: fallback,
+          notice:
+            'Vault is not indexed; results are filename matches only. Run "Index vault" for semantic search.',
+        };
       },
     });
     this.toolRegistry.register(searchVaultTool as unknown as ToolSpec<unknown, unknown>);
@@ -653,7 +683,7 @@ export default class LeoPlugin extends Plugin {
                 : {}),
             });
           },
-          indexStatusSource: this.buildIndexStatusSource(),
+          indexStatusSource: this.indexStatus ?? this.buildIndexStatusSource(),
           indexDrainSubscribe: (l) => this.indexerRag.vaultIndexer.subscribe(l),
           onIndexVault: () => {
             void (async (): Promise<void> => {

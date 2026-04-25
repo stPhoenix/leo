@@ -1122,3 +1122,165 @@
   font-size: var(--font-ui-smaller);
   padding: var(--size-4-1);
 }
+
+.leo-plan-approval {
+  position: relative;
+  z-index: var(--leo-z-inline-dialog);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  margin: var(--size-4-2);
+  padding: var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+
+.leo-plan-approval[hidden] {
+  display: none;
+}
+
+.leo-plan-approval-header {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+}
+
+.leo-plan-approval-header strong {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.leo-plan-approval-header::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--interactive-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+}
+
+.leo-plan-approval-body {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--size-4-2) var(--size-4-3);
+  border-radius: var(--radius-s);
+  background: var(--background-primary-alt);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+.leo-plan-approval-body > pre {
+  margin: 0;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.leo-plan-approval-body > :first-child {
+  margin-top: 0;
+}
+
+.leo-plan-approval-body > :last-child {
+  margin-bottom: 0;
+}
+
+.leo-plan-approval-body code {
+  font-family: var(--font-monospace);
+  font-size: 0.92em;
+}
+
+.leo-plan-approval-body pre code {
+  background: var(--background-primary);
+  border-radius: var(--radius-s);
+}
+
+.leo-plan-approval-textarea {
+  width: 100%;
+  min-height: 200px;
+  padding: var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.leo-plan-approval-textarea:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+  border-color: var(--interactive-accent);
+}
+
+.leo-plan-approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  justify-content: flex-end;
+}
+
+.leo-plan-approval-actions button {
+  min-width: 84px;
+  padding: var(--size-4-1) var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+  transition:
+    background-color 80ms ease,
+    border-color 80ms ease,
+    color 80ms ease;
+}
+
+.leo-plan-approval-actions button:hover {
+  background: var(--background-modifier-hover);
+}
+
+.leo-plan-approval-actions button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.leo-plan-approval-actions [data-slot='plan-approval-approve'],
+.leo-plan-approval-actions [data-slot='plan-approval-confirm'] {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.leo-plan-approval-actions [data-slot='plan-approval-approve']:hover,
+.leo-plan-approval-actions [data-slot='plan-approval-confirm']:hover {
+  background: var(--interactive-accent-hover);
+  border-color: var(--interactive-accent-hover);
+}
+
+.leo-plan-approval-actions [data-slot='plan-approval-reject'] {
+  color: var(--text-error);
+  border-color: color-mix(
+    in srgb,
+    var(--color-red, var(--text-error)) 35%,
+    var(--background-modifier-border)
+  );
+}
+
+.leo-plan-approval-actions [data-slot='plan-approval-reject']:hover {
+  background: color-mix(in srgb, var(--color-red, var(--text-error)) 14%, transparent);
+  border-color: var(--color-red, var(--text-error));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .leo-plan-approval-actions button {
+    transition: none;
+  }
+}

@@ -14,7 +14,8 @@ import {
 export interface ProviderManagerOptions {
   readonly provider: Provider;
   readonly logger?: Logger;
-  readonly timeoutMs?: number;
+  readonly firstEventTimeoutMs?: number;
+  readonly idleTimeoutMs?: number;
   readonly maxAttempts?: number;
   readonly baseBackoffMs?: number;
   readonly maxBackoffMs?: number;
@@ -25,7 +26,8 @@ export interface ProviderManagerOptions {
 }
 
 const DEFAULTS = {
-  timeoutMs: 120_000,
+  firstEventTimeoutMs: 300_000,
+  idleTimeoutMs: 120_000,
   maxAttempts: 4,
   baseBackoffMs: 500,
   maxBackoffMs: 4_000,
@@ -39,12 +41,25 @@ export class ProviderManager {
   private readonly setIntervalImpl: typeof setInterval;
   private readonly clearIntervalImpl: typeof clearInterval;
   private activeProvider: Provider;
+  private firstEventTimeoutMs: number;
+  private idleTimeoutMs: number;
 
   constructor(private readonly opts: ProviderManagerOptions) {
     this.connection = opts.connection ?? new ConnectionState();
     this.setIntervalImpl = opts.setIntervalImpl ?? setInterval;
     this.clearIntervalImpl = opts.clearIntervalImpl ?? clearInterval;
     this.activeProvider = opts.provider;
+    this.firstEventTimeoutMs = opts.firstEventTimeoutMs ?? DEFAULTS.firstEventTimeoutMs;
+    this.idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULTS.idleTimeoutMs;
+  }
+
+  setTimeouts(opts: { firstEventMs?: number; idleMs?: number }): void {
+    if (opts.firstEventMs !== undefined && opts.firstEventMs > 0) {
+      this.firstEventTimeoutMs = opts.firstEventMs;
+    }
+    if (opts.idleMs !== undefined && opts.idleMs > 0) {
+      this.idleTimeoutMs = opts.idleMs;
+    }
   }
 
   isReady(): boolean {
@@ -103,8 +118,9 @@ export class ProviderManager {
       const onCallerAbort = (): void => attemptCtl.abort(callerSignal.reason);
       if (callerSignal.aborted) attemptCtl.abort(callerSignal.reason);
       else callerSignal.addEventListener('abort', onCallerAbort);
-      const idleMs = this.opts.timeoutMs ?? DEFAULTS.timeoutMs;
-      let timer = setTimeout(() => attemptCtl.abort(new ProviderTimeoutError()), idleMs);
+      const firstMs = this.firstEventTimeoutMs;
+      const idleMs = this.idleTimeoutMs;
+      let timer = setTimeout(() => attemptCtl.abort(new ProviderTimeoutError()), firstMs);
       const bumpTimer = (): void => {
         clearTimeout(timer);
         timer = setTimeout(() => attemptCtl.abort(new ProviderTimeoutError()), idleMs);

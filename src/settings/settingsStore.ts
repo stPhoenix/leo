@@ -32,14 +32,25 @@ export interface IndexingSettings {
   excludePatterns: string[];
 }
 
+export interface ProviderTimeoutSettings {
+  firstEventMs: number;
+  idleMs: number;
+}
+
 export interface LeoSettings {
   schemaVersion: 1;
   logLevel: LogLevel;
   provider: ProviderSettings;
   indexing: IndexingSettings;
   ui: UiSettings;
+  providerTimeouts: ProviderTimeoutSettings;
   contextWindowOverride?: number;
 }
+
+export const DEFAULT_PROVIDER_TIMEOUTS: ProviderTimeoutSettings = {
+  firstEventMs: 300_000,
+  idleMs: 120_000,
+};
 
 export const DEFAULT_INDEXING: IndexingSettings = {
   excludePatterns: [],
@@ -82,6 +93,7 @@ export const DEFAULT_SETTINGS: LeoSettings = {
     firstChatViewOpened: false,
     expandedSections: DEFAULT_EXPANDED,
   },
+  providerTimeouts: { ...DEFAULT_PROVIDER_TIMEOUTS },
 };
 
 export function migrate(raw: unknown): LeoSettings {
@@ -94,6 +106,7 @@ export function migrate(raw: unknown): LeoSettings {
   const provider = mergeProvider(obj.provider);
   const indexing = mergeIndexing(obj.indexing);
   const ui = mergeUi(obj.ui, provider);
+  const providerTimeouts = mergeProviderTimeouts(obj.providerTimeouts);
   const contextWindowOverride = parseContextWindowOverride(obj.contextWindowOverride);
 
   return {
@@ -102,7 +115,22 @@ export function migrate(raw: unknown): LeoSettings {
     provider,
     indexing,
     ui,
+    providerTimeouts,
     ...(contextWindowOverride !== undefined ? { contextWindowOverride } : {}),
+  };
+}
+
+function mergeProviderTimeouts(raw: unknown): ProviderTimeoutSettings {
+  if (raw === null || typeof raw !== 'object') return { ...DEFAULT_PROVIDER_TIMEOUTS };
+  const o = raw as Record<string, unknown>;
+  return {
+    firstEventMs: clampInt(
+      o.firstEventMs,
+      1_000,
+      3_600_000,
+      DEFAULT_PROVIDER_TIMEOUTS.firstEventMs,
+    ),
+    idleMs: clampInt(o.idleMs, 1_000, 3_600_000, DEFAULT_PROVIDER_TIMEOUTS.idleMs),
   };
 }
 
@@ -189,6 +217,7 @@ function cloneDefaults(): LeoSettings {
       firstChatViewOpened: DEFAULT_SETTINGS.ui.firstChatViewOpened,
       expandedSections: { ...DEFAULT_EXPANDED },
     },
+    providerTimeouts: { ...DEFAULT_PROVIDER_TIMEOUTS },
   };
 }
 

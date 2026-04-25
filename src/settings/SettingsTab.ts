@@ -457,6 +457,42 @@ export class SettingsTab extends PluginSettingTab {
           this.deps.logger.setLevel(next);
         });
       });
+
+    new Setting(body)
+      .setName('First-event timeout (s)')
+      .setDesc(
+        'Seconds to wait for the first stream event from the provider (covers prompt eval on big local models). Default 300.',
+      )
+      .addText((t) => {
+        t.setValue(String(Math.round(settings.providerTimeouts.firstEventMs / 1000))).onChange(
+          async (value) => {
+            const parsed = Number.parseInt(value, 10);
+            if (!Number.isFinite(parsed) || parsed < 1) return;
+            await this.deps.store.update((prev) => ({
+              ...prev,
+              providerTimeouts: { ...prev.providerTimeouts, firstEventMs: parsed * 1000 },
+            }));
+          },
+        );
+      });
+
+    new Setting(body)
+      .setName('Idle timeout (s)')
+      .setDesc(
+        'Seconds of silence between stream events before aborting an in-flight request. Default 120.',
+      )
+      .addText((t) => {
+        t.setValue(String(Math.round(settings.providerTimeouts.idleMs / 1000))).onChange(
+          async (value) => {
+            const parsed = Number.parseInt(value, 10);
+            if (!Number.isFinite(parsed) || parsed < 1) return;
+            await this.deps.store.update((prev) => ({
+              ...prev,
+              providerTimeouts: { ...prev.providerTimeouts, idleMs: parsed * 1000 },
+            }));
+          },
+        );
+      });
   }
 
   private renderSkillsBody(

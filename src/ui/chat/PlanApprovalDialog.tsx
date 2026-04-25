@@ -191,6 +191,8 @@ export function PlanApprovalDialog(props: PlanApprovalDialogProps): JSX.Element 
         ref={textareaRef}
         className="leo-plan-approval-textarea"
         data-slot="plan-approval-textarea"
+        aria-label="Plan markdown"
+        spellCheck={false}
         value={state.draft}
         onChange={(e) => setState({ phase: 'edit', draft: e.target.value })}
       />

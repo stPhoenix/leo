@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { ToolResult, ToolSpec } from '../types';
 import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
 
@@ -22,11 +23,16 @@ export interface SearchVaultHit {
   readonly score: number;
 }
 
+export interface SearchVaultEngineResult {
+  readonly hits: readonly SearchVaultHit[];
+  readonly notice?: string;
+}
+
 export interface SearchVaultEngine {
   query(
     text: string,
     opts: { readonly tags?: readonly string[]; readonly signal?: AbortSignal },
-  ): Promise<readonly SearchVaultHit[]>;
+  ): Promise<SearchVaultEngineResult>;
 }
 
 export interface SearchVaultArgs {
@@ -36,6 +42,7 @@ export interface SearchVaultArgs {
 
 export interface SearchVaultResult {
   readonly hits: readonly SearchVaultHit[];
+  readonly notice?: string;
 }
 
 export function createSearchVaultTool(
@@ -52,15 +59,64 @@ export function createSearchVaultTool(
     async invoke(args, ctx): Promise<ToolResult<SearchVaultResult>> {
       if (ctx.signal.aborted) return { ok: false, error: 'aborted' };
       try {
-        const hits = await engine.query(args.query, {
+        const result = await engine.query(args.query, {
           ...(args.tags !== undefined ? { tags: args.tags } : {}),
           signal: ctx.signal,
         });
-        return { ok: true, data: { hits } };
+        return {
+          ok: true,
+          data: {
+            hits: result.hits,
+            ...(result.notice !== undefined ? { notice: result.notice } : {}),
+          },
+        };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { ok: false, error: message };
       }
     },
   };
+}
+
+const FILENAME_FALLBACK_LIMIT = 20;
+const FILENAME_FALLBACK_MAX_VISIT = 5000;
+
+export async function filenameMatch(
+  vault: VaultAdapter,
+  query: string,
+  signal?: AbortSignal,
+): Promise<readonly SearchVaultHit[]> {
+  const needle = query.toLowerCase().trim();
+  if (needle.length === 0) return [];
+  const hits: SearchVaultHit[] = [];
+  const queue: string[] = [''];
+  let visited = 0;
+  while (queue.length > 0 && hits.length < FILENAME_FALLBACK_LIMIT) {
+    if (signal?.aborted) break;
+    if (visited >= FILENAME_FALLBACK_MAX_VISIT) break;
+    const cur = queue.shift() as string;
+    let listing;
+    try {
+      listing = await vault.list(cur);
+    } catch {
+      continue;
+    }
+    visited += 1;
+    for (const f of listing.files) {
+      const base = basename(f).toLowerCase();
+      if (base.includes(needle)) {
+        hits.push({ path: f, line_start: 1, line_end: 1, score: 0 });
+        if (hits.length >= FILENAME_FALLBACK_LIMIT) break;
+      }
+    }
+    for (const d of listing.folders) {
+      queue.push(d);
+    }
+  }
+  return hits;
+}
+
+function basename(p: string): string {
+  const i = p.lastIndexOf('/');
+  return i >= 0 ? p.slice(i + 1) : p;
 }

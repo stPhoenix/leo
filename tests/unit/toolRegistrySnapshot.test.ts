@@ -10,6 +10,7 @@ import { createEditNoteTool } from '@/tools/builtin/editNote';
 import { createCreateNoteTool } from '@/tools/builtin/createNote';
 import { createAppendToNoteTool } from '@/tools/builtin/appendToNote';
 import { createCreateFolderTool } from '@/tools/builtin/createFolder';
+import { createListNotesTool } from '@/tools/builtin/listNotes';
 import { createSearchVaultTool } from '@/tools/builtin/searchVault';
 import type { AcceptRejectController } from '@/agent/acceptRejectController';
 import type { SearchVaultEngine } from '@/tools/builtin/searchVault';
@@ -19,7 +20,7 @@ function fakeAcceptReject(): AcceptRejectController {
 }
 
 function fakeSearch(): SearchVaultEngine {
-  return { query: async () => [] };
+  return { query: async () => ({ hits: [] }) };
 }
 
 describe('toolRegistry.toOpenAITools — built-in tool snapshot', () => {
@@ -28,6 +29,7 @@ describe('toolRegistry.toOpenAITools — built-in tool snapshot', () => {
   registry.register(createCreateNoteTool());
   registry.register(createAppendToNoteTool());
   registry.register(createCreateFolderTool());
+  registry.register(createListNotesTool());
   registry.register(createEditNoteTool({ acceptReject: fakeAcceptReject() }));
   registry.register(createSearchVaultTool(fakeSearch()));
   const tools = registry.toOpenAITools('t1');
@@ -39,6 +41,7 @@ describe('toolRegistry.toOpenAITools — built-in tool snapshot', () => {
       'create_folder',
       'create_note',
       'edit_note',
+      'list_notes',
       'read_note',
       'search_vault',
     ]);

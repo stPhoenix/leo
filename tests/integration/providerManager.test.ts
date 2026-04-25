@@ -33,7 +33,8 @@ function makeManager(opts: Partial<ProviderManagerOptions> = {}): ProviderManage
   const provider = new LMStudioProvider({ endpoint: () => ENDPOINT });
   return new ProviderManager({
     provider,
-    timeoutMs: 200,
+    firstEventTimeoutMs: 200,
+    idleTimeoutMs: 200,
     baseBackoffMs: 5,
     maxBackoffMs: 20,
     probeIntervalMs: 30,
@@ -76,7 +77,7 @@ describe('ProviderManager — FIFO queue (AC3, FR-PROV-05)', () => {
     ]);
   });
 
-  it('aborts an attempt when timeoutMs elapses without a terminal event', async () => {
+  it('aborts an attempt when firstEventTimeoutMs elapses without a terminal event', async () => {
     server.use(
       http.post(`${ENDPOINT}/v1/chat/completions`, ({ request }) => {
         const stream = new ReadableStream<Uint8Array>({
@@ -92,7 +93,7 @@ describe('ProviderManager — FIFO queue (AC3, FR-PROV-05)', () => {
       }),
     );
 
-    const mgr = makeManager({ timeoutMs: 50, maxAttempts: 1 });
+    const mgr = makeManager({ firstEventTimeoutMs: 50, idleTimeoutMs: 50, maxAttempts: 1 });
     const events = await collect(
       mgr.stream(
         { model: 'm', messages: [{ role: 'user', content: 'x' }] },

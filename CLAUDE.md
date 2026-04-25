@@ -12,4 +12,5 @@
 3. Ask questions if you don't understand something.
 4. Ask questions if you need more information.
 5. Do not create additional files without asking.
-6. Use Serena MCP and Gitnexus for searching code base in the project and look at the project codebase structure and architecture/.
+6. Use Serena MCP and Gitnexus for searching code base in the project and look at the project codebase structure and architecture.
+7. Use gitnexus mcp before search/grep/ls/find tool when looking for code.
