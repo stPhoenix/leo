@@ -3,7 +3,6 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { ToolUseBlockView } from './ToolUseBlockView';
 import { ProgressLines } from './ProgressLines';
 import { DiffView } from './DiffView';
-import { InlinePermissionPrompt } from './InlinePermissionPrompt';
 import { RunStateStore } from '@/chat/runStateStore';
 import type { ToolUseBlock } from '@/chat/types';
 
@@ -191,34 +190,6 @@ export const WithProgressExpanded: Story = {
       runState: progressRunState,
       renderProgress: (b) =>
         createElement(ProgressLines, { toolUseId: b.id, runState: progressRunState }),
-    },
-  },
-};
-
-const permissionRunState = (() => {
-  const rs = new RunStateStore();
-  rs.recordPermissionRequest('wr', {
-    toolUseId: 'wr',
-    toolId: 'editNote',
-    thread: 't1',
-    argsJson: '{"path":"CHANGELOG.md"}',
-    category: 'write',
-  });
-  return rs;
-})();
-
-export const WithPendingPermission: Story = {
-  name: 'With permission prompt · pending',
-  args: {
-    block: makeBlock({ id: 'wr', name: 'editNote', input: { path: 'CHANGELOG.md' } }),
-    slots: {
-      runState: permissionRunState,
-      renderPermission: (b) =>
-        createElement(InlinePermissionPrompt, {
-          block: b,
-          runState: permissionRunState,
-          onResolve: () => undefined,
-        }),
     },
   },
 };

@@ -8,8 +8,6 @@ export { ToolUseBlockView } from './ToolUseBlockView';
 export type { ToolUseBlockSlots, ToolUseBlockViewProps } from './ToolUseBlockView';
 export { ToolResultBlockView } from './ToolResultBlockView';
 export type { ToolResultBlockViewProps } from './ToolResultBlockView';
-export { InlinePermissionPrompt } from './InlinePermissionPrompt';
-export type { InlinePermissionPromptProps } from './InlinePermissionPrompt';
 export { ProgressLines, formatProgress } from './ProgressLines';
 export type { ProgressLinesProps } from './ProgressLines';
 export { AgentProgressTree, aggregateAgentProgress } from './AgentProgressTree';

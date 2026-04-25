@@ -88,7 +88,8 @@ leo/
 │   │   ├── resourcePicker.ts
 │   │   ├── settingsStore.ts
 │   │   └── wireMcp.ts
-│   ├── platform/                        # Logger, sinks, error channel, langfuse tracer
+│   ├── platform/                        # Logger, sinks, error channel, langfuse tracer, langgraph ALS init
+│   │   ├── asyncLocalStorageInit.ts     # Side-effect: init AsyncLocalStorage for langgraph interrupts in browser bundle
 │   │   ├── Logger.ts
 │   │   ├── logTypes.ts
 │   │   ├── obsidianSinkFs.ts
@@ -171,7 +172,7 @@ leo/
 │   │   │   ├── __stories__/
 │   │   │   │   └── mocks/
 │   │   │   │       └── sources.ts       # Shared Storybook mocks (sources, conversations, renderers)
-│   │   │   ├── blocks/                  # Assistant message block views (text, thinking, tool use/result, diff, progress, agent tree, grouped tools, inline permission)
+│   │   │   ├── blocks/                  # Assistant message block views (text, thinking, tool use/result, diff, progress, agent tree, grouped tools)
 │   │   │   │   ├── AgentProgressTree.stories.tsx
 │   │   │   │   ├── AgentProgressTree.tsx
 │   │   │   │   ├── AssistantBlocks.tsx
@@ -180,8 +181,6 @@ leo/
 │   │   │   │   ├── GroupedToolUses.stories.tsx
 │   │   │   │   ├── GroupedToolUses.tsx
 │   │   │   │   ├── index.ts
-│   │   │   │   ├── InlinePermissionPrompt.stories.tsx
-│   │   │   │   ├── InlinePermissionPrompt.tsx
 │   │   │   │   ├── ProgressLines.stories.tsx
 │   │   │   │   ├── ProgressLines.tsx
 │   │   │   │   ├── TextBlockView.tsx

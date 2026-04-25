@@ -28,7 +28,7 @@ function defaultProps(initialWidth = 400) {
 }
 
 describe('ChatRoot — region scaffold', () => {
-  it('renders the chat regions with stable data-region attributes (top-level confirmation slot retired in F06)', () => {
+  it('renders the chat regions with stable data-region attributes', () => {
     const { container } = render(<ChatRoot {...defaultProps(400)} />);
     const regions = Array.from(container.querySelectorAll<HTMLElement>('[data-region]'))
       .map((el) => el.getAttribute('data-region'))
@@ -37,6 +37,7 @@ describe('ChatRoot — region scaffold', () => {
       'header',
       'context',
       'messages',
+      'confirmation',
       'dialog',
       'plan-approval',
       'composer',
@@ -58,10 +59,10 @@ describe('ChatRoot — ARIA invariants (NFR-USE-07)', () => {
     expect(status?.getAttribute('aria-live')).toBe('polite');
   });
 
-  it('marks InlineDialog and PlanApprovalDialog as role=dialog + aria-modal (top-level confirmation slot retired in F06)', () => {
+  it('marks InlineConfirmation, InlineDialog, and PlanApprovalDialog as role=dialog + aria-modal', () => {
     const { container } = render(<ChatRoot {...defaultProps(400)} />);
     const dialogs = container.querySelectorAll('[role="dialog"]');
-    expect(dialogs.length).toBe(2);
+    expect(dialogs.length).toBe(3);
     for (const d of Array.from(dialogs)) {
       expect(d.getAttribute('aria-modal')).toBe('true');
     }

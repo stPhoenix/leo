@@ -11,7 +11,6 @@ import {
 export interface ToolUseBlockSlots {
   readonly runState?: RunStateSource;
   readonly renderArgs?: (block: ToolUseBlock) => ReactNode;
-  readonly renderPermission?: (block: ToolUseBlock) => ReactNode;
   readonly renderProgress?: (block: ToolUseBlock, status: ToolUseStatus) => ReactNode;
   readonly renderResult?: (block: ToolUseBlock, status: ToolUseStatus) => ReactNode;
 }
@@ -51,10 +50,7 @@ function ToolUseBlockViewImpl(props: ToolUseBlockViewProps): JSX.Element {
   const [userOverride, setUserOverride] = useState<boolean | null>(null);
   const collapsed = userOverride ?? initialCollapsed;
 
-  const hasBody =
-    slots?.renderPermission !== undefined ||
-    slots?.renderProgress !== undefined ||
-    slots?.renderResult !== undefined;
+  const hasBody = slots?.renderProgress !== undefined || slots?.renderResult !== undefined;
 
   return (
     <section
@@ -86,11 +82,6 @@ function ToolUseBlockViewImpl(props: ToolUseBlockViewProps): JSX.Element {
           </button>
         ) : null}
       </header>
-      {!collapsed && slots?.renderPermission !== undefined ? (
-        <div className="leo-tool-use-permission" data-slot="tool-use-permission">
-          {slots.renderPermission(block)}
-        </div>
-      ) : null}
       {!collapsed && slots?.renderProgress !== undefined ? (
         <div className="leo-tool-use-progress" data-slot="tool-use-progress">
           {slots.renderProgress(block, status)}

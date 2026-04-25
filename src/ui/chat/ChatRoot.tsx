@@ -4,7 +4,7 @@ import { ContextIndicator, type ContextIndicatorSource } from './ContextIndicato
 import { MessageList, type MarkdownRenderFn } from './MessageList';
 import type { MessageActions } from './MessageActionBar';
 import { ComposerInput, type ComposerInputProps } from './ComposerInput';
-import type { InlineConfirmationSource } from './InlineConfirmation';
+import { InlineConfirmation, type InlineConfirmationSource } from './InlineConfirmation';
 import { InlineDialog, type AcceptRejectSource } from './InlineDialog';
 import {
   PlanApprovalDialog,
@@ -141,6 +141,9 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
         {...(props.messageActions !== undefined ? { actions: props.messageActions } : {})}
         {...(props.resolveCostUSD !== undefined ? { resolveCostUSD: props.resolveCostUSD } : {})}
         {...(props.toolUseSlots !== undefined ? { toolUseSlots: props.toolUseSlots } : {})}
+      />
+      <InlineConfirmation
+        {...(props.confirmationSource !== undefined ? { source: props.confirmationSource } : {})}
       />
       <InlineDialog
         {...(props.acceptRejectSource !== undefined ? { source: props.acceptRejectSource } : {})}

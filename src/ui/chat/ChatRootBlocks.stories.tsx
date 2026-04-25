@@ -4,7 +4,7 @@ import { fn } from 'storybook/test';
 import { ChatRoot } from './ChatRoot';
 import { HeaderStat } from './HeaderStat';
 import './widgets/ContextWidget';
-import { DiffView, InlinePermissionPrompt, ProgressLines, type ToolUseBlockSlots } from './blocks';
+import { DiffView, ProgressLines, type ToolUseBlockSlots } from './blocks';
 import { RunStateStore } from '@/chat/runStateStore';
 import type { ChatMessageRecord, ContentBlock, ToolUseBlock } from '@/chat/types';
 import {
@@ -62,12 +62,6 @@ function buildRunState(seed: RunStateSeed): RunStateStore {
 function buildSlots(runState: RunStateStore): ToolUseBlockSlots {
   return {
     runState,
-    renderPermission: (block) =>
-      createElement(InlinePermissionPrompt, {
-        block,
-        runState,
-        onResolve: () => undefined,
-      }),
     renderProgress: (block) => createElement(ProgressLines, { toolUseId: block.id, runState }),
     renderResult: (block) => {
       if (!EDIT_TOOLS.has(block.name)) return null;

@@ -1,3 +1,4 @@
+import '@/platform/asyncLocalStorageInit';
 import { Notice, Plugin } from 'obsidian';
 import { Logger } from '@/platform/Logger';
 import { TracerService } from '@/platform/tracer';

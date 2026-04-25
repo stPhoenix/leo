@@ -15,7 +15,6 @@ import { ChatMessageStore } from '@/chat/messageStore';
 import { toLegacyContent } from '@/chat/types';
 import type { ToolUseBlock } from '@/chat/types';
 import { RunStateStore } from '@/chat/runStateStore';
-import { InlinePermissionPrompt } from './chat/blocks/InlinePermissionPrompt';
 import { ProgressLines } from './chat/blocks/ProgressLines';
 import { DiffView } from './chat/blocks/DiffView';
 
@@ -167,16 +166,6 @@ export class ChatView extends ItemView {
         if (event.type === 'tool_result') {
           const isError = event.result.ok === false;
           rs.markResolved(event.id, isError, event.result);
-          return;
-        }
-        if (event.type === 'tool_confirmation') {
-          rs.recordPermissionRequest(event.request.toolId, {
-            toolUseId: event.request.toolId,
-            toolId: event.request.toolId,
-            thread: event.request.thread,
-            argsJson: event.request.argsJson,
-            category: event.request.category,
-          });
           return;
         }
         if (event.type === 'progress') {
@@ -452,24 +441,12 @@ export class ChatView extends ItemView {
 
   private buildToolUseSlots(): {
     runState: RunStateStore;
-    renderPermission: (block: ToolUseBlock) => JSX.Element;
     renderProgress: (block: ToolUseBlock) => JSX.Element;
     renderResult: (block: ToolUseBlock) => JSX.Element | null;
   } {
     const runState = this.runStateStore;
-    const controller = this.deps.confirmationController;
     return {
       runState,
-      renderPermission: (block) =>
-        createElement(InlinePermissionPrompt, {
-          block,
-          runState,
-          onResolve: (decision) => {
-            if (decision === 'deny') runState.markRejected(block.id);
-            runState.clearPermissionRequest(block.id);
-            controller?.resolve(decision);
-          },
-        }),
       renderProgress: (block) =>
         createElement(ProgressLines, {
           toolUseId: block.id,

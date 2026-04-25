@@ -61,7 +61,7 @@ describe('ToolUseBlockView — header + status (F04 AC1, AC3)', () => {
 });
 
 describe('ToolUseBlockView — slots (F04 AC6)', () => {
-  it('renders permission, progress, and result via render-props', () => {
+  it('renders progress and result via render-props', () => {
     const rs = new RunStateStore();
     rs.markRunning('tA');
     const { container } = render(
@@ -69,13 +69,11 @@ describe('ToolUseBlockView — slots (F04 AC6)', () => {
         block={block()}
         slots={{
           runState: rs,
-          renderPermission: () => <span data-slot="custom-permission">P</span>,
           renderProgress: () => <span data-slot="custom-progress">G</span>,
           renderResult: () => <span data-slot="custom-result">R</span>,
         }}
       />,
     );
-    expect(container.querySelector('[data-slot="custom-permission"]')).not.toBeNull();
     expect(container.querySelector('[data-slot="custom-progress"]')).not.toBeNull();
     expect(container.querySelector('[data-slot="custom-result"]')).not.toBeNull();
   });
