@@ -1,12 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import {
-  buildVaultFileSource,
-  buildVaultEventSource,
-  makeProcessPath,
-  type AppLike,
-  type PluginLike,
-  type TFileLike,
-} from '@/indexer/wireIndexerRag';
+import { describe, expect, it } from 'vitest';
+import { makeProcessPath, type AppLike, type TFileLike } from '@/indexer/wireIndexerRag';
 import type { EmbeddingClient } from '@/providers/embeddingClient';
 import type { VectorStore } from '@/storage/vectorStore';
 import { Logger } from '@/platform/Logger';
@@ -49,66 +42,7 @@ function makeApp(files: TFileLike[]): AppLike {
   };
 }
 
-function makePlugin(): PluginLike {
-  return {
-    registerEvent: (_ref) => undefined,
-  };
-}
-
 describe('wireIndexerRag helpers', () => {
-  it('buildVaultFileSource filters to md and canvas files', () => {
-    const app = makeApp([
-      makeFile('a.md', 'md'),
-      makeFile('b.txt', 'txt'),
-      makeFile('c.canvas', 'canvas'),
-      makeFile('d.png', 'png'),
-    ]);
-    const src = buildVaultFileSource(app);
-    const entries = src.listMarkdown();
-    expect(entries.map((e) => e.path).sort()).toEqual(['a.md', 'c.canvas']);
-    expect(entries[0]!.extension).toBe('md');
-    expect(entries[1]!.extension).toBe('canvas');
-  });
-
-  it('buildVaultEventSource wires create/modify/delete/rename and unsubscribes', () => {
-    const events: Array<{ kind: string; path: string; oldPath?: string }> = [];
-    const handlers: Array<{
-      event: string;
-      cb: (f: { path: string }, oldPath?: string) => void;
-    }> = [];
-    const app: AppLike = {
-      vault: {
-        getFiles: () => [],
-        getAbstractFileByPath: () => null,
-        cachedRead: async () => '',
-        on: (event, cb) => {
-          handlers.push({ event, cb: cb as (f: { path: string }, oldPath?: string) => void });
-          return { __eventRef: true };
-        },
-        offref: () => undefined,
-      },
-      metadataCache: {
-        resolvedLinks: {},
-        on: () => ({ __eventRef: true }),
-        getFileCache: () => ({}),
-      },
-    };
-    const plugin = makePlugin();
-    const spy = vi.spyOn(plugin, 'registerEvent');
-    const src = buildVaultEventSource(app, plugin);
-    const unsub = src.on((e) => events.push({ kind: e.kind, path: e.path, oldPath: e.oldPath }));
-    expect(spy).toHaveBeenCalledTimes(4);
-    handlers.find((h) => h.event === 'create')!.cb({ path: 'a.md' });
-    handlers.find((h) => h.event === 'modify')!.cb({ path: 'b.md' });
-    handlers.find((h) => h.event === 'rename')!.cb({ path: 'c-new.md' }, 'c-old.md');
-    expect(events).toEqual([
-      { kind: 'create', path: 'a.md', oldPath: undefined },
-      { kind: 'modify', path: 'b.md', oldPath: undefined },
-      { kind: 'rename', path: 'c-new.md', oldPath: 'c-old.md' },
-    ]);
-    unsub();
-  });
-
   it('makeProcessPath chunks markdown, embeds, and upserts', async () => {
     const app = makeApp([makeFile('a.md', 'md')]);
     const logger = makeLogger();

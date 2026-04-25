@@ -1,4 +1,4 @@
-export type HeaderStatVariant = 'context' | 'index';
+export type HeaderStatVariant = 'context';
 
 export interface HeaderStatProps {
   readonly variant: HeaderStatVariant;
@@ -21,21 +21,10 @@ function levelForContext(pct: number): 'ok' | 'warn' | 'high' | 'critical' {
   return 'ok';
 }
 
-function levelForIndex(pct: number, busy: boolean): 'ok' | 'warn' | 'high' | 'critical' {
-  if (busy) return 'warn';
-  if (pct >= 99) return 'ok';
-  if (pct >= 50) return 'high';
-  return 'critical';
-}
-
-function levelFor(variant: HeaderStatVariant, pct: number, busy: boolean): string {
-  return variant === 'index' ? levelForIndex(pct, busy) : levelForContext(pct);
-}
-
 export function HeaderStat(props: HeaderStatProps): JSX.Element {
   const pct = clampPct(props.pct);
   const busy = props.busy === true;
-  const level = levelFor(props.variant, pct, busy);
+  const level = levelForContext(pct);
   const className = [
     'leo-header-stat',
     `leo-header-stat-${props.variant}`,

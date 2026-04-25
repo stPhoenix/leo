@@ -17,7 +17,9 @@ export type HeaderMismatchChoice = 'now' | 'later' | 'revert-model';
 export type DrainEvent =
   | { readonly kind: 'start'; readonly size: number }
   | { readonly kind: 'tick'; readonly path: string; readonly remaining: number }
-  | { readonly kind: 'complete'; readonly remaining: number };
+  | { readonly kind: 'complete'; readonly remaining: number }
+  | { readonly kind: 'error'; readonly path?: string; readonly message: string }
+  | { readonly kind: 'dirty'; readonly count: number };
 
 export type DrainListener = (event: DrainEvent) => void;
 
@@ -63,7 +65,6 @@ export interface VaultIndexerOptions {
   readonly idleMs?: () => number;
   readonly minChunkBudgetMs?: number;
   readonly queueDebounceMs?: number;
-  readonly onDemandCap?: number;
   readonly isProviderReady?: () => boolean;
   readonly isExcluded?: (path: string) => boolean;
 }
@@ -72,7 +73,8 @@ const MARKDOWN_EXTENSION = 'md';
 const CANVAS_EXTENSION = 'canvas';
 const INDEXABLE_EXTENSIONS: ReadonlySet<string> = new Set([MARKDOWN_EXTENSION, CANVAS_EXTENSION]);
 const DEFAULT_IDLE_MS = 30_000;
-const DEFAULT_ON_DEMAND_CAP = 32;
+const WAITING_ON_USER_MESSAGE =
+  'Indexer paused — embedding model changed; choose Re-index now or revert in settings.';
 
 export class VaultIndexer {
   private readonly vault: VaultAdapter;
@@ -86,13 +88,13 @@ export class VaultIndexer {
   private readonly logger: Logger | undefined;
   private readonly idleMs: () => number;
   private readonly minChunkBudget: number;
-  private readonly onDemandCap: number;
   private readonly isProviderReady: () => boolean;
   private readonly isExcluded: (path: string) => boolean;
 
   private readonly queue: DirtyQueue;
   private readonly drainListeners = new Set<DrainListener>();
   private readonly abortControllers = new Set<AbortController>();
+  private lastDirtyEmitted = -1;
   private unsubscribeEvents: (() => void) | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private draining = false;
@@ -112,7 +114,6 @@ export class VaultIndexer {
     this.logger = opts.logger;
     this.idleMs = opts.idleMs ?? ((): number => DEFAULT_IDLE_MS);
     this.minChunkBudget = opts.minChunkBudgetMs ?? 5;
-    this.onDemandCap = opts.onDemandCap ?? DEFAULT_ON_DEMAND_CAP;
     this.isProviderReady = opts.isProviderReady ?? ((): boolean => true);
     this.isExcluded = opts.isExcluded ?? ((): boolean => false);
     this.queue = new DirtyQueue({
@@ -124,16 +125,15 @@ export class VaultIndexer {
 
   async init(): Promise<void> {
     await this.queue.load();
+    this.emitDirtyIfChanged();
     this.lastHeader = await readIndexHeader(this.vault, this.logger);
     const expected = this.spec();
     const headerOk = headerMatches(this.lastHeader, expected);
     if (!headerOk) {
       this.logger?.info('indexer.header.mismatch', {
         storedModel: this.lastHeader?.model ?? null,
-        storedDim: this.lastHeader?.dim ?? null,
         storedVersion: this.lastHeader?.version ?? null,
         expectedModel: expected.model,
-        expectedDim: expected.dim,
       });
       const choice = await this.promptHeaderMismatch();
       this.logger?.info('indexer.header.user-choice', { choice });
@@ -143,19 +143,19 @@ export class VaultIndexer {
         }
         await writeIndexHeader(this.vault, {
           model: expected.model,
-          dim: expected.dim,
           version: this.lastHeader?.version ?? 1,
           manifest: [],
         });
       } else if (choice === 'revert-model') {
         if (this.lastHeader !== null && this.revertModel !== null) {
-          await this.revertModel({ model: this.lastHeader.model, dim: this.lastHeader.dim });
+          await this.revertModel({ model: this.lastHeader.model });
         }
         this.waitingOnUser = false;
         this.registerListeners();
         return;
       } else {
         this.waitingOnUser = true;
+        this.emitDrain({ kind: 'error', message: WAITING_ON_USER_MESSAGE });
         this.registerListeners();
         return;
       }
@@ -181,17 +181,47 @@ export class VaultIndexer {
     }
     if (this.queue.add(entry.path)) {
       this.logger?.info('indexer.enqueue', { path: entry.path });
+      this.emitDirtyIfChanged();
       if (!this.draining) this.scheduleIdleDrain();
       return true;
     }
     return false;
   }
 
+  private emitDirtyIfChanged(): void {
+    const count = this.queue.size();
+    if (count === this.lastDirtyEmitted) return;
+    this.lastDirtyEmitted = count;
+    this.emitDrain({ kind: 'dirty', count });
+  }
+
+  getDirtyCount(): number {
+    return this.queue.size();
+  }
+
+  private bailDrain(reason: string): void {
+    this.logger?.warn('indexer.drain.bailed', { reason });
+    this.emitDrain({ kind: 'error', message: reason });
+  }
+
+  private checkDrainPreconditions(): string | null {
+    if (this.waitingOnUser) {
+      return WAITING_ON_USER_MESSAGE;
+    }
+    if (!this.isProviderReady()) {
+      return 'Embedding provider unavailable — check provider connection and try again.';
+    }
+    return null;
+  }
+
   async processDueWork(signal: AbortSignal): Promise<void> {
-    if (this.waitingOnUser) return;
-    if (!this.isProviderReady()) return;
     if (this.draining) return;
     if (this.queue.size() === 0) return;
+    const bail = this.checkDrainPreconditions();
+    if (bail !== null) {
+      this.bailDrain(bail);
+      return;
+    }
     this.draining = true;
     const controller = linkController(signal);
     this.abortControllers.add(controller);
@@ -211,10 +241,9 @@ export class VaultIndexer {
           try {
             await this.processPath(path, controller.signal);
           } catch (err) {
-            this.logger?.warn('indexer.process.failed', {
-              path,
-              error: err instanceof Error ? err.message : String(err),
-            });
+            const message = err instanceof Error ? err.message : String(err);
+            this.logger?.warn('indexer.process.failed', { path, error: message });
+            this.emitDrain({ kind: 'error', path, message });
           }
           this.logger?.debug('indexer.drain.tick', { path });
           this.emitDrain({ kind: 'tick', path, remaining: this.queue.size() });
@@ -224,8 +253,12 @@ export class VaultIndexer {
       this.draining = false;
       this.abortControllers.delete(controller);
       const remaining = this.queue.size();
+      if (remaining === 0 && !controller.signal.aborted) {
+        await this.persistManifestSnapshot();
+      }
       this.logger?.info('indexer.drain.complete', { remaining });
       this.emitDrain({ kind: 'complete', remaining });
+      this.emitDirtyIfChanged();
       if (remaining > 0) this.scheduleIdleDrain();
     }
   }
@@ -243,37 +276,6 @@ export class VaultIndexer {
     }
   }
 
-  async queryOnDemand(signal: AbortSignal): Promise<void> {
-    if (this.waitingOnUser) return;
-    if (!this.isProviderReady()) return;
-    if (this.queue.size() === 0) return;
-    if (this.draining) return;
-    this.clearIdleTimer();
-    this.draining = true;
-    const controller = linkController(signal);
-    this.abortControllers.add(controller);
-    try {
-      const cap = this.onDemandCap;
-      const batch = this.queue.snapshot().slice(0, cap);
-      for (const path of batch) {
-        if (controller.signal.aborted) break;
-        this.queue.remove(path);
-        try {
-          await this.processPath(path, controller.signal);
-        } catch (err) {
-          this.logger?.warn('indexer.process.failed', {
-            path,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
-    } finally {
-      this.draining = false;
-      this.abortControllers.delete(controller);
-      if (this.queue.size() > 0) this.scheduleIdleDrain();
-    }
-  }
-
   queueSize(): number {
     return this.queue.size();
   }
@@ -284,6 +286,31 @@ export class VaultIndexer {
 
   async flushQueue(): Promise<void> {
     await this.queue.flush();
+  }
+
+  private async persistManifestSnapshot(): Promise<void> {
+    if (this.disposed) return;
+    const expected = this.spec();
+    const entries = this.files.listMarkdown().filter((e) => INDEXABLE_EXTENSIONS.has(e.extension));
+    const manifest: IndexManifestEntry[] = entries.map((e) => ({
+      path: e.path,
+      mtime: e.mtime,
+      size: e.size,
+    }));
+    const next: IndexHeader = {
+      model: expected.model,
+      version: this.lastHeader?.version ?? 1,
+      manifest,
+    };
+    try {
+      await writeIndexHeader(this.vault, next);
+      this.lastHeader = next;
+      this.logger?.debug('indexer.manifest.persisted', { count: manifest.length });
+    } catch (err) {
+      this.logger?.warn('indexer.manifest.persist-failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   purgeExcluded(predicate: (path: string) => boolean): number {
@@ -298,12 +325,77 @@ export class VaultIndexer {
     return removed.length;
   }
 
+  /**
+   * Drain the entire dirty queue immediately, bypassing the idle scheduler.
+   * Used for user-triggered "reindex changed" so we never get stuck under a
+   * tight `requestIdleCallback` deadline that returns zero work per tick.
+   */
+  async drainPending(signal?: AbortSignal): Promise<number> {
+    if (this.disposed) return 0;
+    if (this.draining) return 0;
+    if (this.queue.size() === 0) return 0;
+    const bail = this.checkDrainPreconditions();
+    if (bail !== null) {
+      this.bailDrain(bail);
+      return 0;
+    }
+    this.clearIdleTimer();
+    this.draining = true;
+    const controller = linkController(signal ?? new AbortController().signal);
+    this.abortControllers.add(controller);
+    const startSize = this.queue.size();
+    let processed = 0;
+    this.logger?.info('indexer.drain.start', { size: startSize, mode: 'immediate' });
+    this.emitDrain({ kind: 'start', size: startSize });
+    try {
+      while (this.queue.size() > 0 && !controller.signal.aborted) {
+        const batch = this.queue.snapshot();
+        for (const path of batch) {
+          if (controller.signal.aborted) break;
+          this.queue.remove(path);
+          try {
+            await this.processPath(path, controller.signal);
+            processed += 1;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.logger?.warn('indexer.process.failed', { path, error: message });
+            this.emitDrain({ kind: 'error', path, message });
+          }
+          this.emitDrain({ kind: 'tick', path, remaining: this.queue.size() });
+        }
+      }
+      return processed;
+    } finally {
+      this.draining = false;
+      this.abortControllers.delete(controller);
+      const remaining = this.queue.size();
+      if (remaining === 0 && !controller.signal.aborted) {
+        await this.persistManifestSnapshot();
+      }
+      this.logger?.info('indexer.drain.complete', { remaining, mode: 'immediate' });
+      this.emitDrain({ kind: 'complete', remaining });
+      this.emitDirtyIfChanged();
+    }
+  }
+
   async reindexAll(signal?: AbortSignal): Promise<number> {
     if (this.disposed) return 0;
+    if (this.waitingOnUser) {
+      const expected = this.spec();
+      await writeIndexHeader(this.vault, {
+        model: expected.model,
+        version: this.lastHeader?.version ?? 1,
+        manifest: [],
+      });
+      this.lastHeader = await readIndexHeader(this.vault, this.logger);
+      this.waitingOnUser = false;
+      this.logger?.info('indexer.reindex.resume-from-wait', { model: expected.model });
+    }
     const entries = this.files.listMarkdown().filter((e) => INDEXABLE_EXTENSIONS.has(e.extension));
     for (const entry of entries) this.queue.add(entry.path);
+    this.emitDirtyIfChanged();
     this.logger?.info('indexer.reindex.enqueued', { count: entries.length });
-    await this.queryOnDemand(signal ?? new AbortController().signal);
+    await this.drainPending(signal);
     return entries.length;
   }
 
@@ -319,6 +411,19 @@ export class VaultIndexer {
 
   subscribe(listener: DrainListener): () => void {
     this.drainListeners.add(listener);
+    // Replay current dirty count so a freshly-mounted UI immediately reflects
+    // pending work that was emitted before subscription.
+    try {
+      listener({ kind: 'dirty', count: this.queue.size() });
+      if (this.waitingOnUser) {
+        listener({ kind: 'error', message: WAITING_ON_USER_MESSAGE });
+      }
+    } catch (err) {
+      this.logger?.warn('indexer.drain.listener-failed', {
+        kind: 'dirty',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     return (): void => {
       this.drainListeners.delete(listener);
     };
@@ -362,6 +467,7 @@ export class VaultIndexer {
     }));
     const { added, modified, removed } = diffManifest(storedManifest, current);
     for (const p of [...added, ...modified, ...removed]) this.queue.add(p);
+    this.emitDirtyIfChanged();
     this.logger?.info('indexer.diff.complete', {
       added: added.length,
       modified: modified.length,

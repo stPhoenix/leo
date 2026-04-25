@@ -12,7 +12,6 @@ export interface IndexManifestEntry {
 
 export interface IndexHeaderSpec {
   readonly model: string;
-  readonly dim: number;
 }
 
 export interface IndexHeader extends IndexHeaderSpec {
@@ -31,11 +30,10 @@ export async function readIndexHeader(
     if (parsed === null || typeof parsed !== 'object') return null;
     const obj = parsed as Record<string, unknown>;
     const model = typeof obj.model === 'string' ? obj.model : null;
-    const dim = typeof obj.dim === 'number' ? obj.dim : null;
     const version = typeof obj.version === 'number' ? obj.version : INDEX_HEADER_SCHEMA_VERSION;
-    if (model === null || dim === null) return null;
+    if (model === null) return null;
     const manifest = Array.isArray(obj.manifest) ? parseManifest(obj.manifest) : [];
-    return { model, dim, version, manifest };
+    return { model, version, manifest };
   } catch (err) {
     logger?.warn('indexer.header.read-failed', {
       error: err instanceof Error ? err.message : String(err),
@@ -49,7 +47,6 @@ export async function writeIndexHeader(vault: VaultAdapter, header: IndexHeader)
     {
       version: header.version,
       model: header.model,
-      dim: header.dim,
       manifest: header.manifest,
     },
     null,
@@ -78,7 +75,7 @@ function parseManifest(raw: readonly unknown[]): readonly IndexManifestEntry[] {
 export function headerMatches(stored: IndexHeader | null, expected: IndexHeaderSpec): boolean {
   if (stored === null) return false;
   if (stored.version !== INDEX_HEADER_SCHEMA_VERSION) return false;
-  return stored.model === expected.model && stored.dim === expected.dim;
+  return stored.model === expected.model;
 }
 
 export function diffManifest(

@@ -12,7 +12,7 @@ import {
   type PlanMarkdownRenderFn,
 } from './PlanApprovalDialog';
 import { ThreadSwitcher, type ThreadsUiSource } from './ThreadSwitcher';
-import { IndexEmptyStateCta, type IndexStatusSource } from './IndexEmptyStateCta';
+import { IndexStatusBlock, type IndexStatusSource } from './IndexStatusBlock';
 import type { DrainListener } from '@/indexer/vaultIndexer';
 import { isCollapsed } from '../responsiveCollapse';
 import type { ChatMessageStore } from '@/chat/messageStore';
@@ -53,7 +53,8 @@ export interface ChatRootProps {
   readonly threadsSource?: ThreadsUiSource;
   readonly indexStatusSource?: IndexStatusSource;
   readonly indexDrainSubscribe?: (listener: DrainListener) => () => void;
-  readonly onIndexVault?: () => void;
+  readonly onReindexAll?: () => void;
+  readonly onReindexChanged?: () => void;
   readonly resolveCostUSD?: (usage: { input: number; output: number }) => number | null;
 }
 
@@ -114,12 +115,15 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
           ? { onReveal: props.onRevealContextFile }
           : {})}
       />
-      <IndexEmptyStateCta
+      <IndexStatusBlock
         {...(props.indexStatusSource !== undefined ? { source: props.indexStatusSource } : {})}
         {...(props.indexDrainSubscribe !== undefined
           ? { drainSubscribe: props.indexDrainSubscribe }
           : {})}
-        {...(props.onIndexVault !== undefined ? { onIndexVault: props.onIndexVault } : {})}
+        {...(props.onReindexAll !== undefined ? { onReindexAll: props.onReindexAll } : {})}
+        {...(props.onReindexChanged !== undefined
+          ? { onReindexChanged: props.onReindexChanged }
+          : {})}
       />
       <MessageList
         store={props.messageStore}

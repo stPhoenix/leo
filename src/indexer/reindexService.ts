@@ -9,8 +9,8 @@ export interface ReindexServiceOptions {
   readonly indexer: VaultIndexer;
   readonly vectorStore?: VectorStore;
   readonly confirmReindex: () => Promise<ReindexConfirmChoice>;
-  readonly confirmModelSwitch: (prev: { model: string; dim: number }) => Promise<ModelSwitchChoice>;
-  readonly revertModelSetting?: (prev: { model: string; dim: number }) => Promise<void>;
+  readonly confirmModelSwitch: (prev: { model: string }) => Promise<ModelSwitchChoice>;
+  readonly revertModelSetting?: (prev: { model: string }) => Promise<void>;
   readonly logger?: Logger;
 }
 
@@ -18,13 +18,8 @@ export class ReindexService {
   private readonly indexer: VaultIndexer;
   private readonly vectorStore: VectorStore | null;
   private readonly confirmReindex: () => Promise<ReindexConfirmChoice>;
-  private readonly confirmModelSwitch: (prev: {
-    model: string;
-    dim: number;
-  }) => Promise<ModelSwitchChoice>;
-  private readonly revertModelSetting:
-    | ((prev: { model: string; dim: number }) => Promise<void>)
-    | null;
+  private readonly confirmModelSwitch: (prev: { model: string }) => Promise<ModelSwitchChoice>;
+  private readonly revertModelSetting: ((prev: { model: string }) => Promise<void>) | null;
   private readonly logger: Logger | undefined;
   private inFlight = false;
 
@@ -68,7 +63,7 @@ export class ReindexService {
    * Called when the user changes the embedding model in settings — routes the
    * three-way prompt `now`/`later`/`revert` matching F27's startup contract.
    */
-  async handleModelSwitch(prev: { model: string; dim: number }): Promise<ModelSwitchChoice> {
+  async handleModelSwitch(prev: { model: string }): Promise<ModelSwitchChoice> {
     const choice = await this.confirmModelSwitch(prev);
     this.logger?.info('indexer.ui.model-switch-prompt', { choice });
     if (choice === 'now') {

@@ -39,7 +39,9 @@ export function createBrowserIdleScheduler(): IdleScheduler {
 /**
  * Pure function: given a batch of paths and an idle deadline, return the paths
  * to process this tick and the remainder for the next tick. Stops when the
- * deadline's `timeRemaining()` drops below `minBudgetMs`.
+ * deadline's `timeRemaining()` drops below `minBudgetMs`. Always advances by
+ * at least one path so a tight deadline can never produce a zero-work tick
+ * (which would stall the drain forever).
  */
 export function chunkIteration(
   paths: readonly string[],
@@ -50,7 +52,7 @@ export function chunkIteration(
   const rest: string[] = [];
   let i = 0;
   for (; i < paths.length; i += 1) {
-    if (deadline.timeRemaining() < minBudgetMs) break;
+    if (i > 0 && deadline.timeRemaining() < minBudgetMs) break;
     now.push(paths[i]!);
   }
   for (; i < paths.length; i += 1) rest.push(paths[i]!);

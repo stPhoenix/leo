@@ -55,16 +55,10 @@ const meta: Meta<typeof ChatRoot> = {
     setIcon: mockSetIcon,
     onOverflowMenu: fn(),
     onRevealContextFile: fn(),
-    onIndexVault: fn(),
     phaseSource: makePhaseSource('idle'),
     queueSource: makeQueueSource(0),
     contextIndicatorSource: makeContextSource(exampleFocusedContext),
-    headerStats: (
-      <>
-        <HeaderStat variant="context" label="ctx" pct={28} detail="55.3k / 200k tokens" />
-        <HeaderStat variant="index" label="idx" pct={100} detail="1,284 files indexed" />
-      </>
-    ),
+    headerStats: <HeaderStat variant="context" label="ctx" pct={28} detail="55.3k / 200k tokens" />,
     threadsSource: makeThreadsSource(exampleThreadsSnapshot),
     indexStatusSource: makeIndexSource(true),
     messageActions: {
@@ -124,27 +118,10 @@ export const ContextCommandResult: Story = {
   args: { messageStore: makeMessageStore(contextWidgetConversation) },
 };
 
-export const HeaderStatsIndexing: Story = {
-  args: {
-    messageStore: makeMessageStore(exampleConversation),
-    headerStats: (
-      <>
-        <HeaderStat variant="context" label="ctx" pct={82} detail="164k / 200k tokens" />
-        <HeaderStat variant="index" label="idx" pct={37} detail="indexing 471 / 1,284 files" busy />
-      </>
-    ),
-  },
-};
-
 export const HeaderStatsCritical: Story = {
   args: {
     messageStore: makeMessageStore(exampleConversation),
-    headerStats: (
-      <>
-        <HeaderStat variant="context" label="ctx" pct={94} detail="188k / 200k tokens" />
-        <HeaderStat variant="index" label="idx" pct={100} detail="1,284 files indexed" />
-      </>
-    ),
+    headerStats: <HeaderStat variant="context" label="ctx" pct={94} detail="188k / 200k tokens" />,
   },
 };
 

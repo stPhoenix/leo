@@ -1,11 +1,5 @@
 import type { ChatMessageStore } from '@/chat/messageStore';
-import type { DrainEvent, DrainListener } from '@/indexer/vaultIndexer';
-import type {
-  ContextUsageSnapshot,
-  ContextUsageSource,
-  IndexProgressSnapshot,
-  IndexProgressSource,
-} from './HeaderStatsLive';
+import type { ContextUsageSnapshot, ContextUsageSource } from './HeaderStatsLive';
 
 export function makeContextUsageSource(
   store: ChatMessageStore,
@@ -37,51 +31,5 @@ export function makeContextUsageSource(
   return {
     getSnapshot,
     subscribe: store.subscribe,
-  };
-}
-
-export function makeIndexProgressSource(
-  subscribeDrain: (listener: DrainListener) => () => void,
-): IndexProgressSource & { dispose: () => void } {
-  let snapshot: IndexProgressSnapshot = { indexed: 0, total: 0, busy: false };
-  const listeners = new Set<() => void>();
-
-  const onEvent = (ev: DrainEvent): void => {
-    let next: IndexProgressSnapshot;
-    if (ev.kind === 'start') {
-      next = { indexed: 0, total: ev.size, busy: ev.size > 0 };
-    } else if (ev.kind === 'tick') {
-      const total = snapshot.total > 0 ? snapshot.total : ev.remaining;
-      const indexed = Math.max(0, total - ev.remaining);
-      next = { indexed, total, busy: ev.remaining > 0 };
-    } else {
-      const total = snapshot.total;
-      next = { indexed: total, total, busy: false };
-    }
-    if (
-      next.indexed === snapshot.indexed &&
-      next.total === snapshot.total &&
-      next.busy === snapshot.busy
-    ) {
-      return;
-    }
-    snapshot = next;
-    for (const l of listeners) l();
-  };
-
-  const unsubscribeDrain = subscribeDrain(onEvent);
-
-  return {
-    getSnapshot: () => snapshot,
-    subscribe: (cb) => {
-      listeners.add(cb);
-      return () => {
-        listeners.delete(cb);
-      };
-    },
-    dispose: () => {
-      unsubscribeDrain();
-      listeners.clear();
-    },
   };
 }

@@ -5,7 +5,7 @@ import { ChatMessageStore } from '@/chat/messageStore';
 import type { StreamingPhase } from '@/chat/streamingController';
 import type { ThreadsSnapshot } from '@/storage/threadsStore';
 import type { ContextIndicatorSource } from '../../ContextIndicator';
-import type { IndexStatusSource } from '../../IndexEmptyStateCta';
+import type { IndexStatusSource } from '../../IndexStatusBlock';
 import type { PhaseSource, QueueSource } from '../../ChatRoot';
 import type { ThreadsUiSource } from '../../ThreadSwitcher';
 import { marked } from 'marked';
@@ -47,7 +47,9 @@ export function mockMatchMedia(query: string): MediaQueryList {
   };
 }
 
-export function makeContextSource(ctx: FocusedContext = NULL_FOCUSED_CONTEXT): ContextIndicatorSource {
+export function makeContextSource(
+  ctx: FocusedContext = NULL_FOCUSED_CONTEXT,
+): ContextIndicatorSource {
   return {
     getContext: () => ctx,
     subscribe: () => () => {},
@@ -109,8 +111,18 @@ export function makeThreadsSource(snapshot: ThreadsSnapshot): ThreadsUiSource {
 export const exampleThreadsSnapshot: ThreadsSnapshot = {
   activeId: 't1',
   summaries: [
-    { id: 't1', title: 'Obsidian plugin design', updatedAt: '2026-04-24T09:10:00Z', messageCount: 12 },
-    { id: 't2', title: 'Q2 roadmap brainstorm', updatedAt: '2026-04-23T16:40:00Z', messageCount: 8 },
+    {
+      id: 't1',
+      title: 'Obsidian plugin design',
+      updatedAt: '2026-04-24T09:10:00Z',
+      messageCount: 12,
+    },
+    {
+      id: 't2',
+      title: 'Q2 roadmap brainstorm',
+      updatedAt: '2026-04-23T16:40:00Z',
+      messageCount: 8,
+    },
     { id: 't3', title: 'Reading notes: Dune', updatedAt: '2026-04-22T21:00:00Z', messageCount: 3 },
   ],
 };
@@ -128,9 +140,11 @@ function renderMd(container: HTMLElement, text: string): () => void {
   return enhanceCodeBlocks(container, { clipboard: mockClipboard, setIcon: mockSetIcon });
 }
 
-export const mockRenderMarkdownFn: MarkdownRenderFn = (text, container) => renderMd(container, text);
+export const mockRenderMarkdownFn: MarkdownRenderFn = (text, container) =>
+  renderMd(container, text);
 
-export const mockRenderPlanMarkdown: PlanMarkdownRenderFn = (container, plan) => renderMd(container, plan);
+export const mockRenderPlanMarkdown: PlanMarkdownRenderFn = (container, plan) =>
+  renderMd(container, plan);
 
 export const exampleConversation: readonly ChatMessageRecord[] = [
   {
@@ -145,7 +159,7 @@ export const exampleConversation: readonly ChatMessageRecord[] = [
     content: [
       '### Summary',
       '',
-      "Today you planned to add **Storybook** to the Leo plugin. You also captured a TODO to review the new skill registry.",
+      'Today you planned to add **Storybook** to the Leo plugin. You also captured a TODO to review the new skill registry.',
       '',
       '### TODOs',
       '',

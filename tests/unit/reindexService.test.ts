@@ -5,14 +5,10 @@ import type { VectorStore } from '@/storage/vectorStore';
 
 function fakeIndexer(entries: string[]): VaultIndexer {
   const queueSet = new Set<string>();
-  const queryCalls = { count: 0 };
   return {
     reindexAll: vi.fn(async () => {
       for (const p of entries) queueSet.add(p);
       return entries.length;
-    }),
-    queryOnDemand: vi.fn(async () => {
-      queryCalls.count += 1;
     }),
     enqueueDirty: vi.fn(() => true),
   } as unknown as VaultIndexer;
@@ -97,14 +93,14 @@ describe('ReindexService', () => {
       confirmReindex: async () => 'reindex',
       confirmModelSwitch: async () => 'now',
     });
-    const outcome = await svc.handleModelSwitch({ model: 'old', dim: 512 });
+    const outcome = await svc.handleModelSwitch({ model: 'old' });
     expect(outcome).toBe('now');
     expect(indexer.reindexAll).toHaveBeenCalled();
   });
 
   it('handleModelSwitch "revert" invokes revertModelSetting without reindexing', async () => {
     const indexer = fakeIndexer(['a.md']);
-    const revertCalls: Array<{ model: string; dim: number }> = [];
+    const revertCalls: Array<{ model: string }> = [];
     const svc = new ReindexService({
       indexer,
       confirmReindex: async () => 'cancel',
@@ -113,9 +109,9 @@ describe('ReindexService', () => {
         revertCalls.push(prev);
       },
     });
-    const outcome = await svc.handleModelSwitch({ model: 'old', dim: 512 });
+    const outcome = await svc.handleModelSwitch({ model: 'old' });
     expect(outcome).toBe('revert');
-    expect(revertCalls).toEqual([{ model: 'old', dim: 512 }]);
+    expect(revertCalls).toEqual([{ model: 'old' }]);
     expect(indexer.reindexAll).not.toHaveBeenCalled();
   });
 
@@ -126,7 +122,7 @@ describe('ReindexService', () => {
       confirmReindex: async () => 'cancel',
       confirmModelSwitch: async () => 'later',
     });
-    const outcome = await svc.handleModelSwitch({ model: 'old', dim: 512 });
+    const outcome = await svc.handleModelSwitch({ model: 'old' });
     expect(outcome).toBe('later');
     expect(indexer.reindexAll).not.toHaveBeenCalled();
   });

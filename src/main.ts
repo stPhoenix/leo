@@ -685,10 +685,16 @@ export default class LeoPlugin extends Plugin {
           },
           indexStatusSource: this.indexStatus ?? this.buildIndexStatusSource(),
           indexDrainSubscribe: (l) => this.indexerRag.vaultIndexer.subscribe(l),
-          onIndexVault: () => {
+          onReindexAll: () => {
             void (async (): Promise<void> => {
               const count = await this.indexerRag.reindexService.reindexVault();
               if (count !== null) new Notice(`Leo: re-indexed ${count} files.`);
+            })();
+          },
+          onReindexChanged: () => {
+            void (async (): Promise<void> => {
+              const count = await this.indexerRag.vaultIndexer.drainPending();
+              if (count > 0) new Notice(`Leo: re-indexed ${count} changed file(s).`);
             })();
           },
           planApprovalController: this.planApprovalController,

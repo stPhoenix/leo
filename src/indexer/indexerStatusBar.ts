@@ -92,10 +92,13 @@ export class IndexerStatusBar {
       this.scheduleRender();
       return;
     }
-    // complete
-    this.active = false;
-    this.pendingState = { remaining: 0, currentPath: null };
-    this.scheduleRender();
+    if (event.kind === 'complete') {
+      this.active = false;
+      this.pendingState = { remaining: 0, currentPath: null };
+      this.scheduleRender();
+      return;
+    }
+    // 'error' and 'dirty' carry no progress signal for the status bar
   }
 
   private scheduleRender(): void {

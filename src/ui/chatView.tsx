@@ -9,7 +9,7 @@ import {
 import { createRoot, type Root } from 'react-dom/client';
 import { createElement } from 'react';
 import { HeaderStatsLive } from './chat/HeaderStatsLive';
-import { makeContextUsageSource, makeIndexProgressSource } from './chat/headerStatsSources';
+import { makeContextUsageSource } from './chat/headerStatsSources';
 import type { Logger } from '@/platform/Logger';
 import { ChatMessageStore } from '@/chat/messageStore';
 import { StreamingTurnController, type StreamingPhase } from '@/chat/streamingController';
@@ -32,7 +32,7 @@ import { createSlashRegistry, type SlashRegistry } from './chat/slashCommands';
 import { createContextCommand, type ContextCommandHandle } from './contextCommand';
 import './chat/widgets/ContextWidget';
 import type { MessageActions } from './chat/MessageActionBar';
-import type { IndexStatusSource } from './chat/IndexEmptyStateCta';
+import type { IndexStatusSource } from './chat/IndexStatusBlock';
 import type { DrainListener } from '@/indexer/vaultIndexer';
 import { VIEW_TYPE_LEO_CHAT } from './viewType';
 
@@ -66,7 +66,8 @@ export interface ChatViewDeps {
   readonly analyzeContext?: (signal: AbortSignal) => Promise<ContextData>;
   readonly indexStatusSource?: IndexStatusSource;
   readonly indexDrainSubscribe?: (listener: DrainListener) => () => void;
-  readonly onIndexVault?: () => void;
+  readonly onReindexAll?: () => void;
+  readonly onReindexChanged?: () => void;
   readonly planApprovalController?: PlanApprovalController;
   readonly resolveCostUSD?: (usage: { input: number; output: number }) => number | null;
   readonly getContextWindow?: () => number;
@@ -94,7 +95,6 @@ export class ChatView extends ItemView {
   private turnDispatcher: TurnDispatcher | null = null;
   private slashRegistry: SlashRegistry | null = null;
   private contextCommand: ContextCommandHandle | null = null;
-  private indexProgressDispose: (() => void) | null = null;
   private liveRegionEl: HTMLElement | null = null;
   private phaseListeners = new Set<(p: StreamingPhase) => void>();
   private lastPhase: StreamingPhase = 'idle';
@@ -234,7 +234,10 @@ export class ChatView extends ItemView {
         ...(this.deps.indexDrainSubscribe !== undefined
           ? { indexDrainSubscribe: this.deps.indexDrainSubscribe }
           : {}),
-        ...(this.deps.onIndexVault !== undefined ? { onIndexVault: this.deps.onIndexVault } : {}),
+        ...(this.deps.onReindexAll !== undefined ? { onReindexAll: this.deps.onReindexAll } : {}),
+        ...(this.deps.onReindexChanged !== undefined
+          ? { onReindexChanged: this.deps.onReindexChanged }
+          : {}),
         ...(planApprovalSource !== undefined ? { planApprovalSource } : {}),
         renderPlanMarkdown,
         ...(this.deps.resolveCostUSD !== undefined
@@ -285,8 +288,6 @@ export class ChatView extends ItemView {
     this.deps.logger?.info('view.close', { type: VIEW_TYPE_LEO_CHAT });
     this.contextCommand?.cancel();
     this.contextCommand = null;
-    this.indexProgressDispose?.();
-    this.indexProgressDispose = null;
     this.slashRegistry = null;
     this.turnDispatcher?.dispose();
     this.turnDispatcher = null;
@@ -400,12 +401,9 @@ export class ChatView extends ItemView {
 
   private buildHeaderStats(): JSX.Element | null {
     const getWindow = this.deps.getContextWindow;
-    const subscribeDrain = this.deps.indexDrainSubscribe;
-    if (getWindow === undefined || subscribeDrain === undefined) return null;
+    if (getWindow === undefined) return null;
     const context = makeContextUsageSource(this.messageStore, getWindow);
-    const index = makeIndexProgressSource(subscribeDrain);
-    this.indexProgressDispose = index.dispose;
-    return createElement(HeaderStatsLive, { context, index });
+    return createElement(HeaderStatsLive, { context });
   }
 
   private buildContextIndicatorSource(): {

@@ -806,8 +806,215 @@
 
 .leo-banner-error {
   color: var(--text-error);
-  border-color: var(--text-error);
-  background: var(--background-modifier-error);
+  border-color: color-mix(
+    in srgb,
+    var(--color-red, var(--text-error)) 35%,
+    var(--background-modifier-border)
+  );
+  background: color-mix(in srgb, var(--color-red, var(--text-error)) 14%, transparent);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.leo-info-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  margin: var(--size-4-2) var(--size-4-3);
+  padding: var(--size-4-2) var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-info-block-info {
+  border-color: color-mix(
+    in srgb,
+    var(--interactive-accent, var(--text-accent)) 30%,
+    var(--background-modifier-border)
+  );
+  background: color-mix(
+    in srgb,
+    var(--interactive-accent, var(--text-accent)) 8%,
+    var(--background-secondary)
+  );
+}
+
+.leo-info-block-progress {
+  border-color: color-mix(
+    in srgb,
+    var(--interactive-accent, var(--text-accent)) 35%,
+    var(--background-modifier-border)
+  );
+  background: color-mix(
+    in srgb,
+    var(--interactive-accent, var(--text-accent)) 10%,
+    var(--background-secondary)
+  );
+}
+
+.leo-info-block-success {
+  border-color: color-mix(
+    in srgb,
+    var(--color-green, var(--interactive-accent)) 35%,
+    var(--background-modifier-border)
+  );
+  background: color-mix(
+    in srgb,
+    var(--color-green, var(--interactive-accent)) 12%,
+    var(--background-secondary)
+  );
+}
+
+.leo-info-block-error {
+  border-color: color-mix(
+    in srgb,
+    var(--color-red, var(--text-error)) 35%,
+    var(--background-modifier-border)
+  );
+  background: color-mix(in srgb, var(--color-red, var(--text-error)) 14%, transparent);
+  color: var(--text-normal);
+}
+
+.leo-info-block-text {
+  margin: 0;
+  color: var(--text-normal);
+  font-weight: 500;
+}
+
+.leo-info-block-subtext {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.leo-info-block-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--size-4-2);
+}
+
+.leo-info-block-pct {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.leo-info-block-progress[role='progressbar'] {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.leo-info-block-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--interactive-accent, var(--text-accent));
+  background-image: linear-gradient(
+    90deg,
+    var(--interactive-accent, var(--text-accent)) 25%,
+    color-mix(in srgb, var(--interactive-accent, var(--text-accent)) 50%, transparent) 50%,
+    var(--interactive-accent, var(--text-accent)) 75%
+  );
+  background-size: 24px 100%;
+  animation: leo-info-block-shimmer 1.2s linear infinite;
+  border-radius: 2px;
+  transition: width 200ms ease;
+}
+
+@keyframes leo-info-block-shimmer {
+  to {
+    background-position: -24px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .leo-info-block-progress-fill {
+    animation: none;
+  }
+}
+
+.leo-info-block-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+}
+
+.leo-info-block-button {
+  appearance: none;
+  border: 1px solid var(--interactive-accent, var(--text-accent));
+  background: var(--interactive-accent, var(--text-accent));
+  color: var(--text-on-accent);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-1) var(--size-4-3);
+  font-size: var(--font-ui-smaller);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    opacity 120ms ease;
+}
+
+.leo-info-block-button:hover {
+  opacity: 0.9;
+}
+
+.leo-info-block-button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+.leo-info-block-button-secondary {
+  background: transparent;
+  color: var(--text-normal);
+  border-color: var(--background-modifier-border);
+}
+
+.leo-info-block-button-secondary:hover {
+  background: var(--background-modifier-hover);
+}
+
+.leo-info-block-error-list {
+  margin: 0;
+  padding-left: var(--size-4-4);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-info-block-error-list li {
+  margin: 0;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.leo-info-block-error-path {
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
+}
+
+.leo-info-block-error-msg {
+  color: var(--text-muted);
+}
+
+.leo-info-block-error-more {
+  color: var(--text-faint);
+  list-style: none;
+  margin-left: calc(-1 * var(--size-4-4));
+}
+
+.leo-info-block-error-count {
+  color: var(--text-error);
 }
 
 .leo-chat-root[data-visual-state='awaiting-confirmation'] {

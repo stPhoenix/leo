@@ -23,11 +23,18 @@ describe('chunkIteration', () => {
     expect([...now, ...rest]).toEqual(['a', 'b', 'c', 'd', 'e']);
   });
 
-  it('yields empty now and full rest when starting budget is below threshold', () => {
+  it('always advances by at least one path even when starting budget is below threshold', () => {
     const deadline = { timeRemaining: () => 1 };
     const { now, rest } = chunkIteration(['a', 'b'], deadline, 5);
+    expect(now).toEqual(['a']);
+    expect(rest).toEqual(['b']);
+  });
+
+  it('returns empty now when input is empty regardless of budget', () => {
+    const deadline = { timeRemaining: () => 1 };
+    const { now, rest } = chunkIteration([], deadline, 5);
     expect(now).toEqual([]);
-    expect(rest).toEqual(['a', 'b']);
+    expect(rest).toEqual([]);
   });
 
   it('handles empty input', () => {

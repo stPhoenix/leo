@@ -75,10 +75,7 @@ export interface IndexerRagWiringOptions {
   readonly statusBarEl: HTMLElement;
   readonly promptHeaderMismatch?: () => Promise<HeaderMismatchChoice>;
   readonly confirmReindex?: () => Promise<ReindexConfirmChoice>;
-  readonly confirmModelSwitch?: (prev: {
-    model: string;
-    dim: number;
-  }) => Promise<ModelSwitchChoice>;
+  readonly confirmModelSwitch?: (prev: { model: string }) => Promise<ModelSwitchChoice>;
 }
 
 export interface IndexerRagWiring {
@@ -90,45 +87,6 @@ export interface IndexerRagWiring {
   readonly statusBar: IndexerStatusBar;
   readonly reindexService: ReindexService;
   readonly dispose: () => Promise<void>;
-}
-
-export function buildVaultFileSource(app: AppLike): VaultFileSource {
-  return {
-    listMarkdown(): readonly VaultFileEntry[] {
-      const out: VaultFileEntry[] = [];
-      for (const f of app.vault.getFiles()) {
-        if (f.extension !== 'md' && f.extension !== 'canvas') continue;
-        out.push({ path: f.path, extension: f.extension, mtime: f.stat.mtime, size: f.stat.size });
-      }
-      return out;
-    },
-  };
-}
-
-export function buildVaultEventSource(app: AppLike, plugin: PluginLike): VaultEventSource {
-  return {
-    on(handler: (event: VaultEventKind) => void): () => void {
-      const refs: GraphEventRef[] = [];
-      for (const kind of ['create', 'modify', 'delete'] as const) {
-        const ref = app.vault.on(kind, (file) => {
-          handler({ kind, path: file.path });
-        });
-        plugin.registerEvent(ref);
-        refs.push(ref);
-      }
-      const renameRef = app.vault.on('rename', (file, oldPath) => {
-        handler({ kind: 'rename', path: file.path, oldPath });
-      });
-      plugin.registerEvent(renameRef);
-      refs.push(renameRef);
-      return (): void => {
-        const offref = app.vault.offref;
-        if (typeof offref === 'function') {
-          for (const r of refs) offref.call(app.vault, r);
-        }
-      };
-    },
-  };
 }
 
 export function makeProcessPath(deps: {
@@ -240,13 +198,47 @@ export async function wireIndexerRag(opts: IndexerRagWiringOptions): Promise<Ind
   const promptHeaderMismatch =
     opts.promptHeaderMismatch ?? (async (): Promise<HeaderMismatchChoice> => 'later');
 
+  const files: VaultFileSource = {
+    listMarkdown(): readonly VaultFileEntry[] {
+      const out: VaultFileEntry[] = [];
+      for (const f of opts.app.vault.getFiles()) {
+        if (f.extension !== 'md' && f.extension !== 'canvas') continue;
+        out.push({ path: f.path, extension: f.extension, mtime: f.stat.mtime, size: f.stat.size });
+      }
+      return out;
+    },
+  };
+
+  const events: VaultEventSource = {
+    on(handler: (event: VaultEventKind) => void): () => void {
+      const refs: GraphEventRef[] = [];
+      for (const kind of ['create', 'modify', 'delete'] as const) {
+        const ref = opts.app.vault.on(kind, (file) => {
+          handler({ kind, path: file.path });
+        });
+        opts.plugin.registerEvent(ref);
+        refs.push(ref);
+      }
+      const renameRef = opts.app.vault.on('rename', (file, oldPath) => {
+        handler({ kind: 'rename', path: file.path, oldPath });
+      });
+      opts.plugin.registerEvent(renameRef);
+      refs.push(renameRef);
+      return (): void => {
+        const offref = opts.app.vault.offref;
+        if (typeof offref === 'function') {
+          for (const r of refs) offref.call(opts.app.vault, r);
+        }
+      };
+    },
+  };
+
   const vaultIndexer = new VaultIndexer({
     vault: opts.vaultAdapter,
-    files: buildVaultFileSource(opts.app),
-    events: buildVaultEventSource(opts.app, opts.plugin),
+    files,
+    events,
     spec: (): IndexHeaderSpec => ({
       model: opts.embeddingModel() || 'unknown',
-      dim: 0,
     }),
     processPath,
     promptHeaderMismatch,

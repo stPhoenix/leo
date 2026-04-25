@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   VaultIndexer,
+  type DrainEvent,
   type HeaderMismatchChoice,
   type VaultEventKind,
   type VaultEventSource,
@@ -85,11 +86,10 @@ describe('VaultIndexer', () => {
 
   async function buildIndexer(opts: {
     files?: VaultFileEntry[];
-    spec?: { model: string; dim: number };
+    spec?: { model: string };
     prompt?: HeaderMismatchChoice;
     existingHeader?: {
       model: string;
-      dim: number;
       manifest?: Array<{ path: string; mtime: number; size: number }>;
     };
     onProcess?: (path: string) => Promise<void> | void;
@@ -104,11 +104,10 @@ describe('VaultIndexer', () => {
       await writeIndexHeader(vault, {
         version: 1,
         model: opts.existingHeader.model,
-        dim: opts.existingHeader.dim,
         manifest: opts.existingHeader.manifest ?? [],
       });
     }
-    const spec = opts.spec ?? { model: 'm1', dim: 768 };
+    const spec = opts.spec ?? { model: 'm1' };
     let promptCalls = 0;
     const indexer = new VaultIndexer({
       vault,
@@ -135,7 +134,7 @@ describe('VaultIndexer', () => {
 
   it('logs header.match when stored header matches spec', async () => {
     const { indexer, vault } = await buildIndexer({
-      existingHeader: { model: 'm1', dim: 768 },
+      existingHeader: { model: 'm1' },
       files: [],
     });
     await indexer.init();
@@ -146,8 +145,8 @@ describe('VaultIndexer', () => {
 
   it("mismatch + 'now' choice marks every markdown path dirty and writes a fresh header", async () => {
     const { indexer } = await buildIndexer({
-      existingHeader: { model: 'old', dim: 512 },
-      spec: { model: 'm1', dim: 768 },
+      existingHeader: { model: 'old' },
+      spec: { model: 'm1' },
       files: [mdFile('a.md', 1, 10), mdFile('b.md', 2, 20)],
       prompt: 'now',
     });
@@ -158,8 +157,8 @@ describe('VaultIndexer', () => {
 
   it("mismatch + 'later' choice parks indexer (no diff sweep, no drain)", async () => {
     const { indexer } = await buildIndexer({
-      existingHeader: { model: 'old', dim: 512 },
-      spec: { model: 'm1', dim: 768 },
+      existingHeader: { model: 'old' },
+      spec: { model: 'm1' },
       files: [mdFile('a.md', 1, 10)],
       prompt: 'later',
     });
@@ -171,12 +170,12 @@ describe('VaultIndexer', () => {
   });
 
   it("mismatch + 'revert-model' calls revertModel with the stored spec", async () => {
-    const reverted: Array<{ model: string; dim: number }> = [];
+    const reverted: Array<{ model: string }> = [];
     const { indexer } = await buildIndexer({
-      existingHeader: { model: 'old-m', dim: 512 },
-      spec: { model: 'new-m', dim: 768 },
+      existingHeader: { model: 'old-m' },
+      spec: { model: 'new-m' },
       prompt: 'revert-model',
-      revertModel: (prev?: { model: string; dim: number }) => {
+      revertModel: (prev?: { model: string }) => {
         if (prev !== undefined) reverted.push(prev);
       },
     });
@@ -191,7 +190,6 @@ describe('VaultIndexer', () => {
     const { indexer } = await buildIndexer({
       existingHeader: {
         model: 'm1',
-        dim: 768,
         manifest: [
           { path: 'keep.md', mtime: 1, size: 10 },
           { path: 'modify.md', mtime: 2, size: 20 },
@@ -207,7 +205,7 @@ describe('VaultIndexer', () => {
 
   it('vault events fan out to enqueueDirty — rename emits delete+create pair', async () => {
     const { indexer, events } = await buildIndexer({
-      existingHeader: { model: 'm1', dim: 768 },
+      existingHeader: { model: 'm1' },
       files: [],
     });
     await indexer.init();
@@ -222,7 +220,7 @@ describe('VaultIndexer', () => {
 
   it('indexable filter accepts .md and .canvas but rejects .pdf, .png', async () => {
     const { indexer } = await buildIndexer({
-      existingHeader: { model: 'm1', dim: 768 },
+      existingHeader: { model: 'm1' },
       files: [],
     });
     await indexer.init();
@@ -236,7 +234,7 @@ describe('VaultIndexer', () => {
 
   it('processDueWork drains the queue path by path through processPath', async () => {
     const { indexer, processed } = await buildIndexer({
-      existingHeader: { model: 'm1', dim: 768 },
+      existingHeader: { model: 'm1' },
       files: [],
     });
     await indexer.init();
@@ -251,7 +249,7 @@ describe('VaultIndexer', () => {
   it('concurrent drains are mutually exclusive — only one runs at a time', async () => {
     const starts: number[] = [];
     const { indexer } = await buildIndexer({
-      existingHeader: { model: 'm1', dim: 768 },
+      existingHeader: { model: 'm1' },
       files: [],
       onProcess: async (p) => {
         starts.push(Date.now());
@@ -273,7 +271,7 @@ describe('VaultIndexer', () => {
 
   it('abort-during-drain releases the in-flight flag via finally', async () => {
     const { indexer } = await buildIndexer({
-      existingHeader: { model: 'm1', dim: 768 },
+      existingHeader: { model: 'm1' },
       files: [],
       onProcess: async () => {
         await new Promise((r) => setTimeout(r, 10));
@@ -301,7 +299,6 @@ describe('VaultIndexer', () => {
     await writeIndexHeader(vault, {
       version: 1,
       model: 'm1',
-      dim: 768,
       manifest: [],
     });
     vault.files.set(DIRTY_QUEUE_PATH, JSON.stringify({ version: 1, paths: ['resumed.md'] }));
@@ -309,7 +306,7 @@ describe('VaultIndexer', () => {
       vault,
       files,
       events,
-      spec: () => ({ model: 'm1', dim: 768 }),
+      spec: () => ({ model: 'm1' }),
       processPath: async () => undefined,
       promptHeaderMismatch: async () => 'now',
       idleScheduler: immediateScheduler(),
@@ -321,23 +318,9 @@ describe('VaultIndexer', () => {
     indexer.shutdown();
   });
 
-  it('queryOnDemand pre-empts idle timer and drains up to onDemandCap entries', async () => {
-    const { indexer, processed } = await buildIndexer({
-      existingHeader: { model: 'm1', dim: 768 },
-      files: [],
-    });
-    await indexer.init();
-    for (let i = 0; i < 40; i += 1) indexer.enqueueDirty({ path: `n${i}.md`, extension: 'md' });
-    expect(indexer.queueSize()).toBe(40);
-    await indexer.queryOnDemand(new AbortController().signal);
-    expect(processed.length).toBe(32); // default onDemandCap
-    expect(indexer.queueSize()).toBe(8);
-    indexer.shutdown();
-  });
-
   it('shutdown aborts in-flight drain and stops listener fan-out', async () => {
     const { indexer, events } = await buildIndexer({
-      existingHeader: { model: 'm1', dim: 768 },
+      existingHeader: { model: 'm1' },
       files: [],
     });
     await indexer.init();
@@ -350,12 +333,12 @@ describe('VaultIndexer', () => {
     const vault = new FakeVault();
     const files = new FakeFiles([]);
     const events = new FakeEvents();
-    await writeIndexHeader(vault, { version: 1, model: 'm', dim: 4, manifest: [] });
+    await writeIndexHeader(vault, { version: 1, model: 'm', manifest: [] });
     const indexer = new VaultIndexer({
       vault,
       files,
       events,
-      spec: () => ({ model: 'm', dim: 4 }),
+      spec: () => ({ model: 'm' }),
       processPath: async () => undefined,
       promptHeaderMismatch: async () => 'now',
       idleScheduler: immediateScheduler(),
@@ -370,9 +353,210 @@ describe('VaultIndexer', () => {
     indexer.shutdown();
   });
 
+  it("emits DrainEvent 'error' when processPath throws, then continues the drain", async () => {
+    const events: DrainEvent[] = [];
+    const { indexer } = await buildIndexer({
+      existingHeader: { model: 'm1' },
+      files: [],
+      onProcess: async (p) => {
+        if (p === 'bad.md') throw new Error('boom');
+      },
+    });
+    await indexer.init();
+    indexer.subscribe((e) => events.push(e));
+    indexer.enqueueDirty({ path: 'ok.md', extension: 'md' });
+    indexer.enqueueDirty({ path: 'bad.md', extension: 'md' });
+    await indexer.processDueWork(new AbortController().signal);
+    const errors = events.filter(
+      (e): e is Extract<DrainEvent, { kind: 'error' }> => e.kind === 'error',
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ path: 'bad.md', message: 'boom' });
+    indexer.shutdown();
+  });
+
+  it("emits DrainEvent 'dirty' tracking queue size; subscribe replays current count", async () => {
+    const events: DrainEvent[] = [];
+    const { indexer } = await buildIndexer({
+      existingHeader: { model: 'm1' },
+      files: [],
+    });
+    await indexer.init();
+    indexer.subscribe((e) => events.push(e));
+    // Subscribe immediately replays current dirty count (0 here).
+    expect(
+      events
+        .filter((e) => e.kind === 'dirty')
+        .map((e) => (e as Extract<DrainEvent, { kind: 'dirty' }>).count),
+    ).toEqual([0]);
+    indexer.enqueueDirty({ path: 'a.md', extension: 'md' });
+    indexer.enqueueDirty({ path: 'b.md', extension: 'md' });
+    indexer.enqueueDirty({ path: 'a.md', extension: 'md' }); // duplicate — queue size unchanged → no emit
+    const dirtyEvents = events.filter(
+      (e): e is Extract<DrainEvent, { kind: 'dirty' }> => e.kind === 'dirty',
+    );
+    expect(dirtyEvents.map((e) => e.count)).toEqual([0, 1, 2]);
+    expect(indexer.getDirtyCount()).toBe(2);
+    indexer.shutdown();
+  });
+
+  it('subscribe replays the current queue size as a dirty event', async () => {
+    const events: DrainEvent[] = [];
+    const { indexer } = await buildIndexer({
+      existingHeader: { model: 'm1' },
+      files: [],
+    });
+    await indexer.init();
+    indexer.enqueueDirty({ path: 'a.md', extension: 'md' });
+    indexer.enqueueDirty({ path: 'b.md', extension: 'md' });
+    indexer.subscribe((e) => events.push(e));
+    expect(events).toEqual([{ kind: 'dirty', count: 2 }]);
+    indexer.shutdown();
+  });
+
+  it("reindexAll clears dirtySinceFullIndex and emits 'dirty' count 0", async () => {
+    const events: DrainEvent[] = [];
+    const { indexer } = await buildIndexer({
+      existingHeader: { model: 'm1' },
+      files: [],
+    });
+    await indexer.init();
+    indexer.enqueueDirty({ path: 'edited.md', extension: 'md' });
+    expect(indexer.getDirtyCount()).toBe(1);
+    indexer.subscribe((e) => events.push(e));
+    await indexer.reindexAll();
+    const dirtyEvents = events.filter(
+      (e): e is Extract<DrainEvent, { kind: 'dirty' }> => e.kind === 'dirty',
+    );
+    expect(dirtyEvents.at(-1)?.count).toBe(0);
+    expect(indexer.getDirtyCount()).toBe(0);
+    indexer.shutdown();
+  });
+
+  it('drainPending fully drains the queue without idle scheduling and reports processed count', async () => {
+    const { indexer, processed } = await buildIndexer({
+      existingHeader: { model: 'm1' },
+      files: [],
+    });
+    await indexer.init();
+    for (let i = 0; i < 50; i += 1) indexer.enqueueDirty({ path: `n${i}.md`, extension: 'md' });
+    expect(indexer.queueSize()).toBe(50);
+    const count = await indexer.drainPending();
+    expect(count).toBe(50);
+    expect(processed.length).toBe(50);
+    expect(indexer.queueSize()).toBe(0);
+    indexer.shutdown();
+  });
+
+  it('drainPending bails with provider error event when provider not ready', async () => {
+    const events: DrainEvent[] = [];
+    const vault = new FakeVault();
+    const files = new FakeFiles([]);
+    const fakeEvents = new FakeEvents();
+    await writeIndexHeader(vault, { version: 1, model: 'm', manifest: [] });
+    const indexer = new VaultIndexer({
+      vault,
+      files,
+      events: fakeEvents,
+      spec: () => ({ model: 'm' }),
+      processPath: async () => undefined,
+      promptHeaderMismatch: async () => 'now',
+      idleScheduler: immediateScheduler(),
+      idleMs: () => 30_000,
+      isProviderReady: () => false,
+      queueDebounceMs: 0,
+    });
+    await indexer.init();
+    indexer.subscribe((e) => events.push(e));
+    indexer.enqueueDirty({ path: 'a.md', extension: 'md' });
+    const count = await indexer.drainPending();
+    expect(count).toBe(0);
+    expect(events.some((e) => e.kind === 'error' && e.path === undefined)).toBe(true);
+    indexer.shutdown();
+  });
+
+  it('reindexAll clears waitingOnUser, rewrites header, and drains successfully', async () => {
+    const events: DrainEvent[] = [];
+    const { indexer } = await buildIndexer({
+      existingHeader: { model: 'old' },
+      spec: { model: 'm1' },
+      files: [mdFile('a.md', 1, 10), mdFile('b.md', 2, 20)],
+      prompt: 'later',
+    });
+    await indexer.init();
+    expect(indexer.isWaitingOnUser()).toBe(true);
+    indexer.subscribe((e) => events.push(e));
+    const count = await indexer.reindexAll();
+    expect(count).toBe(2);
+    expect(indexer.isWaitingOnUser()).toBe(false);
+    // Drain ran (start + complete), no provider/wait bail error event.
+    expect(events.some((e) => e.kind === 'start')).toBe(true);
+    expect(events.some((e) => e.kind === 'complete')).toBe(true);
+    // The only error event is the replayed waiting-on-user notice from subscribe;
+    // reindexAll must not introduce additional bail errors.
+    const nonWaitingErrors = events.filter(
+      (e): e is Extract<DrainEvent, { kind: 'error' }> =>
+        e.kind === 'error' && !e.message.includes('Indexer paused'),
+    );
+    expect(nonWaitingErrors).toHaveLength(0);
+    indexer.shutdown();
+  });
+
+  it('runDiffSweep marks added/modified/removed paths dirty since last full index', async () => {
+    const { indexer } = await buildIndexer({
+      existingHeader: {
+        model: 'm1',
+        manifest: [{ path: 'old.md', mtime: 1, size: 10 }],
+      },
+      files: [mdFile('old.md', 99, 11), mdFile('new.md', 2, 5)],
+    });
+    await indexer.init();
+    expect(indexer.getDirtyCount()).toBe(2);
+    indexer.shutdown();
+  });
+
+  it("emits and replays waiting error event when user picks 'later' on header mismatch", async () => {
+    const events: DrainEvent[] = [];
+    const { indexer } = await buildIndexer({
+      existingHeader: { model: 'old' },
+      spec: { model: 'new' },
+      files: [mdFile('a.md', 1, 10)],
+      prompt: 'later',
+    });
+    await indexer.init();
+    indexer.subscribe((e) => events.push(e));
+    const errors = events.filter(
+      (e): e is Extract<DrainEvent, { kind: 'error' }> => e.kind === 'error',
+    );
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors[0]?.message).toContain('Indexer paused');
+    indexer.shutdown();
+  });
+
+  it('persists fresh manifest after drain so next init shows no diff', async () => {
+    const { indexer, vault } = await buildIndexer({
+      existingHeader: { model: 'm1', manifest: [] },
+      files: [mdFile('a.md', 10, 100), mdFile('b.md', 20, 200)],
+    });
+    await indexer.init();
+    expect(indexer.queueSize()).toBe(2);
+    await indexer.drainPending();
+    expect(indexer.queueSize()).toBe(0);
+    const stored = JSON.parse(vault.files.get(INDEX_HEADER_PATH)!) as {
+      manifest: Array<{ path: string; mtime: number; size: number }>;
+    };
+    expect(stored.manifest.map((m) => m.path).sort()).toEqual(['a.md', 'b.md']);
+    expect(stored.manifest.find((m) => m.path === 'a.md')).toEqual({
+      path: 'a.md',
+      mtime: 10,
+      size: 100,
+    });
+    indexer.shutdown();
+  });
+
   it('purgeExcluded removes matching paths from the queue', async () => {
     const { indexer } = await buildIndexer({
-      existingHeader: { model: 'm1', dim: 768 },
+      existingHeader: { model: 'm1' },
       files: [],
     });
     await indexer.init();

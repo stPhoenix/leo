@@ -47,7 +47,6 @@ describe('IndexHeader read/write + matching', () => {
     const header: IndexHeader = {
       version: 1,
       model: 'text-emb',
-      dim: 768,
       manifest: [{ path: 'note.md', mtime: 10, size: 20 }],
     };
     await writeIndexHeader(v, header);
@@ -56,12 +55,11 @@ describe('IndexHeader read/write + matching', () => {
     expect(parsed).toEqual(header);
   });
 
-  it('headerMatches returns false on null, different model, or different dim', () => {
-    const base: IndexHeader = { version: 1, model: 'm1', dim: 768, manifest: [] };
-    expect(headerMatches(null, { model: 'm1', dim: 768 })).toBe(false);
-    expect(headerMatches(base, { model: 'm2', dim: 768 })).toBe(false);
-    expect(headerMatches(base, { model: 'm1', dim: 1024 })).toBe(false);
-    expect(headerMatches(base, { model: 'm1', dim: 768 })).toBe(true);
+  it('headerMatches returns false on null or different model', () => {
+    const base: IndexHeader = { version: 1, model: 'm1', manifest: [] };
+    expect(headerMatches(null, { model: 'm1' })).toBe(false);
+    expect(headerMatches(base, { model: 'm2' })).toBe(false);
+    expect(headerMatches(base, { model: 'm1' })).toBe(true);
   });
 
   it('diffManifest classifies added / modified / removed paths', () => {
