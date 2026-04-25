@@ -1,11 +1,5 @@
 import type { ContextData } from '@/agent/contextAnalyzer';
-import {
-  buildGrid,
-  pickGridDimensions,
-  type CategoryId,
-  type ContextCategory,
-  type GridSquare,
-} from '@/ui/contextGrid';
+import { type CategoryId, type ContextCategory } from '@/ui/contextGrid';
 import { AUTOCOMPACT_BUFFER_TOKENS } from '@/agent/compactConstants';
 import { registerWidget, type WidgetComponentProps } from './registry';
 
@@ -44,13 +38,11 @@ function ContextWidgetBody({ data, contextWindow }: BodyProps): JSX.Element {
   const reserved = Math.min(AUTOCOMPACT_BUFFER_TOKENS, Math.max(0, window - used));
   const free = Math.max(0, window - used - reserved);
   const categories = buildCategories(data, reserved, free);
-  const dimensions = pickGridDimensions(window, 80);
-  const squares = buildGrid({ categories, contextWindow: window, dimensions });
-  const rows = chunk(squares, dimensions.cols).slice(0, dimensions.rows);
   const totalTokens = data.totalTokens > 0 ? data.totalTokens : used;
   const pct = Math.min(100, Math.round((totalTokens / window) * 100));
   const source = data.tokenTotalSource === 'api' ? 'measured' : 'estimated';
   const legend = categories.filter((c) => c.isFreeSpace !== true && c.tokens > 0);
+  const arcs = buildArcs(categories, window);
 
   return (
     <section
@@ -68,44 +60,99 @@ function ContextWidgetBody({ data, contextWindow }: BodyProps): JSX.Element {
           {data.skillCountFailed ? ' · skills: count failed' : ''}
         </span>
       </header>
-      <div
-        className="leo-context-widget-grid"
-        role="img"
-        aria-label="Context usage grid"
-        data-slot="widget-grid"
-      >
-        {rows.map((row, i) => (
-          <div key={i} className="leo-context-widget-row">
-            {row.map((sq, j) => (
-              <span
-                key={j}
-                className={`leo-context-widget-square leo-cat-${sq.categoryId}`}
-                data-category={sq.categoryId}
-                data-fullness={sq.fullness.toFixed(2)}
-                aria-hidden="true"
-              >
-                {renderSquare(sq)}
+      <div className="leo-context-widget-chart" data-slot="widget-chart">
+        <ContextDonut arcs={arcs} pct={pct} totalTokens={totalTokens} window={window} />
+        <ul className="leo-context-widget-legend" data-slot="widget-legend">
+          {legend.map((c) => (
+            <li
+              key={c.id}
+              className={`leo-context-widget-legend-item leo-cat-${c.id}`}
+              data-category={c.id}
+            >
+              <span className="leo-context-widget-legend-swatch" aria-hidden="true">
+                ◉
               </span>
-            ))}
-          </div>
-        ))}
+              <span className="leo-context-widget-legend-label">{c.label}</span>
+              <span className="leo-context-widget-legend-value">{fmt(c.tokens)}</span>
+            </li>
+          ))}
+        </ul>
       </div>
-      <ul className="leo-context-widget-legend" data-slot="widget-legend">
-        {legend.map((c) => (
-          <li
-            key={c.id}
-            className={`leo-context-widget-legend-item leo-cat-${c.id}`}
-            data-category={c.id}
-          >
-            <span className="leo-context-widget-legend-swatch" aria-hidden="true">
-              ◉
-            </span>
-            <span className="leo-context-widget-legend-label">{c.label}</span>
-            <span className="leo-context-widget-legend-value">{fmt(c.tokens)}</span>
-          </li>
-        ))}
-      </ul>
     </section>
+  );
+}
+
+interface DonutArc {
+  readonly id: CategoryId;
+  readonly len: number;
+  readonly offset: number;
+}
+
+const DONUT_RADIUS = 56;
+const DONUT_STROKE = 18;
+const DONUT_SIZE = 140;
+const DONUT_CIRCUMFERENCE = 2 * Math.PI * DONUT_RADIUS;
+
+function buildArcs(categories: readonly ContextCategory[], window: number): readonly DonutArc[] {
+  const out: DonutArc[] = [];
+  let cursor = 0;
+  for (const c of categories) {
+    if (c.isFreeSpace === true || c.tokens <= 0) continue;
+    const len = (c.tokens / window) * DONUT_CIRCUMFERENCE;
+    out.push({ id: c.id, len, offset: cursor });
+    cursor += len;
+  }
+  return out;
+}
+
+interface DonutProps {
+  readonly arcs: readonly DonutArc[];
+  readonly pct: number;
+  readonly totalTokens: number;
+  readonly window: number;
+}
+
+function ContextDonut({ arcs, pct, totalTokens, window }: DonutProps): JSX.Element {
+  const center = DONUT_SIZE / 2;
+  return (
+    <div className="leo-context-widget-donut" data-slot="widget-donut">
+      <svg
+        className="leo-context-widget-donut-svg"
+        viewBox={`0 0 ${DONUT_SIZE} ${DONUT_SIZE}`}
+        role="img"
+        aria-label={`Context usage: ${fmt(totalTokens)} of ${fmt(window)} tokens (${pct}%)`}
+      >
+        <circle
+          className="leo-context-widget-donut-track"
+          cx={center}
+          cy={center}
+          r={DONUT_RADIUS}
+          fill="none"
+          strokeWidth={DONUT_STROKE}
+        />
+        <g transform={`rotate(-90 ${center} ${center})`}>
+          {arcs.map((arc) => (
+            <circle
+              key={arc.id}
+              className={`leo-context-widget-donut-arc leo-cat-${arc.id}`}
+              data-category={arc.id}
+              cx={center}
+              cy={center}
+              r={DONUT_RADIUS}
+              fill="none"
+              strokeWidth={DONUT_STROKE}
+              strokeDasharray={`${arc.len} ${DONUT_CIRCUMFERENCE - arc.len}`}
+              strokeDashoffset={-arc.offset}
+              stroke="currentColor"
+            />
+          ))}
+        </g>
+      </svg>
+      <div className="leo-context-widget-donut-center" aria-hidden="true">
+        <span className="leo-context-widget-donut-pct">{pct}%</span>
+        <span className="leo-context-widget-donut-sub">used</span>
+      </div>
+    </div>
   );
 }
 
@@ -139,17 +186,6 @@ function buildCategories(data: ContextData, reserved: number, free: number): Con
     },
     { id: 'free_space', label: CATEGORY_LABELS.free_space, tokens: free, isFreeSpace: true },
   ];
-}
-
-function renderSquare(sq: GridSquare): string {
-  if (sq.isFreeSpace) return '·';
-  return sq.symbol;
-}
-
-function chunk<T>(items: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
 }
 
 function fmt(n: number): string {

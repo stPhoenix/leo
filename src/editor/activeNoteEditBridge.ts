@@ -1,5 +1,5 @@
 import type { Logger } from '@/platform/Logger';
-import type { EditNoteBridge } from '@/tools/editNoteTool';
+import type { EditNoteBridge } from '@/tools/types';
 import { withLock, type ApplyEdit } from './withLock';
 import type { EditLockController, LockedRange } from './editLock';
 import type { HighlightController } from './highlights';

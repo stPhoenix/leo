@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   AgentRunner,
   type AgentRunnerProvider,
   type FocusedContextSource,
 } from '@/agent/agentRunner';
-import type { AgentTurnEvent, AgentHistoryMessage, ThreadId } from '@/agent/types';
+import type { AgentHistoryMessage, ThreadId } from '@/agent/types';
+import type { StreamEvent as AgentTurnEvent } from '@/agent/streamEvents';
 import { Logger } from '@/platform/Logger';
 import type { LogRecord, LogSink } from '@/platform/logTypes';
 import type { FocusedContext } from '@/editor/types';
@@ -82,6 +84,25 @@ async function collect(iter: AsyncIterable<AgentTurnEvent>): Promise<AgentTurnEv
   return out;
 }
 
+async function collectWithConfirm(
+  iter: AsyncIterable<AgentTurnEvent>,
+  decider: (req: {
+    toolId: string;
+    thread: string;
+    argsJson: string;
+    category: 'read' | 'write';
+  }) => 'allow-once' | 'allow-thread' | 'deny',
+): Promise<AgentTurnEvent[]> {
+  const out: AgentTurnEvent[] = [];
+  for await (const ev of iter) {
+    out.push(ev);
+    if (ev.type === 'tool_confirmation') {
+      ev.resolve(decider(ev.request));
+    }
+  }
+  return out;
+}
+
 describe('AgentRunner', () => {
   it('emits provider tokens, usage, and a final done event', async () => {
     const provider = new FakeProvider();
@@ -101,9 +122,7 @@ describe('AgentRunner', () => {
         { type: 'done' },
       ],
     });
-    const events = await collect(
-      runner.send({ thread: 't1', message: { role: 'user', content: 'hi' } }),
-    );
+    const events = await collect(runner.send({ role: 'user', content: 'hi' }, 't1'));
     expect(events.map((e) => e.type)).toEqual(['token', 'token', 'usage', 'done']);
     const lastDone = events[events.length - 1]!;
     expect(lastDone).toEqual({ type: 'done', cancelled: false });
@@ -132,8 +151,8 @@ describe('AgentRunner', () => {
       betweenEachMs: 10,
       onStart: () => finishOrder.push('start-2'),
     });
-    const p1 = collect(runner.send({ thread: 't1', message: { role: 'user', content: 'first' } }));
-    const p2 = collect(runner.send({ thread: 't1', message: { role: 'user', content: 'second' } }));
+    const p1 = collect(runner.send({ role: 'user', content: 'first' }, 't1'));
+    const p2 = collect(runner.send({ role: 'user', content: 'second' }, 't1'));
     expect(runner.queueLength()).toBe(2);
     await p1;
     await p2;
@@ -165,14 +184,14 @@ describe('AgentRunner', () => {
     });
     provider.plan({ events: [{ type: 'done' }], betweenEachMs: 20 });
     provider.plan({ events: [{ type: 'done' }], betweenEachMs: 20 });
-    const p1 = collect(runner.send({ thread: 't', message: { role: 'user', content: '1' } }));
+    const p1 = collect(runner.send({ role: 'user', content: '1' }, 't'));
     focus.ctx = {
       file: 'b.md',
       cursor: { line: 0, ch: 0 },
       selection: null,
       viewport: { from: 0, to: 10, text: 'SNAPSHOT-B' },
     };
-    const p2 = collect(runner.send({ thread: 't', message: { role: 'user', content: '2' } }));
+    const p2 = collect(runner.send({ role: 'user', content: '2' }, 't'));
     focus.ctx = {
       file: 'c.md',
       cursor: { line: 0, ch: 0 },
@@ -210,10 +229,7 @@ describe('AgentRunner', () => {
       betweenEachMs: 30,
     });
     const events: AgentTurnEvent[] = [];
-    const iter = runner.send({
-      thread: 't',
-      message: { role: 'user', content: 'go' },
-    });
+    const iter = runner.send({ role: 'user', content: 'go' }, 't');
     const iterator = iter[Symbol.asyncIterator]();
     const first = await iterator.next();
     expect(first.done).toBe(false);
@@ -244,8 +260,8 @@ describe('AgentRunner', () => {
       events: [{ type: 'token', text: 'partial' }, { type: 'done' }],
       betweenEachMs: 30,
     });
-    const p1 = collect(runner.send({ thread: 't', message: { role: 'user', content: 'a' } }));
-    const p2 = collect(runner.send({ thread: 't', message: { role: 'user', content: 'b' } }));
+    const p1 = collect(runner.send({ role: 'user', content: 'a' }, 't'));
+    const p2 = collect(runner.send({ role: 'user', content: 'b' }, 't'));
     await new Promise((r) => setTimeout(r, 5));
     expect(provider.calls).toHaveLength(1);
     runner.cancel('t');
@@ -278,9 +294,7 @@ describe('AgentRunner', () => {
       historyByThread: history,
     });
     provider.plan({ events: [{ type: 'done' }] });
-    const out = await collect(
-      runner.send({ thread: 't', message: { role: 'user', content: 'q' } }),
-    );
+    const out = await collect(runner.send({ role: 'user', content: 'q' }, 't'));
     expect(out[out.length - 1]?.type).toBe('done');
     const truncateLog = records.find((r) => r.event === 'agent.turn.truncate');
     expect(truncateLog).toBeDefined();
@@ -302,8 +316,8 @@ describe('AgentRunner', () => {
       events: [{ type: 'token', text: 'x' }, { type: 'done' }],
       betweenEachMs: 40,
     });
-    const p1 = collect(runner.send({ thread: 'a', message: { role: 'user', content: '1' } }));
-    const p2 = collect(runner.send({ thread: 'a', message: { role: 'user', content: '2' } }));
+    const p1 = collect(runner.send({ role: 'user', content: '1' }, 'a'));
+    const p2 = collect(runner.send({ role: 'user', content: '2' }, 'a'));
     await new Promise((r) => setTimeout(r, 20));
     runner.dispose();
     const [out1, out2] = await Promise.all([p1, p2]);
@@ -326,9 +340,7 @@ describe('AgentRunner', () => {
         { type: 'error', error: new Error('boom') },
       ],
     });
-    const events = await collect(
-      runner.send({ thread: 't', message: { role: 'user', content: 'q' } }),
-    );
+    const events = await collect(runner.send({ role: 'user', content: 'q' }, 't'));
     const lastType = events[events.length - 1]?.type;
     expect(lastType).toBe('error');
     expect(events.filter((e) => e.type === 'done')).toHaveLength(0);
@@ -342,6 +354,7 @@ describe('AgentRunner', () => {
     registry.register({
       id: 'echo_tool',
       description: 'echoes input',
+      schema: z.any() as unknown as z.ZodType<unknown>,
       parameters: {
         type: 'object',
         properties: { x: { type: 'string' } },
@@ -376,9 +389,7 @@ describe('AgentRunner', () => {
     provider.plan({
       events: [{ type: 'token', text: 'final answer' }, { type: 'done' }],
     });
-    const out = await collect(
-      runner.send({ thread: 't', message: { role: 'user', content: 'q' } }),
-    );
+    const out = await collect(runner.send({ role: 'user', content: 'q' }, 't'));
     const tokens = out.filter((e) => e.type === 'token').map((e) => (e as { text: string }).text);
     expect(tokens.join('')).toBe('final answer');
     expect(provider.calls).toHaveLength(2);
@@ -388,6 +399,16 @@ describe('AgentRunner', () => {
     expect(toolMsg.toolCallId).toBe('c1');
     expect(toolMsg.content).toContain('"ok":true');
     expect(toolMsg.content).toContain('echoed');
+    const toolCallIdx = out.findIndex(
+      (e) => e.type === 'tool_call' && (e as { call: { id: string } }).call.id === 'c1',
+    );
+    const toolResultIdx = out.findIndex(
+      (e) => e.type === 'tool_result' && (e as { id: string }).id === 'c1',
+    );
+    expect(toolCallIdx).toBeGreaterThanOrEqual(0);
+    expect(toolResultIdx).toBeGreaterThan(toolCallIdx);
+    const toolResult = out[toolResultIdx] as { type: 'tool_result'; id: string; result: unknown };
+    expect(toolResult.result).toEqual({ ok: true, data: { echoed: 'hi' } });
   });
 
   it('passes the OpenAI tools array to the provider when the registry has tools, omits when empty', async () => {
@@ -398,6 +419,7 @@ describe('AgentRunner', () => {
     registry.register({
       id: 'foo',
       description: 'foo',
+      schema: z.any() as unknown as z.ZodType<unknown>,
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       requiresConfirmation: false,
       source: 'builtin',
@@ -412,7 +434,7 @@ describe('AgentRunner', () => {
       toolRegistry: registry,
     });
     providerA.plan({ events: [{ type: 'done' }] });
-    await collect(runnerA.send({ thread: 't', message: { role: 'user', content: 'q' } }));
+    await collect(runnerA.send({ role: 'user', content: 'q' }, 't'));
     expect(providerA.calls[0]!.tools).toBeDefined();
     expect(providerA.calls[0]!.tools?.[0]?.function.name).toBe('foo');
 
@@ -425,7 +447,7 @@ describe('AgentRunner', () => {
       toolRegistry: new ToolRegistry(),
     });
     providerB.plan({ events: [{ type: 'done' }] });
-    await collect(runnerB.send({ thread: 't', message: { role: 'user', content: 'q' } }));
+    await collect(runnerB.send({ role: 'user', content: 'q' }, 't'));
     expect(providerB.calls[0]!.tools).toBeUndefined();
   });
 
@@ -437,13 +459,13 @@ describe('AgentRunner', () => {
     registry.register({
       id: 'write_note',
       description: 'writes',
+      schema: z.any() as unknown as z.ZodType<unknown>,
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       requiresConfirmation: true,
       source: 'builtin',
       validate: () => ({ ok: true, data: {} }),
       invoke: async () => ({ ok: true, data: { wrote: true } }),
     });
-    const confirm = vi.fn(async () => 'allow-once' as const);
     const markAllowed = vi.fn();
     const runner = new AgentRunner({
       provider,
@@ -451,7 +473,6 @@ describe('AgentRunner', () => {
       logger,
       model: () => 'm',
       toolRegistry: registry,
-      confirmTool: confirm,
       allowedToolsForThread: () => new Set(),
       markThreadAllowed: markAllowed,
     });
@@ -462,8 +483,11 @@ describe('AgentRunner', () => {
       ],
     });
     provider.plan({ events: [{ type: 'token', text: 'ok' }, { type: 'done' }] });
-    await collect(runner.send({ thread: 't', message: { role: 'user', content: 'q' } }));
-    expect(confirm).toHaveBeenCalledTimes(1);
+    const out = await collectWithConfirm(
+      runner.send({ role: 'user', content: 'q' }, 't'),
+      () => 'allow-once',
+    );
+    expect(out.filter((e) => e.type === 'tool_confirmation')).toHaveLength(1);
     expect(markAllowed).not.toHaveBeenCalled();
     const secondMessages = provider.calls[1]!.messages;
     const toolMsg = secondMessages.find((m) => m.role === 'tool');
@@ -478,20 +502,19 @@ describe('AgentRunner', () => {
     registry.register({
       id: 'write_note',
       description: 'writes',
+      schema: z.any() as unknown as z.ZodType<unknown>,
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       requiresConfirmation: true,
       source: 'builtin',
       validate: () => ({ ok: true, data: {} }),
       invoke: async () => ({ ok: true, data: 'did' }),
     });
-    const confirm = vi.fn();
     const runner = new AgentRunner({
       provider,
       focusedContext: new MutableFocus(),
       logger,
       model: () => 'm',
       toolRegistry: registry,
-      confirmTool: confirm,
       allowedToolsForThread: () => new Set(['write_note']),
     });
     provider.plan({
@@ -501,8 +524,8 @@ describe('AgentRunner', () => {
       ],
     });
     provider.plan({ events: [{ type: 'done' }] });
-    await collect(runner.send({ thread: 't', message: { role: 'user', content: 'q' } }));
-    expect(confirm).not.toHaveBeenCalled();
+    const out = await collect(runner.send({ role: 'user', content: 'q' }, 't'));
+    expect(out.filter((e) => e.type === 'tool_confirmation')).toHaveLength(0);
   });
 
   it('allow-thread persists via markThreadAllowed before invoking', async () => {
@@ -513,6 +536,7 @@ describe('AgentRunner', () => {
     registry.register({
       id: 'write_note',
       description: 'writes',
+      schema: z.any() as unknown as z.ZodType<unknown>,
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       requiresConfirmation: true,
       source: 'builtin',
@@ -526,7 +550,6 @@ describe('AgentRunner', () => {
       logger,
       model: () => 'm',
       toolRegistry: registry,
-      confirmTool: async () => 'allow-thread',
       allowedToolsForThread: () => new Set(),
       markThreadAllowed: markAllowed,
     });
@@ -537,7 +560,10 @@ describe('AgentRunner', () => {
       ],
     });
     provider.plan({ events: [{ type: 'done' }] });
-    await collect(runner.send({ thread: 't', message: { role: 'user', content: 'q' } }));
+    await collectWithConfirm(
+      runner.send({ role: 'user', content: 'q' }, 't'),
+      () => 'allow-thread',
+    );
     expect(markAllowed).toHaveBeenCalledWith('t', 'write_note');
   });
 
@@ -550,6 +576,7 @@ describe('AgentRunner', () => {
     registry.register({
       id: 'write_note',
       description: 'writes',
+      schema: z.any() as unknown as z.ZodType<unknown>,
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       requiresConfirmation: true,
       source: 'builtin',
@@ -562,7 +589,6 @@ describe('AgentRunner', () => {
       logger,
       model: () => 'm',
       toolRegistry: registry,
-      confirmTool: async () => 'deny',
       allowedToolsForThread: () => new Set(),
     });
     provider.plan({
@@ -572,7 +598,7 @@ describe('AgentRunner', () => {
       ],
     });
     provider.plan({ events: [{ type: 'done' }] });
-    await collect(runner.send({ thread: 't', message: { role: 'user', content: 'q' } }));
+    await collectWithConfirm(runner.send({ role: 'user', content: 'q' }, 't'), () => 'deny');
     expect(invoke).not.toHaveBeenCalled();
     const toolMsg = provider.calls[1]!.messages.find((m) => m.role === 'tool');
     expect(toolMsg?.content).toContain('"ok":false');
@@ -593,7 +619,7 @@ describe('AgentRunner', () => {
       },
     });
     provider.plan({ events: [{ type: 'done' }] });
-    await collect(runner.send({ thread: 't', message: { role: 'user', content: 'q' } }));
+    await collect(runner.send({ role: 'user', content: 'q' }, 't'));
     const systemMessages = provider.calls[0]!.messages.filter((m) => m.role === 'system');
     expect(systemMessages.some((m) => m.content.includes('SKILLS'))).toBe(true);
   });
@@ -609,6 +635,7 @@ describe('AgentRunner', () => {
     registry.register({
       id: 'create_note',
       description: 'write',
+      schema: z.any() as unknown as z.ZodType<unknown>,
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       requiresConfirmation: true,
       source: 'builtin',
@@ -621,7 +648,6 @@ describe('AgentRunner', () => {
     const controller = new PlanModeController({ todoStore: new TodoStore(), logger });
     controller.enterPlan('t');
     controller.drainAttachments('t');
-    let confirmCalls = 0;
     const runner = new AgentRunner({
       provider,
       focusedContext: new MutableFocus(),
@@ -629,10 +655,6 @@ describe('AgentRunner', () => {
       model: () => 'm',
       toolRegistry: registry,
       planMode: controller,
-      confirmTool: async () => {
-        confirmCalls += 1;
-        return 'allow-once';
-      },
     });
     provider.plan({
       events: [
@@ -641,8 +663,8 @@ describe('AgentRunner', () => {
       ],
     });
     provider.plan({ events: [{ type: 'done' }] });
-    await collect(runner.send({ thread: 't', message: { role: 'user', content: 'q' } }));
-    expect(confirmCalls).toBe(0);
+    const out = await collect(runner.send({ role: 'user', content: 'q' }, 't'));
+    expect(out.filter((e) => e.type === 'tool_confirmation')).toHaveLength(0);
     expect(writeInvoked).toBe(false);
     const toolMessage = provider.calls[1]?.messages.find((m) => m.role === 'tool');
     expect(toolMessage?.content).toContain('blocked by plan mode: create_note');
@@ -664,6 +686,7 @@ describe('AgentRunner', () => {
     registry.register({
       id: 'read_note',
       description: 'read',
+      schema: z.any() as unknown as z.ZodType<unknown>,
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       requiresConfirmation: false,
       source: 'builtin',
@@ -691,7 +714,7 @@ describe('AgentRunner', () => {
       ],
     });
     provider.plan({ events: [{ type: 'done' }] });
-    await collect(runner.send({ thread: 't', message: { role: 'user', content: 'q' } }));
+    await collect(runner.send({ role: 'user', content: 'q' }, 't'));
     expect(readInvoked).toBe(true);
   });
 
@@ -710,12 +733,12 @@ describe('AgentRunner', () => {
       planMode: controller,
     });
     provider.plan({ events: [{ type: 'done' }] });
-    await collect(runner.send({ thread: 't', message: { role: 'user', content: 'hi' } }));
+    await collect(runner.send({ role: 'user', content: 'hi' }, 't'));
     const systemMessages = provider.calls[0]!.messages.filter((m) => m.role === 'system');
     expect(systemMessages.some((m) => m.content === PLAN_ENTER_REMINDER)).toBe(true);
     // Drained — second turn should NOT include it
     provider.plan({ events: [{ type: 'done' }] });
-    await collect(runner.send({ thread: 't', message: { role: 'user', content: 'again' } }));
+    await collect(runner.send({ role: 'user', content: 'again' }, 't'));
     const sys2 = provider.calls[1]!.messages.filter((m) => m.role === 'system');
     expect(sys2.some((m) => m.content === PLAN_ENTER_REMINDER)).toBe(false);
   });
@@ -743,7 +766,7 @@ describe('AgentRunner', () => {
       ragEngine,
     });
     provider.plan({ events: [{ type: 'done' }] });
-    await collect(runner.send({ thread: 't', message: { role: 'user', content: 'ask thing' } }));
+    await collect(runner.send({ role: 'user', content: 'ask thing' }, 't'));
     expect(calls.length).toBe(1);
     expect(calls[0]!.text).toBe('ask thing');
     expect(calls[0]!.signal).toBeInstanceOf(AbortSignal);
@@ -763,9 +786,7 @@ describe('AgentRunner', () => {
       ragEngine,
     });
     provider.plan({ events: [{ type: 'token', text: 'hi' }, { type: 'done' }] });
-    const events = await collect(
-      runner.send({ thread: 't', message: { role: 'user', content: 'q' } }),
-    );
+    const events = await collect(runner.send({ role: 'user', content: 'q' }, 't'));
     expect(events.some((e) => e.type === 'error')).toBe(false);
   });
 
@@ -785,9 +806,7 @@ describe('AgentRunner', () => {
       ragEngine,
     });
     provider.plan({ events: [{ type: 'token', text: 'ok' }, { type: 'done' }] });
-    const events = await collect(
-      runner.send({ thread: 't', message: { role: 'user', content: 'q' } }),
-    );
+    const events = await collect(runner.send({ role: 'user', content: 'q' }, 't'));
     expect(events.some((e) => e.type === 'error')).toBe(false);
     expect(records.some((r) => r.event === 'agent.rag.failure')).toBe(true);
   });
@@ -805,8 +824,8 @@ describe('AgentRunner', () => {
       events: [{ type: 'token', text: 'REPLY-1' }, { type: 'done' }],
     });
     provider.plan({ events: [{ type: 'done' }] });
-    await collect(runner.send({ thread: 't', message: { role: 'user', content: 'first?' } }));
-    await collect(runner.send({ thread: 't', message: { role: 'user', content: 'second?' } }));
+    await collect(runner.send({ role: 'user', content: 'first?' }, 't'));
+    await collect(runner.send({ role: 'user', content: 'second?' }, 't'));
     const secondTurnMessages = provider.calls[1]!.messages.map((m) => m.content).join('\n');
     expect(secondTurnMessages).toContain('first?');
     expect(secondTurnMessages).toContain('REPLY-1');

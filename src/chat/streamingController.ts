@@ -1,5 +1,5 @@
 import type { ChatMessageStore } from './messageStore';
-import type { StreamEvent } from '@/providers/types';
+import type { StreamEvent } from '@/agent/streamEvents';
 
 export type StreamingPhase = 'idle' | 'streaming' | 'cancelling' | 'cancelled' | 'done' | 'error';
 

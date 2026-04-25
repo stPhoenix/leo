@@ -123,6 +123,33 @@ describe('compactConstants', () => {
     );
     expect(resolveContextWindow({ model: 'anything' })).toBe(MODEL_CONTEXT_WINDOW_DEFAULT);
   });
+
+  it('resolveContextWindow userOverride beats every other rule', () => {
+    expect(resolveContextWindow({ model: 'gpt-4o[1m]', userOverride: 500_000 })).toBe(500_000);
+    expect(
+      resolveContextWindow({
+        model: 'local-m',
+        providerMaxInputTokens: 128_000,
+        userOverride: 500_000,
+      }),
+    ).toBe(500_000);
+    expect(resolveContextWindow({ model: 'anything', userOverride: 750_000 })).toBe(750_000);
+  });
+
+  it('resolveContextWindow ignores invalid userOverride and falls through', () => {
+    expect(resolveContextWindow({ model: 'gpt-4o[1m]', userOverride: 0 })).toBe(
+      ONE_MILLION_CONTEXT_WINDOW,
+    );
+    expect(resolveContextWindow({ model: 'gpt-4o[1m]', userOverride: -1 })).toBe(
+      ONE_MILLION_CONTEXT_WINDOW,
+    );
+    expect(resolveContextWindow({ model: 'gpt-4o[1m]', userOverride: Number.NaN })).toBe(
+      ONE_MILLION_CONTEXT_WINDOW,
+    );
+    expect(resolveContextWindow({ model: 'anything', userOverride: undefined })).toBe(
+      MODEL_CONTEXT_WINDOW_DEFAULT,
+    );
+  });
 });
 
 describe('getCompactPrompt — AC3 byte-identical concatenation', () => {
@@ -193,6 +220,29 @@ describe('shouldAutoCompact — AC1 threshold boundary', () => {
         messages: msgs,
         model: 'local-m',
         providerMaxInputTokens: contextWindow,
+      }),
+    ).toBe(true);
+  });
+
+  it('userOverride raises threshold above [1m] suffix', () => {
+    const overrideWindow = 2_000_000;
+    const threshold = autoCompactThresholdFor(overrideWindow, 20_000);
+    const justBelowOneM: ChatMessage[] = [
+      { role: 'user', content: 'x'.repeat(autoCompactThresholdFor(1_000_000, 20_000) * 4) },
+    ];
+    expect(
+      shouldAutoCompact({
+        messages: justBelowOneM,
+        model: 'opus[1m]',
+        userOverride: overrideWindow,
+      }),
+    ).toBe(false);
+    const atOverride: ChatMessage[] = [{ role: 'user', content: 'x'.repeat(threshold * 4) }];
+    expect(
+      shouldAutoCompact({
+        messages: atOverride,
+        model: 'opus[1m]',
+        userOverride: overrideWindow,
       }),
     ).toBe(true);
   });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { makeToolCtx } from './_toolCtx';
 import { PlanModeController } from '@/agent/planModeController';
 import { PlanApprovalController } from '@/agent/planApprovalController';
 import { TodoStore } from '@/agent/todoStore';
@@ -40,11 +41,11 @@ class FakeVault implements VaultAdapter {
 }
 
 function mainCtx(): ToolCtx {
-  return { thread: 't-1', signal: new AbortController().signal, agentId: null };
+  return { ...makeToolCtx({ thread: 't-1' }), agentId: null };
 }
 
 function subagentCtx(): ToolCtx {
-  return { thread: 't-1', signal: new AbortController().signal, agentId: 'sub-1' };
+  return { ...makeToolCtx({ thread: 't-1' }), agentId: 'sub-1' };
 }
 
 describe('plan mode tools', () => {

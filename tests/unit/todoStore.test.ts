@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { makeToolCtx } from './_toolCtx';
 import { TodoStore, validateTodo } from '@/agent/todoStore';
 import { createTodoWriteTool, TODO_WRITE_DESCRIPTION } from '@/tools/todoWriteTool';
 
@@ -26,7 +27,7 @@ describe('TodoStore', () => {
     ];
     const v = tool.validate({ newTodos });
     if (!v.ok) throw new Error('validate');
-    const res = await tool.invoke(v.data, { thread: 'k', signal: new AbortController().signal });
+    const res = await tool.invoke(v.data, makeToolCtx({ thread: 'k' }));
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.data.todos).toEqual(newTodos);
     expect(s.get('k')).toEqual([]);

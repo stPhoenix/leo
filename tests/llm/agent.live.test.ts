@@ -1,12 +1,12 @@
 import { expect, it } from 'vitest';
 import { AgentRunner } from '@/agent/agentRunner';
 import type { FocusedContextSource } from '@/agent/agentRunner';
-import type { AgentTurnEvent } from '@/agent/types';
+import type { StreamEvent as AgentTurnEvent } from '@/agent/streamEvents';
 import { NULL_FOCUSED_CONTEXT } from '@/editor/types';
 import { LMStudioProvider } from '@/providers/lmStudioProvider';
 import { AcceptRejectController } from '@/agent/acceptRejectController';
-import { createReadNoteTool } from '@/tools/readNoteTool';
-import { createEditNoteTool } from '@/tools/editNoteTool';
+import { createReadNoteTool } from '@/tools/builtin/readNote';
+import { createEditNoteTool } from '@/tools/builtin/editNote';
 import { liveDescribe, skipIfUnreachable } from './_liveEnv';
 import { makeJudge } from './_judge';
 import { InMemoryVault, inactiveBridge, silentLogger, spyingRegistry } from './_fakes';
@@ -32,8 +32,8 @@ liveDescribe('live: AgentRunner end-to-end', (getCtx) => {
     autoAccept(acceptReject);
     const { logger } = silentLogger();
     const { registry, calls } = spyingRegistry([
-      createReadNoteTool(vault),
-      createEditNoteTool({ vault, bridge: inactiveBridge(), acceptReject, logger }),
+      createReadNoteTool(),
+      createEditNoteTool({ acceptReject, logger }),
     ]);
     const provider = new LMStudioProvider({ endpoint: () => ctx.env.endpoint });
 
@@ -43,8 +43,9 @@ liveDescribe('live: AgentRunner end-to-end', (getCtx) => {
       logger,
       model: () => ctx.env.chatModel,
       toolRegistry: registry,
+      vault,
+      editor: inactiveBridge(),
       maxToolRoundTrips: 4,
-      confirmTool: async () => 'allow-once',
     });
 
     const text = await runTurn(
@@ -81,8 +82,8 @@ liveDescribe('live: AgentRunner end-to-end', (getCtx) => {
     autoAccept(acceptReject);
     const { logger } = silentLogger();
     const { registry, calls } = spyingRegistry([
-      createReadNoteTool(vault),
-      createEditNoteTool({ vault, bridge: inactiveBridge(), acceptReject, logger }),
+      createReadNoteTool(),
+      createEditNoteTool({ acceptReject, logger }),
     ]);
     const provider = new LMStudioProvider({ endpoint: () => ctx.env.endpoint });
 
@@ -92,8 +93,9 @@ liveDescribe('live: AgentRunner end-to-end', (getCtx) => {
       logger,
       model: () => ctx.env.chatModel,
       toolRegistry: registry,
+      vault,
+      editor: inactiveBridge(),
       maxToolRoundTrips: 2,
-      confirmTool: async () => 'allow-once',
     });
 
     const text = await runTurn(runner, 't-chat', 'Say hello back to me in one short sentence.');
@@ -107,9 +109,10 @@ liveDescribe('live: AgentRunner end-to-end', (getCtx) => {
 async function runTurn(runner: AgentRunner, thread: string, content: string): Promise<string> {
   const events: AgentTurnEvent[] = [];
   let text = '';
-  for await (const ev of runner.send({ thread, message: { role: 'user', content } })) {
+  for await (const ev of runner.send({ role: 'user', content }, thread)) {
     events.push(ev);
     if (ev.type === 'token') text += ev.text;
+    if (ev.type === 'tool_confirmation') ev.resolve('allow-once');
     if (ev.type === 'error') {
       throw ev.error;
     }

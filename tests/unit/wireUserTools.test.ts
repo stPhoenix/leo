@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   wireUserTools,
   USER_TOOLS_RELOAD_COMMAND_ID,
@@ -228,6 +229,7 @@ describe('wireUserTools', () => {
     registry.register({
       id: 'read_note',
       description: 'built-in',
+      schema: z.any() as unknown as z.ZodType<unknown>,
       parameters: {},
       requiresConfirmation: false,
       source: 'builtin',

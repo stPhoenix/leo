@@ -3,16 +3,20 @@ import type { ReactNode } from 'react';
 export interface HeaderBarProps {
   readonly collapsed: boolean;
   readonly onOverflowMenu?: (anchor: HTMLElement) => void;
-  readonly skillPicker?: ReactNode;
   readonly threadSwitcher?: ReactNode;
+  readonly stats?: ReactNode;
 }
 
 export function HeaderBar(props: HeaderBarProps): JSX.Element {
   return (
     <header className="leo-header-bar" role="banner" data-region="header">
       <span className="leo-header-title">Leo</span>
+      {!props.collapsed && props.stats !== undefined ? (
+        <span className="leo-header-stats-slot" data-slot="header-stats">
+          {props.stats}
+        </span>
+      ) : null}
       <div className="leo-header-slots">
-        <span className="leo-header-skill-slot">{props.skillPicker ?? null}</span>
         <span
           className="leo-header-status-slot"
           role="status"

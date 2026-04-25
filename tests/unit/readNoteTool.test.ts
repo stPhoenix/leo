@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { createReadNoteTool, isSafeVaultPath } from '@/tools/readNoteTool';
+import { createReadNoteTool, isSafeVaultPath } from '@/tools/builtin/readNote';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
+import { makeToolCtx } from './_toolCtx';
 
 class FakeVault implements VaultAdapter {
   readonly files = new Map<string, string>();
@@ -29,10 +30,8 @@ class FakeVault implements VaultAdapter {
   }
 }
 
-const ctx = {
-  thread: 't1',
-  signal: new AbortController().signal,
-};
+const ctx = (vault: VaultAdapter): ReturnType<typeof makeToolCtx> =>
+  makeToolCtx({ thread: 't1', vault });
 
 describe('isSafeVaultPath', () => {
   it('rejects empty, absolute, and traversal paths', () => {
@@ -51,8 +50,7 @@ describe('isSafeVaultPath', () => {
 
 describe('read_note tool — shape', () => {
   it('declares id, description, JSON-schema params, and requiresConfirmation=false', () => {
-    const vault = new FakeVault();
-    const tool = createReadNoteTool(vault);
+    const tool = createReadNoteTool();
     expect(tool.id).toBe('read_note');
     expect(tool.requiresConfirmation).toBe(false);
     expect(tool.source).toBe('builtin');
@@ -71,11 +69,11 @@ describe('read_note tool — invocation', () => {
   it('happy path reads content via VaultAdapter.read', async () => {
     const vault = new FakeVault();
     vault.files.set('Notes/a.md', 'body');
-    const tool = createReadNoteTool(vault);
+    const tool = createReadNoteTool();
     const validated = tool.validate({ path: 'Notes/a.md' });
     expect(validated.ok).toBe(true);
     if (!validated.ok) return;
-    const result = await tool.invoke(validated.data, ctx);
+    const result = await tool.invoke(validated.data, ctx(vault));
     expect(result).toEqual({
       ok: true,
       data: { path: 'Notes/a.md', content: 'body', bytes: 4 },
@@ -83,15 +81,13 @@ describe('read_note tool — invocation', () => {
   });
 
   it('rejects traversal-unsafe paths during validate before touching the vault', () => {
-    const vault = new FakeVault();
-    const tool = createReadNoteTool(vault);
+    const tool = createReadNoteTool();
     const result = tool.validate({ path: '../escape.md' });
     expect(result.ok).toBe(false);
   });
 
   it('rejects absolute / empty / malformed args via validate', () => {
-    const vault = new FakeVault();
-    const tool = createReadNoteTool(vault);
+    const tool = createReadNoteTool();
     expect(tool.validate({ path: '/abs.md' }).ok).toBe(false);
     expect(tool.validate({ path: '' }).ok).toBe(false);
     expect(tool.validate({}).ok).toBe(false);
@@ -100,35 +96,35 @@ describe('read_note tool — invocation', () => {
 
   it('returns {ok:false} when the file does not exist; no exception escapes', async () => {
     const vault = new FakeVault();
-    const tool = createReadNoteTool(vault);
+    const tool = createReadNoteTool();
     const validated = tool.validate({ path: 'missing.md' });
     expect(validated.ok).toBe(true);
     if (!validated.ok) return;
-    const result = await tool.invoke(validated.data, ctx);
+    const result = await tool.invoke(validated.data, ctx(vault));
     expect(result.ok).toBe(false);
   });
 
   it('returns {ok:false} when the note exceeds 200 KB', async () => {
     const vault = new FakeVault();
     vault.files.set('big.md', 'x'.repeat(210 * 1024));
-    const tool = createReadNoteTool(vault);
+    const tool = createReadNoteTool();
     const validated = tool.validate({ path: 'big.md' });
     expect(validated.ok).toBe(true);
     if (!validated.ok) return;
-    const result = await tool.invoke(validated.data, ctx);
+    const result = await tool.invoke(validated.data, ctx(vault));
     expect(result.ok).toBe(false);
   });
 
   it('returns {ok:false} when the ctx signal is already aborted', async () => {
     const vault = new FakeVault();
     vault.files.set('a.md', 'x');
-    const tool = createReadNoteTool(vault);
+    const tool = createReadNoteTool();
     const ac = new AbortController();
     ac.abort();
     const validated = tool.validate({ path: 'a.md' });
     expect(validated.ok).toBe(true);
     if (!validated.ok) return;
-    const result = await tool.invoke(validated.data, { thread: 't', signal: ac.signal });
+    const result = await tool.invoke(validated.data, makeToolCtx({ vault, signal: ac.signal }));
     expect(result.ok).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import type { VaultAdapter } from '@/storage/vaultAdapter';
-import type { EditNoteBridge } from '@/tools/editNoteTool';
+import type { EditNoteBridge } from '@/tools/types';
 import { Logger } from '@/platform/Logger';
 import type { LogRecord, LogSink } from '@/platform/logTypes';
 import type { ToolSpec } from '@/tools/types';

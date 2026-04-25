@@ -338,6 +338,36 @@ export class SettingsTab extends PluginSettingTab {
         });
       });
 
+    new Setting(body)
+      .setName('Context window override')
+      .setDesc(
+        'Manual context window size (tokens) for autocompact + status line. Empty = auto-detect. Beats model ID and provider-reported size.',
+      )
+      .addText((t) => {
+        t.setPlaceholder('auto')
+          .setValue(
+            settings.contextWindowOverride !== undefined
+              ? String(settings.contextWindowOverride)
+              : '',
+          )
+          .onChange(async (value) => {
+            const trimmed = value.trim();
+            if (trimmed === '') {
+              await this.deps.store.update((prev) => {
+                const { contextWindowOverride: _drop, ...rest } = prev;
+                return rest as LeoSettings;
+              });
+              return;
+            }
+            const parsed = Number.parseInt(trimmed, 10);
+            if (!Number.isFinite(parsed) || parsed < 1) return;
+            await this.deps.store.update((prev) => ({
+              ...prev,
+              contextWindowOverride: parsed,
+            }));
+          });
+      });
+
     const status = body.createDiv({ cls: 'leo-provider-status' });
     this.renderProviderStatus(status);
 

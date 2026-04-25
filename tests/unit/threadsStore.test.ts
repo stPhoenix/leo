@@ -170,7 +170,7 @@ describe('ThreadsStore', () => {
     const parsed: Record<string, unknown> = JSON.parse(written!);
     expect(parsed.id).toBe(id);
     const meta = parsed.metadata as Record<string, unknown>;
-    expect(meta.title).toBe(DEFAULT_THREAD_TITLE);
+    expect(meta.title).toBe(id);
     expect(meta.allowedTools).toEqual([]);
     expect(parsed.messages).toEqual([]);
     expect(store.activeIdOrNull()).toBe(id);

@@ -1,8 +1,26 @@
+import { z } from 'zod';
 import type { Logger } from '@/platform/Logger';
 import type { PlanModeController } from '@/agent/planModeController';
 import type { PlanApprovalController } from '@/agent/planApprovalController';
 import type { PlanStore } from '@/storage/planStore';
 import type { ToolSpec } from './types';
+import { jsonSchemaFromZod, validateFromZod } from './zodAdapter';
+
+const EnterPlanModeSchema: z.ZodType<{ reason?: string }> = z
+  .object({
+    reason: z.string().optional().describe('Optional short reason for entering plan mode.'),
+  })
+  .strict();
+
+const ExitPlanModeSchema: z.ZodType<{ plan: string }> = z
+  .object({
+    plan: z
+      .string({ error: 'plan must be a string' })
+      .describe(
+        'The plan markdown to present for approval. Will be written to the vault on approve or edit before mode flips back to normal.',
+      ),
+  })
+  .strict();
 
 export interface EnterPlanModeArgs {
   readonly reason?: string;
@@ -54,26 +72,13 @@ export function createEnterPlanModeTool(
   return {
     id: 'EnterPlanMode',
     description: ENTER_PLAN_MODE_DESCRIPTION,
-    parameters: {
-      type: 'object',
-      properties: {
-        reason: {
-          type: 'string',
-          description: 'Optional short reason for entering plan mode.',
-        },
-      },
-      required: [],
-      additionalProperties: false,
-    },
+    schema: EnterPlanModeSchema,
+    parameters: jsonSchemaFromZod(EnterPlanModeSchema),
     requiresConfirmation: false,
     source: 'builtin',
     validate(raw) {
       if (raw === null || raw === undefined) return { ok: true, data: {} };
-      if (typeof raw !== 'object') return { ok: false, error: 'args must be object' };
-      const obj = raw as Record<string, unknown>;
-      if (obj.reason !== undefined && typeof obj.reason !== 'string')
-        return { ok: false, error: 'reason must be string' };
-      return { ok: true, data: obj.reason === undefined ? {} : { reason: obj.reason } };
+      return validateFromZod(EnterPlanModeSchema)(raw);
     },
     async invoke(_args, ctx) {
       if (!isMainAgent(ctx.agentId)) {
@@ -92,27 +97,11 @@ export function createExitPlanModeTool(
   return {
     id: 'ExitPlanMode',
     description: EXIT_PLAN_MODE_DESCRIPTION,
-    parameters: {
-      type: 'object',
-      properties: {
-        plan: {
-          type: 'string',
-          description:
-            'The plan markdown to present for approval. Will be written to the vault on approve or edit before mode flips back to normal.',
-        },
-      },
-      required: ['plan'],
-      additionalProperties: false,
-    },
+    schema: ExitPlanModeSchema,
+    parameters: jsonSchemaFromZod(ExitPlanModeSchema),
     requiresConfirmation: false,
     source: 'builtin',
-    validate(raw) {
-      if (raw === null || typeof raw !== 'object')
-        return { ok: false, error: 'args must be object' };
-      const obj = raw as Record<string, unknown>;
-      if (typeof obj.plan !== 'string') return { ok: false, error: 'plan must be a string' };
-      return { ok: true, data: { plan: obj.plan } };
-    },
+    validate: validateFromZod(ExitPlanModeSchema),
     async invoke(args, ctx) {
       const threadId = ctx.thread;
       const isSubagent = !isMainAgent(ctx.agentId);

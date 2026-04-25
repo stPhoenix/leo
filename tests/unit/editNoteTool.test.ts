@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createEditNoteTool, type EditNoteBridge } from '@/tools/editNoteTool';
+import { createEditNoteTool } from '@/tools/builtin/editNote';
+import type { EditNoteBridge } from '@/tools/types';
 import { AcceptRejectController } from '@/agent/acceptRejectController';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
+import { makeToolCtx } from './_toolCtx';
 
 class FakeVault implements VaultAdapter {
   readonly files = new Map<string, string>();
@@ -51,15 +53,9 @@ function autoResolve(controller: AcceptRejectController, decision: 'accept' | 'r
   });
 }
 
-const ctx = { thread: 't', signal: new AbortController().signal };
-
 describe('edit_note tool', () => {
   it('declares id + description + Zod-like schema + requiresConfirmation=true', () => {
-    const tool = createEditNoteTool({
-      vault: new FakeVault(),
-      bridge: defaultBridge(),
-      acceptReject: new AcceptRejectController(),
-    });
+    const tool = createEditNoteTool({ acceptReject: new AcceptRejectController() });
     expect(tool.id).toBe('edit_note');
     expect(tool.requiresConfirmation).toBe(true);
     expect(tool.parameters).toEqual(
@@ -77,11 +73,7 @@ describe('edit_note tool', () => {
   });
 
   it('validate rejects traversal-unsafe paths + invalid numeric args', () => {
-    const tool = createEditNoteTool({
-      vault: new FakeVault(),
-      bridge: defaultBridge(),
-      acceptReject: new AcceptRejectController(),
-    });
+    const tool = createEditNoteTool({ acceptReject: new AcceptRejectController() });
     expect(
       tool.validate({ path: '../esc.md', line_start: 0, line_end: 0, new_content: '' }).ok,
     ).toBe(false);
@@ -96,19 +88,19 @@ describe('edit_note tool', () => {
     );
   });
 
-  it('routes through bridge.applyActiveEdit when path is the active note', async () => {
+  it('routes through ctx.editor.applyActiveEdit when path is the active note', async () => {
     const vault = new FakeVault();
     const apply = vi.fn(async () => ({ ok: true as const, bytesWritten: 3, undo: vi.fn() }));
-    const bridge = defaultBridge({
+    const editor = defaultBridge({
       isActiveNote: (p) => p === 'active.md',
       applyActiveEdit: apply,
     });
     const ar = new AcceptRejectController();
     autoResolve(ar, 'accept');
-    const tool = createEditNoteTool({ vault, bridge, acceptReject: ar });
+    const tool = createEditNoteTool({ acceptReject: ar });
     const v = tool.validate({ path: 'active.md', line_start: 0, line_end: 0, new_content: 'NEW' });
     if (!v.ok) throw new Error('validate');
-    const result = await tool.invoke(v.data, ctx);
+    const result = await tool.invoke(v.data, makeToolCtx({ vault, editor }));
     expect(result.ok).toBe(true);
     expect(apply).toHaveBeenCalledTimes(1);
     expect(vault.writeCalls).toHaveLength(0);
@@ -119,7 +111,7 @@ describe('edit_note tool', () => {
     vault.files.set('notes/a.md', 'line0\nline1\nline2');
     const ar = new AcceptRejectController();
     autoResolve(ar, 'accept');
-    const tool = createEditNoteTool({ vault, bridge: defaultBridge(), acceptReject: ar });
+    const tool = createEditNoteTool({ acceptReject: ar });
     const v = tool.validate({
       path: 'notes/a.md',
       line_start: 1,
@@ -127,7 +119,7 @@ describe('edit_note tool', () => {
       new_content: 'REPLACED',
     });
     if (!v.ok) throw new Error('validate');
-    const result = await tool.invoke(v.data, ctx);
+    const result = await tool.invoke(v.data, makeToolCtx({ vault }));
     expect(result.ok).toBe(true);
     expect(vault.writeCalls).toHaveLength(1);
     expect(vault.files.get('notes/a.md')).toBe('line0\nREPLACED\nline2');
@@ -138,10 +130,10 @@ describe('edit_note tool', () => {
     vault.files.set('n.md', 'A\nB\nC');
     const ar = new AcceptRejectController();
     autoResolve(ar, 'reject');
-    const tool = createEditNoteTool({ vault, bridge: defaultBridge(), acceptReject: ar });
+    const tool = createEditNoteTool({ acceptReject: ar });
     const v = tool.validate({ path: 'n.md', line_start: 0, line_end: 2, new_content: 'X' });
     if (!v.ok) throw new Error('validate');
-    const result = await tool.invoke(v.data, ctx);
+    const result = await tool.invoke(v.data, makeToolCtx({ vault }));
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.data.decision).toBe('reject');
     expect(vault.files.get('n.md')).toBe('A\nB\nC');
@@ -151,16 +143,16 @@ describe('edit_note tool', () => {
   it('Reject on the active-editor path calls undo() exactly once', async () => {
     const vault = new FakeVault();
     const undo = vi.fn();
-    const bridge = defaultBridge({
+    const editor = defaultBridge({
       isActiveNote: () => true,
       applyActiveEdit: async () => ({ ok: true as const, bytesWritten: 5, undo }),
     });
     const ar = new AcceptRejectController();
     autoResolve(ar, 'reject');
-    const tool = createEditNoteTool({ vault, bridge, acceptReject: ar });
+    const tool = createEditNoteTool({ acceptReject: ar });
     const v = tool.validate({ path: 'x.md', line_start: 0, line_end: 0, new_content: 'X' });
     if (!v.ok) throw new Error('validate');
-    const result = await tool.invoke(v.data, ctx);
+    const result = await tool.invoke(v.data, makeToolCtx({ vault, editor }));
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.data.decision).toBe('reject');
     expect(undo).toHaveBeenCalledTimes(1);
@@ -169,30 +161,27 @@ describe('edit_note tool', () => {
   it('non-existent path on vault fallback returns {ok:false, error:"not found"}', async () => {
     const vault = new FakeVault();
     const ar = new AcceptRejectController();
-    const tool = createEditNoteTool({ vault, bridge: defaultBridge(), acceptReject: ar });
+    const tool = createEditNoteTool({ acceptReject: ar });
     const v = tool.validate({ path: 'absent.md', line_start: 0, line_end: 0, new_content: 'x' });
     if (!v.ok) throw new Error('validate');
-    const result = await tool.invoke(v.data, ctx);
+    const result = await tool.invoke(v.data, makeToolCtx({ vault }));
     expect(result).toEqual({ ok: false, error: 'not found' });
   });
 
   it('vault platform errors surface as {ok:false}, no exception escapes', async () => {
     const ar = new AcceptRejectController();
-    const vault = new FakeVault();
-    vault.files.set('n.md', 'x');
-    const tool = createEditNoteTool({
-      vault: {
-        ...vault,
-        async write() {
-          throw new Error('disk full');
-        },
-      } as unknown as VaultAdapter,
-      bridge: defaultBridge(),
-      acceptReject: ar,
-    });
+    const baseVault = new FakeVault();
+    baseVault.files.set('n.md', 'x');
+    const failingVault = {
+      ...baseVault,
+      async write() {
+        throw new Error('disk full');
+      },
+    } as unknown as VaultAdapter;
+    const tool = createEditNoteTool({ acceptReject: ar });
     const v = tool.validate({ path: 'n.md', line_start: 0, line_end: 0, new_content: 'y' });
     if (!v.ok) throw new Error('validate');
-    const result = await tool.invoke(v.data, ctx);
+    const result = await tool.invoke(v.data, makeToolCtx({ vault: failingVault }));
     expect(result.ok).toBe(false);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { HeaderBar } from './HeaderBar';
 import { ContextIndicator, type ContextIndicatorSource } from './ContextIndicator';
 import { MessageList, type MarkdownRenderFn } from './MessageList';
@@ -11,7 +11,6 @@ import {
   type PlanApprovalSource,
   type PlanMarkdownRenderFn,
 } from './PlanApprovalDialog';
-import { SkillPicker, type SkillPickerSource } from './SkillPicker';
 import { ThreadSwitcher, type ThreadsUiSource } from './ThreadSwitcher';
 import { IndexEmptyStateCta, type IndexStatusSource } from './IndexEmptyStateCta';
 import type { DrainListener } from '@/indexer/vaultIndexer';
@@ -50,7 +49,7 @@ export interface ChatRootProps {
   readonly acceptRejectSource?: AcceptRejectSource;
   readonly planApprovalSource?: PlanApprovalSource;
   readonly renderPlanMarkdown?: PlanMarkdownRenderFn;
-  readonly skillPickerSource?: SkillPickerSource;
+  readonly headerStats?: ReactNode;
   readonly threadsSource?: ThreadsUiSource;
   readonly indexStatusSource?: IndexStatusSource;
   readonly indexDrainSubscribe?: (listener: DrainListener) => () => void;
@@ -101,9 +100,7 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
       <HeaderBar
         collapsed={collapsed}
         onOverflowMenu={props.onOverflowMenu}
-        {...(props.skillPickerSource !== undefined
-          ? { skillPicker: <SkillPicker source={props.skillPickerSource} collapsed={collapsed} /> }
-          : {})}
+        {...(props.headerStats !== undefined ? { stats: props.headerStats } : {})}
         {...(props.threadsSource !== undefined
           ? { threadSwitcher: <ThreadSwitcher source={props.threadsSource} /> }
           : {})}

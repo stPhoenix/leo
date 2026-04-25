@@ -72,6 +72,28 @@ describe('migrate()', () => {
     expect(m.ui.expandedSections.provider).toBe(false);
     expect(m.ui.expandedSections).not.toHaveProperty('bogus');
   });
+
+  it('accepts a valid contextWindowOverride', () => {
+    expect(migrate({ contextWindowOverride: 500_000 }).contextWindowOverride).toBe(500_000);
+  });
+
+  it('clamps contextWindowOverride upper bound at 10M', () => {
+    expect(migrate({ contextWindowOverride: 50_000_000 }).contextWindowOverride).toBe(10_000_000);
+  });
+
+  it('drops invalid contextWindowOverride values', () => {
+    expect(migrate({ contextWindowOverride: 0 })).not.toHaveProperty('contextWindowOverride');
+    expect(migrate({ contextWindowOverride: -1 })).not.toHaveProperty('contextWindowOverride');
+    expect(migrate({ contextWindowOverride: 'big' })).not.toHaveProperty('contextWindowOverride');
+    expect(migrate({ contextWindowOverride: Number.NaN })).not.toHaveProperty(
+      'contextWindowOverride',
+    );
+    expect(migrate({})).not.toHaveProperty('contextWindowOverride');
+  });
+
+  it('floors fractional contextWindowOverride values', () => {
+    expect(migrate({ contextWindowOverride: 123_456.9 }).contextWindowOverride).toBe(123_456);
+  });
 });
 
 describe('SettingsStore', () => {

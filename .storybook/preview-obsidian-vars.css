@@ -1,0 +1,65 @@
+:root {
+  --background-primary: #ffffff;
+  --background-primary-alt: #f7f7f9;
+  --background-secondary: #f1f3f5;
+  --background-modifier-border: #e2e4e8;
+  --background-modifier-border-hover: #cdd0d6;
+  --background-modifier-hover: #eef0f3;
+  --background-modifier-error: #fde1e1;
+
+  --text-normal: #1e1f22;
+  --text-muted: #5b6068;
+  --text-faint: #8a8f98;
+  --text-error: #c23f3f;
+  --text-accent: #6558eb;
+  --text-on-accent: #ffffff;
+
+  --interactive-accent: #7f6df2;
+  --interactive-accent-hover: #6a57e6;
+
+  --color-orange: #d87a2a;
+  --color-yellow: #c8a618;
+
+  --font-interface: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-text: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-monospace: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-ui-smaller: 12px;
+
+  --line-height-tight: 1.25;
+
+  --radius-s: 4px;
+  --radius-m: 6px;
+  --radius-l: 10px;
+
+  --shadow-s: 0 1px 2px rgba(0, 0, 0, 0.08);
+
+  --size-4-1: 4px;
+  --size-4-2: 8px;
+  --size-4-3: 12px;
+  --size-4-8: 32px;
+
+  --leo-z-content: 1;
+  --leo-z-inline-dialog: 50;
+  --leo-z-tooltip: 100;
+}
+
+html[data-theme='dark'],
+[data-theme='dark'] {
+  --background-primary: #202020;
+  --background-primary-alt: #2a2a2a;
+  --background-secondary: #161616;
+  --background-modifier-border: #343434;
+  --background-modifier-border-hover: #4a4a4a;
+  --background-modifier-hover: #2d2d2d;
+  --background-modifier-error: #4a1f1f;
+
+  --text-normal: #dcddde;
+  --text-muted: #9b9ea4;
+  --text-faint: #6a6e75;
+  --text-error: #e56b6b;
+  --text-accent: #a79dff;
+  --text-on-accent: #ffffff;
+
+  --interactive-accent: #7f6df2;
+  --interactive-accent-hover: #9483ff;
+}

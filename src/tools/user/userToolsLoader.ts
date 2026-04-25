@@ -1,7 +1,13 @@
+import { z } from 'zod';
 import type { Logger } from '@/platform/Logger';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { JsonSchema, ToolCtx, ToolResult, ToolSpec } from '../types';
-import { isSafeVaultPath } from '../readNoteTool';
+import { isSafeVaultPath } from '../builtin/readNote';
+
+// User tools author their own JsonSchema via JSON; schema is a permissive
+// pass-through so ToolSpec's zod contract is satisfied without forcing users
+// to hand-write zod. Validation happens downstream by the tool impl.
+const permissiveUserSchema: z.ZodType<Record<string, unknown>> = z.record(z.string(), z.unknown());
 
 export const USER_TOOLS_DIR = '.leo/tools';
 
@@ -202,6 +208,7 @@ export function buildSpec(
     return {
       id: decl.id,
       description: decl.description,
+      schema: permissiveUserSchema as z.ZodType<unknown>,
       parameters: decl.parameters,
       requiresConfirmation: effectiveConfirmation,
       source: 'user',
@@ -219,6 +226,7 @@ export function buildSpec(
   return {
     id: decl.id,
     description: decl.description,
+    schema: permissiveUserSchema as z.ZodType<unknown>,
     parameters: decl.parameters,
     requiresConfirmation: true,
     source: 'user',

@@ -2,10 +2,12 @@
 // processor, and return a sentinel envelope that `AgentRunner` recognises so
 // it can splice the skill body into the current turn's messages.
 
+import { z } from 'zod';
 import type { SkillRegistry } from '@/skills/registry';
 import type { ProcessResult, createSlashProcessor } from '@/skills/slashProcessor';
 import type { ContextModifier, InvocationMessage } from '@/skills/types';
 import type { ToolResult, ToolSpec } from '../types';
+import { jsonSchemaFromZod } from '../zodAdapter';
 
 export const SKILL_TOOL_ID = 'Skill';
 export const SKILL_INVOCATION_SENTINEL = '__leo_skill_invocation__';
@@ -30,29 +32,27 @@ export interface SkillToolOptions {
   readonly resolveCwd?: () => string | undefined;
 }
 
+const SkillToolSchema: z.ZodType<SkillToolArgs> = z
+  .object({
+    skill: z.string().describe('Canonical skill name (e.g. "commit"). A leading "/" is stripped.'),
+    args: z
+      .string()
+      .optional()
+      .describe('Optional argument string passed to the skill body as $ARGUMENTS.'),
+  })
+  .strict() as unknown as z.ZodType<SkillToolArgs>;
+
 export function createSkillTool(
   opts: SkillToolOptions,
 ): ToolSpec<SkillToolArgs, SkillInvocationEnvelope> {
   return {
     id: SKILL_TOOL_ID,
     description: 'Execute a skill within the main conversation.',
-    parameters: {
-      type: 'object',
-      properties: {
-        skill: {
-          type: 'string',
-          description: 'Canonical skill name (e.g. "commit"). A leading "/" is stripped.',
-        },
-        args: {
-          type: 'string',
-          description: 'Optional argument string passed to the skill body as $ARGUMENTS.',
-        },
-      },
-      required: ['skill'],
-      additionalProperties: false,
-    },
+    schema: SkillToolSchema,
+    parameters: jsonSchemaFromZod(SkillToolSchema),
     requiresConfirmation: false,
     source: 'builtin',
+    // Validate retains the registry lookup + sentinel checks that pure zod can't express.
     validate(raw): ToolResult<SkillToolArgs> {
       if (raw === null || typeof raw !== 'object') {
         return { ok: false, error: 'expected object payload' };

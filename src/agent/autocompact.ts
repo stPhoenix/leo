@@ -115,6 +115,7 @@ export interface AutocompactOptions {
   readonly provider: AutocompactProvider;
   readonly model: string;
   readonly providerMaxInputTokens?: number;
+  readonly userOverride?: number;
   readonly maxOutputTokensForModel?: number;
   readonly querySource: string;
   readonly customInstructions?: string;
@@ -142,6 +143,7 @@ export interface ShouldAutoCompactInput {
   readonly messages: readonly ChatMessage[];
   readonly model: string;
   readonly providerMaxInputTokens?: number;
+  readonly userOverride?: number;
   readonly maxOutputTokensForModel?: number;
   readonly querySource?: string;
   readonly snipTokensFreed?: number;
@@ -157,6 +159,7 @@ export function shouldAutoCompact(input: ShouldAutoCompactInput): boolean {
     ...(input.providerMaxInputTokens !== undefined
       ? { providerMaxInputTokens: input.providerMaxInputTokens }
       : {}),
+    ...(input.userOverride !== undefined ? { userOverride: input.userOverride } : {}),
   });
   const maxOutput = input.maxOutputTokensForModel ?? COMPACT_MAX_OUTPUT_TOKENS;
   const threshold = autoCompactThresholdFor(contextWindow, maxOutput);
@@ -167,7 +170,7 @@ export function shouldAutoCompact(input: ShouldAutoCompactInput): boolean {
 export function autoCompactThresholdForInput(
   input: Pick<
     ShouldAutoCompactInput,
-    'model' | 'providerMaxInputTokens' | 'maxOutputTokensForModel'
+    'model' | 'providerMaxInputTokens' | 'userOverride' | 'maxOutputTokensForModel'
   >,
 ): number {
   const contextWindow = resolveContextWindow({
@@ -175,6 +178,7 @@ export function autoCompactThresholdForInput(
     ...(input.providerMaxInputTokens !== undefined
       ? { providerMaxInputTokens: input.providerMaxInputTokens }
       : {}),
+    ...(input.userOverride !== undefined ? { userOverride: input.userOverride } : {}),
   });
   const maxOutput = input.maxOutputTokensForModel ?? COMPACT_MAX_OUTPUT_TOKENS;
   return autoCompactThresholdFor(contextWindow, maxOutput);
@@ -195,6 +199,7 @@ export async function autoCompactIfNeeded(
       ...(opts.providerMaxInputTokens !== undefined
         ? { providerMaxInputTokens: opts.providerMaxInputTokens }
         : {}),
+      ...(opts.userOverride !== undefined ? { userOverride: opts.userOverride } : {}),
       ...(opts.maxOutputTokensForModel !== undefined
         ? { maxOutputTokensForModel: opts.maxOutputTokensForModel }
         : {}),
@@ -338,6 +343,7 @@ async function runCompaction(
       ...(opts.providerMaxInputTokens !== undefined
         ? { providerMaxInputTokens: opts.providerMaxInputTokens }
         : {}),
+      ...(opts.userOverride !== undefined ? { userOverride: opts.userOverride } : {}),
       ...(opts.maxOutputTokensForModel !== undefined
         ? { maxOutputTokensForModel: opts.maxOutputTokensForModel }
         : {}),

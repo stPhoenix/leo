@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "logLevel": "info",
+  "logLevel": "debug",
   "provider": {
     "kind": "lmstudio",
     "endpoint": "http://localhost:1234",

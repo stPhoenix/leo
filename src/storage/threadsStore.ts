@@ -191,7 +191,7 @@ export class ThreadsStore {
       ...emptyThread(id, nowIso),
       metadata: {
         allowedTools: [],
-        title: DEFAULT_THREAD_TITLE,
+        title: id,
       },
     };
     await this.adapter.mkdir(this.baseDir);

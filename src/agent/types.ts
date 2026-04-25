@@ -30,11 +30,14 @@ export interface SkillListingSegment {
   readonly skillCount: number;
 }
 
-export type AgentTurnEvent =
-  | { readonly type: 'token'; readonly text: string }
-  | { readonly type: 'usage'; readonly input: number; readonly output: number }
-  | { readonly type: 'done'; readonly cancelled?: boolean }
-  | { readonly type: 'error'; readonly error: Error };
+export type ToolConfirmationDecision = 'allow-once' | 'allow-thread' | 'deny';
+
+export interface ToolConfirmationStreamRequest {
+  readonly toolId: string;
+  readonly thread: ThreadId;
+  readonly argsJson: string;
+  readonly category: 'read' | 'write';
+}
 
 export interface AssembledPromptSegments {
   readonly activeNote: string | null;

@@ -21,7 +21,7 @@ leo/
 │       ├── project-structure.md         # This file
 │       └── tech-stack.md
 ├── src/
-│   ├── agent/                           # Agent loop, compaction, plan mode, todo, context assembly
+│   ├── agent/                           # Agent loop, compaction, plan mode, todo, context assembly, graph + streaming events
 │   │   ├── acceptRejectController.ts
 │   │   ├── agentRunner.ts
 │   │   ├── autocompact.ts
@@ -31,11 +31,13 @@ leo/
 │   │   ├── confirmationController.ts
 │   │   ├── contextAnalyzer.ts
 │   │   ├── contextAssembler.ts
+│   │   ├── graph.ts
 │   │   ├── microcompact.ts
 │   │   ├── planApprovalController.ts
 │   │   ├── planModeController.ts
 │   │   ├── planSessionResume.ts
 │   │   ├── ptlRetry.ts
+│   │   ├── streamEvents.ts
 │   │   ├── todoStore.ts
 │   │   ├── tokenCount.ts
 │   │   ├── tokenEstimator.ts
@@ -137,42 +139,57 @@ leo/
 │   │   ├── threadsStore.ts
 │   │   ├── vaultAdapter.ts
 │   │   └── vectorStore.ts
-│   ├── tools/                           # Tool registry + builtin + user tool loader
+│   ├── tools/                           # Tool registry + builtin + user tool loader + zod adapter
 │   │   ├── builtin/
+│   │   │   ├── appendToNote.ts
+│   │   │   ├── createFolder.ts
+│   │   │   ├── createNote.ts
+│   │   │   ├── editNote.ts
+│   │   │   ├── readNote.ts
 │   │   │   ├── searchVault.ts
 │   │   │   └── skillTool.ts
 │   │   ├── user/
 │   │   │   ├── userToolsLoader.ts
 │   │   │   └── wireUserTools.ts
-│   │   ├── createFolderTool.ts
-│   │   ├── editNoteTool.ts
 │   │   ├── planModeTools.ts
-│   │   ├── readNoteTool.ts
 │   │   ├── todoWriteTool.ts
 │   │   ├── toolRegistry.ts
 │   │   ├── types.ts
-│   │   └── writeTools.ts
+│   │   └── zodAdapter.ts
 │   ├── ui/                              # Chat view, context UI, notifications, icons
 │   │   ├── chat/
+│   │   │   ├── __stories__/
+│   │   │   │   └── mocks/
+│   │   │   │       └── sources.ts       # Shared Storybook mocks (sources, conversations, renderers)
 │   │   │   ├── widgets/
 │   │   │   │   ├── ContextWidget.tsx
 │   │   │   │   └── registry.ts
+│   │   │   ├── ChatRoot.stories.tsx
 │   │   │   ├── ChatRoot.tsx
 │   │   │   ├── codeBlockEnhancer.ts
+│   │   │   ├── ComposerInput.stories.tsx
 │   │   │   ├── ComposerInput.tsx
+│   │   │   ├── ContextIndicator.stories.tsx
 │   │   │   ├── ContextIndicator.tsx
 │   │   │   ├── fuzzyMatch.ts
+│   │   │   ├── HeaderBar.stories.tsx
 │   │   │   ├── HeaderBar.tsx
+│   │   │   ├── HeaderStat.tsx
+│   │   │   ├── HeaderStatsLive.tsx
+│   │   │   ├── headerStatsSources.ts
+│   │   │   ├── IndexEmptyStateCta.stories.tsx
 │   │   │   ├── IndexEmptyStateCta.tsx
 │   │   │   ├── InlineConfirmation.tsx
 │   │   │   ├── InlineDialog.tsx
+│   │   │   ├── MessageActionBar.stories.tsx
 │   │   │   ├── MessageActionBar.tsx
 │   │   │   ├── MessageList.tsx
 │   │   │   ├── PlanApprovalDialog.tsx
 │   │   │   ├── scrollAnchoring.ts
-│   │   │   ├── SkillPicker.tsx
 │   │   │   ├── slashCommands.ts
+│   │   │   ├── SlashPicker.stories.tsx
 │   │   │   ├── SlashPicker.tsx
+│   │   │   ├── ThreadSwitcher.stories.tsx
 │   │   │   ├── ThreadSwitcher.tsx
 │   │   │   └── turnDispatcher.ts
 │   │   ├── chatView.tsx
@@ -219,11 +236,17 @@ leo/
 │       ├── embeddings.live.test.ts
 │       ├── provider.live.test.ts
 │       └── toolCalling.live.test.ts
+├── .agent/                              # Planning, standards, scripts (see top of tree)
 ├── .eslintignore
 ├── .eslintrc.cjs
 ├── .gitignore
 ├── .prettierignore
 ├── .prettierrc.json
+├── .storybook/                          # Storybook config (main, preview, mocks, obsidian theme vars)
+│   ├── mocks/
+│   ├── main.ts
+│   ├── preview.ts
+│   └── preview-obsidian-vars.css
 ├── CLAUDE.md                            # Root agent instructions
 ├── data.json                            # Plugin runtime data
 ├── esbuild.config.mjs                   # Bundler config
@@ -247,3 +270,4 @@ leo/
 - `pnpm format` / `pnpm format:check` — prettier write / check.
 - `pnpm typecheck` — `tsc --noEmit`.
 - `pnpm dev` / `pnpm build` — esbuild (dev watch / prod bundle).
+- `pnpm storybook` / `pnpm build-storybook` — Storybook dev server / static build.

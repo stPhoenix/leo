@@ -1,4 +1,19 @@
+import { z } from 'zod';
 import type { ToolResult, ToolSpec } from '../types';
+import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
+
+const SearchVaultSchema: z.ZodType<SearchVaultArgs> = z
+  .object({
+    query: z
+      .string()
+      .min(1, 'query must be a non-empty string')
+      .describe('Natural-language query used to rank vault chunks by semantic similarity.'),
+    tags: z
+      .array(z.string({ error: 'tags must be an array of strings' }))
+      .optional()
+      .describe('Optional list of tag names; restricts hits to chunks carrying any of them.'),
+  })
+  .strict() as unknown as z.ZodType<SearchVaultArgs>;
 
 export interface SearchVaultHit {
   readonly path: string;
@@ -29,45 +44,11 @@ export function createSearchVaultTool(
   return {
     id: 'search_vault',
     description: 'Semantic search over the vault; optional tag filter.',
-    parameters: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'Natural-language query used to rank vault chunks by semantic similarity.',
-        },
-        tags: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Optional list of tag names; restricts hits to chunks carrying any of them.',
-        },
-      },
-      required: ['query'],
-      additionalProperties: false,
-    },
+    schema: SearchVaultSchema,
+    parameters: jsonSchemaFromZod(SearchVaultSchema),
     requiresConfirmation: false,
     source: 'builtin',
-    validate(raw): ToolResult<SearchVaultArgs> {
-      if (raw === null || typeof raw !== 'object') {
-        return { ok: false, error: 'args must be an object' };
-      }
-      const obj = raw as Record<string, unknown>;
-      if (typeof obj.query !== 'string' || obj.query.length === 0) {
-        return { ok: false, error: 'query must be a non-empty string' };
-      }
-      if (obj.tags !== undefined) {
-        if (!Array.isArray(obj.tags)) {
-          return { ok: false, error: 'tags must be an array of strings' };
-        }
-        for (const t of obj.tags) {
-          if (typeof t !== 'string') {
-            return { ok: false, error: 'tags must be an array of strings' };
-          }
-        }
-        return { ok: true, data: { query: obj.query, tags: obj.tags as string[] } };
-      }
-      return { ok: true, data: { query: obj.query } };
-    },
+    validate: validateFromZod(SearchVaultSchema),
     async invoke(args, ctx): Promise<ToolResult<SearchVaultResult>> {
       if (ctx.signal.aborted) return { ok: false, error: 'aborted' };
       try {

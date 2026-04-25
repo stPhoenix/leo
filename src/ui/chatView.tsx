@@ -8,10 +8,12 @@ import {
 } from 'obsidian';
 import { createRoot, type Root } from 'react-dom/client';
 import { createElement } from 'react';
+import { HeaderStatsLive } from './chat/HeaderStatsLive';
+import { makeContextUsageSource, makeIndexProgressSource } from './chat/headerStatsSources';
 import type { Logger } from '@/platform/Logger';
 import { ChatMessageStore } from '@/chat/messageStore';
 import { StreamingTurnController, type StreamingPhase } from '@/chat/streamingController';
-import type { StreamEvent } from '@/providers/types';
+import type { StreamEvent } from '@/agent/streamEvents';
 import type { FocusedContextChannel } from '@/editor/focusedContextChannel';
 import type { FocusedContext } from '@/editor/types';
 import type { ConfirmationController } from '@/agent/confirmationController';
@@ -22,7 +24,6 @@ import { resolveContextWindow } from '@/agent/compactConstants';
 import { makeInlineConfirmationSource } from './chat/InlineConfirmation';
 import { makeAcceptRejectSource } from './chat/InlineDialog';
 import { makePlanApprovalSource } from './chat/PlanApprovalDialog';
-import type { SkillPickerSource } from './chat/SkillPicker';
 import type { ThreadsSnapshot } from '@/storage/threadsStore';
 import { ChatRoot } from './chat/ChatRoot';
 import type { CodeBlockClipboard } from './chat/codeBlockEnhancer';
@@ -61,7 +62,6 @@ export interface ChatViewDeps {
   readonly focusedContext?: FocusedContextChannel;
   readonly confirmationController?: ConfirmationController;
   readonly acceptRejectController?: AcceptRejectController;
-  readonly skillPickerSource?: SkillPickerSource;
   readonly planMode?: ChatPlanModeAdapter;
   readonly analyzeContext?: (signal: AbortSignal) => Promise<ContextData>;
   readonly indexStatusSource?: IndexStatusSource;
@@ -69,6 +69,7 @@ export interface ChatViewDeps {
   readonly onIndexVault?: () => void;
   readonly planApprovalController?: PlanApprovalController;
   readonly resolveCostUSD?: (usage: { input: number; output: number }) => number | null;
+  readonly getContextWindow?: () => number;
   readonly skillSlash?: SkillSlashAdapter;
 }
 
@@ -93,6 +94,7 @@ export class ChatView extends ItemView {
   private turnDispatcher: TurnDispatcher | null = null;
   private slashRegistry: SlashRegistry | null = null;
   private contextCommand: ContextCommandHandle | null = null;
+  private indexProgressDispose: (() => void) | null = null;
   private liveRegionEl: HTMLElement | null = null;
   private phaseListeners = new Set<(p: StreamingPhase) => void>();
   private lastPhase: StreamingPhase = 'idle';
@@ -201,6 +203,8 @@ export class ChatView extends ItemView {
       };
     };
 
+    const headerStats = this.buildHeaderStats();
+
     this.root = createRoot(host);
     this.root.render(
       createElement(ChatRoot, {
@@ -220,12 +224,10 @@ export class ChatView extends ItemView {
         messageActions,
         ...(confirmationSource !== undefined ? { confirmationSource } : {}),
         ...(acceptRejectSource !== undefined ? { acceptRejectSource } : {}),
-        ...(this.deps.skillPickerSource !== undefined
-          ? { skillPickerSource: this.deps.skillPickerSource }
-          : {}),
         ...(this.deps.threadsSource !== undefined
           ? { threadsSource: this.deps.threadsSource }
           : {}),
+        ...(headerStats !== null ? { headerStats } : {}),
         ...(this.deps.indexStatusSource !== undefined
           ? { indexStatusSource: this.deps.indexStatusSource }
           : {}),
@@ -283,6 +285,8 @@ export class ChatView extends ItemView {
     this.deps.logger?.info('view.close', { type: VIEW_TYPE_LEO_CHAT });
     this.contextCommand?.cancel();
     this.contextCommand = null;
+    this.indexProgressDispose?.();
+    this.indexProgressDispose = null;
     this.slashRegistry = null;
     this.turnDispatcher?.dispose();
     this.turnDispatcher = null;
@@ -392,6 +396,16 @@ export class ChatView extends ItemView {
       }
     ).commands;
     commands?.executeCommandById?.('command-palette:open');
+  }
+
+  private buildHeaderStats(): JSX.Element | null {
+    const getWindow = this.deps.getContextWindow;
+    const subscribeDrain = this.deps.indexDrainSubscribe;
+    if (getWindow === undefined || subscribeDrain === undefined) return null;
+    const context = makeContextUsageSource(this.messageStore, getWindow);
+    const index = makeIndexProgressSource(subscribeDrain);
+    this.indexProgressDispose = index.dispose;
+    return createElement(HeaderStatsLive, { context, index });
   }
 
   private buildContextIndicatorSource(): {

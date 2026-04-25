@@ -37,9 +37,17 @@ export function autoCompactThresholdFor(
 export interface ContextWindowResolveOpts {
   readonly model: string;
   readonly providerMaxInputTokens?: number;
+  readonly userOverride?: number;
 }
 
 export function resolveContextWindow(opts: ContextWindowResolveOpts): number {
+  if (
+    opts.userOverride !== undefined &&
+    Number.isFinite(opts.userOverride) &&
+    opts.userOverride > 0
+  ) {
+    return opts.userOverride;
+  }
   if (opts.model.endsWith('[1m]')) return ONE_MILLION_CONTEXT_WINDOW;
   if (
     opts.providerMaxInputTokens !== undefined &&

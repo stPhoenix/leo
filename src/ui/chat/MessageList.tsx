@@ -17,6 +17,17 @@ export interface MarkdownRenderFn {
   (text: string, container: HTMLElement): (() => void) | void;
 }
 
+function formatBubbleTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (sameDay) return time;
+  const date = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return `${date} · ${time}`;
+}
+
 export interface MessageListProps {
   readonly store: ChatMessageStore;
   readonly renderMarkdown: MarkdownRenderFn;
@@ -154,7 +165,12 @@ function UserBubble(props: UserBubbleProps): JSX.Element {
   if (props.editing && props.actions?.editAndResend !== undefined) {
     return (
       <div className="leo-bubble leo-bubble-user is-editing">
-        <header className="leo-bubble-header">user · {record.createdAt}</header>
+        <header className="leo-bubble-header">
+          <span className="leo-bubble-role">You</span>
+          <time className="leo-bubble-time" dateTime={record.createdAt}>
+            {formatBubbleTime(record.createdAt)}
+          </time>
+        </header>
         <InlineEditor
           initial={record.content}
           onSave={(text) => {
@@ -168,7 +184,12 @@ function UserBubble(props: UserBubbleProps): JSX.Element {
   }
   return (
     <div className="leo-bubble leo-bubble-user">
-      <header className="leo-bubble-header">user · {record.createdAt}</header>
+      <header className="leo-bubble-header">
+        <span className="leo-bubble-role">You</span>
+        <time className="leo-bubble-time" dateTime={record.createdAt}>
+          {formatBubbleTime(record.createdAt)}
+        </time>
+      </header>
       <div className="leo-bubble-body" data-slot="user-text">
         {record.content}
       </div>
@@ -225,7 +246,12 @@ function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
 
   return (
     <div className={classes} data-status={status ?? 'done'}>
-      <header className="leo-bubble-header">assistant · {props.record.createdAt}</header>
+      <header className="leo-bubble-header">
+        <span className="leo-bubble-role">Leo</span>
+        <time className="leo-bubble-time" dateTime={props.record.createdAt}>
+          {formatBubbleTime(props.record.createdAt)}
+        </time>
+      </header>
       <div className="leo-bubble-body" data-slot="assistant-markdown" ref={hostRef} />
       {streaming ? (
         <span className="leo-streaming-cursor" data-slot="streaming-cursor" aria-hidden="true" />

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { makeToolCtx } from './_toolCtx';
 import {
   parseMcpConfig,
   resolveSecretsForConfig,
@@ -245,8 +246,7 @@ describe('MCPClient — AC1–AC7', () => {
     });
     await client.connectAll([{ id: 's1', enabled: true, transport: 'stdio', command: '/x' }]);
     const result = await registry.invoke('mcp.s1.echo', JSON.stringify({ a: 1 }), {
-      thread: 'T',
-      signal: new AbortController().signal,
+      ...makeToolCtx({ thread: 'T' }),
       logger,
     });
     expect(result).toEqual({ ok: true, data: { got: { a: 1 } } });
@@ -272,15 +272,7 @@ describe('MCPClient — AC1–AC7', () => {
       { id: 's1', enabled: true, transport: 'stdio', command: '/x' },
       { id: 's2', enabled: true, transport: 'stdio', command: '/y' },
     ]);
-    await client.callTool(
-      's1',
-      't1',
-      { a: 1 },
-      {
-        thread: 'T',
-        signal: new AbortController().signal,
-      },
-    );
+    await client.callTool('s1', 't1', { a: 1 }, makeToolCtx({ thread: 'T' }));
     const events = new Set(records.map((r) => r.event));
     for (const e of [
       'mcp.connect.start',

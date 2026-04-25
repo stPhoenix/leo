@@ -1,6 +1,12 @@
+import { z } from 'zod';
 import type { Logger } from '@/platform/Logger';
 import type { JsonSchema, ToolCtx, ToolResult, ToolSpec } from '@/tools/types';
 import type { ToolRegistry } from '@/tools/toolRegistry';
+
+// MCP tools advertise their own JsonSchema via the server handshake; we keep
+// that for LLM tool-calling and satisfy the zod contract with a permissive
+// pass-through schema.
+const mcpPermissiveSchema: z.ZodType<unknown> = z.unknown();
 import {
   parseMcpConfig,
   resolveSecretsForConfig,
@@ -426,6 +432,7 @@ export class MCPClient {
     } = {
       id,
       description: tool.description,
+      schema: mcpPermissiveSchema,
       parameters: tool.inputSchema,
       requiresConfirmation: true,
       source: 'mcp',

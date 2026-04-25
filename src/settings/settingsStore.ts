@@ -38,6 +38,7 @@ export interface LeoSettings {
   provider: ProviderSettings;
   indexing: IndexingSettings;
   ui: UiSettings;
+  contextWindowOverride?: number;
 }
 
 export const DEFAULT_INDEXING: IndexingSettings = {
@@ -93,8 +94,23 @@ export function migrate(raw: unknown): LeoSettings {
   const provider = mergeProvider(obj.provider);
   const indexing = mergeIndexing(obj.indexing);
   const ui = mergeUi(obj.ui, provider);
+  const contextWindowOverride = parseContextWindowOverride(obj.contextWindowOverride);
 
-  return { schemaVersion: 1, logLevel, provider, indexing, ui };
+  return {
+    schemaVersion: 1,
+    logLevel,
+    provider,
+    indexing,
+    ui,
+    ...(contextWindowOverride !== undefined ? { contextWindowOverride } : {}),
+  };
+}
+
+function parseContextWindowOverride(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return undefined;
+  const i = Math.floor(v);
+  if (i < 1) return undefined;
+  return Math.min(i, 10_000_000);
 }
 
 function mergeIndexing(raw: unknown): IndexingSettings {

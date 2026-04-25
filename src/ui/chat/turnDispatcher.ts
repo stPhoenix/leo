@@ -1,7 +1,7 @@
 import type { ChatMessageStore } from '@/chat/messageStore';
 import type { ChatMessageRecord } from '@/chat/types';
 import type { StreamingTurnController } from '@/chat/streamingController';
-import type { StreamEvent } from '@/providers/types';
+import type { StreamEvent } from '@/agent/streamEvents';
 import { computeTokenUsage } from '@/chat/tokenUsage';
 
 export interface TurnDispatcherStarter {

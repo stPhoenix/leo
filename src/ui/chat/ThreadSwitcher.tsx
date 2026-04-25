@@ -133,6 +133,17 @@ export function ThreadSwitcher(props: ThreadSwitcherProps): JSX.Element {
                       {s.title}
                     </button>
                   )}
+                  {isRenaming ? null : (
+                    <button
+                      type="button"
+                      className="leo-thread-switcher-item-rename"
+                      aria-label={`Rename ${s.title}`}
+                      title="Rename thread"
+                      onClick={() => setRenamingId(s.id)}
+                    >
+                      ✎
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="leo-thread-switcher-item-delete"

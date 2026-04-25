@@ -1,5 +1,6 @@
-import type { VaultAdapter } from '@/storage/vaultAdapter';
-import type { ToolSpec } from './types';
+import { z } from 'zod';
+import type { ToolSpec } from '../types';
+import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
 
 export interface ReadNoteArgs {
   readonly path: string;
@@ -13,45 +14,33 @@ export interface ReadNoteResult {
 
 const MAX_BYTES = 200 * 1024;
 
-export function createReadNoteTool(vault: VaultAdapter): ToolSpec<ReadNoteArgs, ReadNoteResult> {
+const ReadNoteSchema: z.ZodType<ReadNoteArgs> = z
+  .object({
+    path: z
+      .string()
+      .min(1, 'path must be a non-empty string')
+      .describe('Vault-relative path to the note, e.g. "Notes/Daily.md". No "..", no leading "/".')
+      .refine(isSafeVaultPath, 'path must be vault-relative and must not traverse parents'),
+  })
+  .strict();
+
+export function createReadNoteTool(): ToolSpec<ReadNoteArgs, ReadNoteResult> {
   return {
     id: 'read_note',
     description:
       'Read the contents of a non-active markdown note from the vault by its vault-relative path.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description:
-            'Vault-relative path to the note, e.g. "Notes/Daily.md". No "..", no leading "/".',
-        },
-      },
-      required: ['path'],
-      additionalProperties: false,
-    },
+    schema: ReadNoteSchema,
+    parameters: jsonSchemaFromZod(ReadNoteSchema),
     requiresConfirmation: false,
     source: 'builtin',
-    validate(raw) {
-      if (raw === null || typeof raw !== 'object') {
-        return { ok: false, error: 'args must be an object' };
-      }
-      const obj = raw as Record<string, unknown>;
-      if (typeof obj.path !== 'string' || obj.path.length === 0) {
-        return { ok: false, error: 'path must be a non-empty string' };
-      }
-      if (!isSafeVaultPath(obj.path)) {
-        return { ok: false, error: 'path must be vault-relative and must not traverse parents' };
-      }
-      return { ok: true, data: { path: obj.path } };
-    },
+    validate: validateFromZod(ReadNoteSchema),
     async invoke(args, ctx) {
       if (ctx.signal.aborted) return { ok: false, error: 'aborted' };
       try {
-        if (!(await vault.exists(args.path))) {
+        if (!(await ctx.vault.exists(args.path))) {
           return { ok: false, error: `note not found: ${args.path}` };
         }
-        const content = await vault.read(args.path);
+        const content = await ctx.vault.read(args.path);
         const bytes = byteLength(content);
         if (bytes > MAX_BYTES) {
           return { ok: false, error: `note too large (${bytes} bytes; limit ${MAX_BYTES})` };

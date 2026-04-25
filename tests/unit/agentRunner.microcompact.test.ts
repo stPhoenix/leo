@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   AgentRunner,
   type AgentRunnerProvider,
   type FocusedContextSource,
 } from '@/agent/agentRunner';
-import type { AgentTurnEvent } from '@/agent/types';
+import type { StreamEvent as AgentTurnEvent } from '@/agent/streamEvents';
 import { NULL_FOCUSED_CONTEXT } from '@/editor/types';
 import type { FocusedContext } from '@/editor/types';
 import { Logger } from '@/platform/Logger';
@@ -62,6 +63,7 @@ function fakeReadNoteSpec(): ToolSpec<{ readonly path: string }, string> {
   return {
     id: 'read_note',
     description: 'read a note',
+    schema: z.any() as unknown as z.ZodType<{ readonly path: string }>,
     parameters: {
       type: 'object',
       properties: { path: { type: 'string' } },
@@ -120,9 +122,7 @@ describe('AgentRunner — F42 microcompact pass', () => {
       clock,
       microcompact: { keepRecent: 2, gapThresholdMinutes: 15 },
     });
-    const events = await collect(
-      runner.send({ thread: 't1', message: { role: 'user', content: 'hi' } }),
-    );
+    const events = await collect(runner.send({ role: 'user', content: 'hi' }, 't1'));
     expect(events[events.length - 1]).toEqual({ type: 'done', cancelled: false });
     expect(provider.calls.length).toBeGreaterThan(roundsTotal);
 
@@ -187,7 +187,7 @@ describe('AgentRunner — F42 microcompact pass', () => {
       clock,
       microcompact: { keepRecent: 1, gapThresholdMinutes: 60 },
     });
-    await collect(runner.send({ thread: 't1', message: { role: 'user', content: 'hi' } }));
+    await collect(runner.send({ role: 'user', content: 'hi' }, 't1'));
     const mcEvents = records.filter((r) => r.event === 'microcompact.cleared');
     expect(mcEvents).toEqual([]);
     for (const call of provider.calls) {

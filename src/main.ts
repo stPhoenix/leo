@@ -27,6 +27,7 @@ import { EditorBridge } from '@/editor/editorBridge';
 import { FocusedContextChannel } from '@/editor/focusedContextChannel';
 import { WorkspaceFocusProbe } from '@/editor/workspaceFocusProbe';
 import { AgentRunner } from '@/agent/agentRunner';
+import { USE_GRAPH_RUNTIME } from '@/agent/graph';
 import type { AgentHistoryMessage } from '@/agent/types';
 import { PlanModeController } from '@/agent/planModeController';
 import { TodoStore } from '@/agent/todoStore';
@@ -35,14 +36,16 @@ import {
   type ContextCounters,
   type ContextData,
 } from '@/agent/contextAnalyzer';
+import { resolveContextWindow } from '@/agent/compactConstants';
 import { estimateMessageTokens, roughTokenCountEstimation } from '@/agent/tokenEstimator';
 import type { TokenMessage } from '@/agent/tokenEstimator';
 import type { ChatMessage } from '@/providers/types';
 import { ToolRegistry } from '@/tools/toolRegistry';
-import { createReadNoteTool } from '@/tools/readNoteTool';
-import { createCreateNoteTool, createAppendToNoteTool } from '@/tools/writeTools';
-import { createCreateFolderTool } from '@/tools/createFolderTool';
-import { createEditNoteTool } from '@/tools/editNoteTool';
+import { createReadNoteTool } from '@/tools/builtin/readNote';
+import { createCreateNoteTool } from '@/tools/builtin/createNote';
+import { createAppendToNoteTool } from '@/tools/builtin/appendToNote';
+import { createCreateFolderTool } from '@/tools/builtin/createFolder';
+import { createEditNoteTool } from '@/tools/builtin/editNote';
 import type { ToolSpec } from '@/tools/types';
 import { ConfirmationController, prettifyArgs } from '@/agent/confirmationController';
 import { AcceptRejectController } from '@/agent/acceptRejectController';
@@ -208,18 +211,10 @@ export default class LeoPlugin extends Plugin {
 
     const vaultAdapter = createObsidianVaultAdapter(this.app.vault.adapter);
     this.toolRegistry = new ToolRegistry({ logger: this.logger });
-    this.toolRegistry.register(
-      createReadNoteTool(vaultAdapter) as unknown as ToolSpec<unknown, unknown>,
-    );
-    this.toolRegistry.register(
-      createCreateNoteTool(vaultAdapter) as unknown as ToolSpec<unknown, unknown>,
-    );
-    this.toolRegistry.register(
-      createAppendToNoteTool(vaultAdapter) as unknown as ToolSpec<unknown, unknown>,
-    );
-    this.toolRegistry.register(
-      createCreateFolderTool(vaultAdapter) as unknown as ToolSpec<unknown, unknown>,
-    );
+    this.toolRegistry.register(createReadNoteTool() as unknown as ToolSpec<unknown, unknown>);
+    this.toolRegistry.register(createCreateNoteTool() as unknown as ToolSpec<unknown, unknown>);
+    this.toolRegistry.register(createAppendToNoteTool() as unknown as ToolSpec<unknown, unknown>);
+    this.toolRegistry.register(createCreateFolderTool() as unknown as ToolSpec<unknown, unknown>);
     this.acceptRejectController = new AcceptRejectController();
     this.editLock = new EditLockController({
       logger: this.logger,
@@ -252,8 +247,6 @@ export default class LeoPlugin extends Plugin {
     );
     this.toolRegistry.register(
       createEditNoteTool({
-        vault: vaultAdapter,
-        bridge: editBridge,
         acceptReject: this.acceptRejectController,
         logger: this.logger,
       }) as unknown as ToolSpec<unknown, unknown>,
@@ -550,6 +543,8 @@ export default class LeoPlugin extends Plugin {
       model: () => this.store.get().provider.chatModel,
       historyByThread: agentHistory,
       toolRegistry: this.toolRegistry,
+      vault: vaultAdapter,
+      editor: editBridge,
       planMode: this.planModeController,
       ragEngine: this.indexerRag.ragEngine,
       skillListing: {
@@ -562,14 +557,6 @@ export default class LeoPlugin extends Plugin {
           return { content: listing.content, skillCount: listing.skillCount };
         },
       },
-      confirmTool: (req) =>
-        this.confirmationController.request({
-          toolId: req.toolId,
-          thread: req.thread,
-          argsJson: req.argsJson,
-          argsPretty: prettifyArgs(req.argsJson),
-          category: req.category,
-        }),
       allowedToolsForThread: () =>
         new Set(this.conversationStore.getThread().metadata.allowedTools),
       markThreadAllowed: (_thread, toolId) => {
@@ -586,24 +573,29 @@ export default class LeoPlugin extends Plugin {
       },
     });
 
+    const confirmationController = this.confirmationController;
     const streamStarter: ChatStreamStarter = (prompt, signal) => {
       const thread = DEFAULT_THREAD_ID;
       const onAbort = (): void => this.agentRunner.cancel(thread);
       signal.addEventListener('abort', onAbort, { once: true });
-      const source = this.agentRunner.send({
-        thread,
-        message: { role: 'user', content: prompt },
-      });
+      const source = this.agentRunner.send({ role: 'user', content: prompt }, thread);
       return (async function* () {
         try {
           for await (const ev of source) {
-            if (ev.type === 'done') {
-              yield { type: 'done' };
-            } else if (ev.type === 'error') {
-              yield { type: 'error', error: ev.error };
-            } else {
-              yield ev;
+            if (ev.type === 'tool_confirmation') {
+              void (async () => {
+                const decision = await confirmationController.request({
+                  toolId: ev.request.toolId,
+                  thread: ev.request.thread,
+                  argsJson: ev.request.argsJson,
+                  argsPretty: prettifyArgs(ev.request.argsJson),
+                  category: ev.request.category,
+                });
+                ev.resolve(decision);
+              })();
+              continue;
             }
+            yield ev;
           }
         } finally {
           signal.removeEventListener('abort', onAbort);
@@ -652,6 +644,15 @@ export default class LeoPlugin extends Plugin {
             exit: () => this.planModeController.exitPlan(DEFAULT_THREAD_ID),
           },
           analyzeContext: (signal) => this.analyzeContextForChat(signal),
+          getContextWindow: () => {
+            const s = this.store.get();
+            return resolveContextWindow({
+              model: s.provider.chatModel,
+              ...(s.contextWindowOverride !== undefined
+                ? { userOverride: s.contextWindowOverride }
+                : {}),
+            });
+          },
           indexStatusSource: this.buildIndexStatusSource(),
           indexDrainSubscribe: (l) => this.indexerRag.vaultIndexer.subscribe(l),
           onIndexVault: () => {
@@ -719,7 +720,10 @@ export default class LeoPlugin extends Plugin {
       },
     });
 
-    this.logger.info('plugin.load', { version: this.manifest.version });
+    this.logger.info('plugin.load', {
+      version: this.manifest.version,
+      graphRuntime: USE_GRAPH_RUNTIME,
+    });
   }
 
   override async onunload(): Promise<void> {

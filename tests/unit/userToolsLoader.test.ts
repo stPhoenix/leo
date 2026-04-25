@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { makeToolCtx } from './_toolCtx';
 import {
   buildSpec,
   loadUserTools,
@@ -57,6 +59,7 @@ function mkRegistry(prefilled: string[] = []): ToolRegistryLike & {
     registrations.set(id, {
       id,
       description: 'builtin',
+      schema: z.any() as unknown as z.ZodType<unknown>,
       parameters: {},
       requiresConfirmation: false,
       source: 'builtin',
@@ -76,7 +79,7 @@ function mkRegistry(prefilled: string[] = []): ToolRegistryLike & {
 }
 
 function mkCtx(signal: AbortSignal = new AbortController().signal): ToolCtx {
-  return { thread: 't1', signal };
+  return makeToolCtx({ thread: 't1', signal });
 }
 
 describe('parseDeclaration', () => {

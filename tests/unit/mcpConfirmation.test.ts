@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { makeToolCtx } from './_toolCtx';
 import { MCPClient, type McpTransportConnection, type McpTransportFactory } from '@/mcp/mcpClient';
 import { ToolRegistry } from '@/tools/toolRegistry';
 import { Logger } from '@/platform/Logger';
@@ -140,15 +141,7 @@ describe('F52 — AC5 deny path', () => {
       registry,
       secrets: new NullSafeStorage(),
     });
-    const res = await client.callTool(
-      'ghost',
-      'anything',
-      {},
-      {
-        thread: 'T',
-        signal: new AbortController().signal,
-      },
-    );
+    const res = await client.callTool('ghost', 'anything', {}, makeToolCtx({ thread: 'T' }));
     expect(res).toEqual({ ok: false, error: 'mcp server not connected: ghost' });
   });
 });

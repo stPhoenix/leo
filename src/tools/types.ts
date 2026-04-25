@@ -1,4 +1,22 @@
+import type { z } from 'zod';
 import type { Logger } from '@/platform/Logger';
+import type { VaultAdapter } from '@/storage/vaultAdapter';
+
+/**
+ * Edit-capable editor facade supplied to tools via ToolCtx. `ctx.editor` is
+ * the narrowed interface tools need for active-note edits; the fuller
+ * `EditorBridge` class tracks focused context and is not piped through tools.
+ */
+export interface EditNoteBridge {
+  isActiveNote(path: string): boolean;
+  applyActiveEdit(input: {
+    path: string;
+    lineStart: number;
+    lineEnd: number;
+    newContent: string;
+    signal: AbortSignal;
+  }): Promise<{ ok: true; bytesWritten: number; undo: () => void } | { ok: false; error: string }>;
+}
 
 export interface JsonSchema {
   readonly type?: 'object' | 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'null';
@@ -17,6 +35,8 @@ export type ToolResult<T = unknown> =
 export interface ToolCtx {
   readonly thread: string;
   readonly signal: AbortSignal;
+  readonly vault: VaultAdapter;
+  readonly editor: EditNoteBridge;
   readonly logger?: Logger;
   readonly agentId?: string | null;
 }
@@ -30,6 +50,7 @@ export interface ToolValidate<TArgs> {
 export interface ToolSpec<TArgs = unknown, TData = unknown> {
   readonly id: string;
   readonly description: string;
+  readonly schema: z.ZodType<TArgs>;
   readonly parameters: JsonSchema;
   readonly requiresConfirmation: boolean;
   readonly source: ToolSource;

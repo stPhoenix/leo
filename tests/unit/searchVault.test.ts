@@ -5,9 +5,10 @@ import {
   type SearchVaultHit,
 } from '@/tools/builtin/searchVault';
 import type { ToolCtx } from '@/tools/types';
+import { makeToolCtx } from './_toolCtx';
 
 function mkCtx(signal: AbortSignal = new AbortController().signal): ToolCtx {
-  return { thread: 't1', signal };
+  return makeToolCtx({ thread: 't1', signal });
 }
 
 interface FakeEngine extends SearchVaultEngine {

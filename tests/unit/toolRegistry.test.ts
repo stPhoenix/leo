@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
+import { makeToolCtx } from './_toolCtx';
 import { ToolRegistry } from '@/tools/toolRegistry';
 import { Logger } from '@/platform/Logger';
 import type { LogRecord, LogSink } from '@/platform/logTypes';
@@ -36,6 +38,7 @@ function stubTool(
   return {
     id,
     description: `${id} description`,
+    schema: z.object({ x: z.number() }).strict() as unknown as z.ZodType<{ x: number }>,
     parameters: {
       type: 'object',
       properties: { x: { type: 'number' } },
@@ -108,10 +111,7 @@ describe('ToolRegistry.invoke', () => {
     const { logger, records } = makeLogger();
     const r = new ToolRegistry({ logger });
     r.register(stubTool('alpha') as unknown as ToolSpec<unknown, unknown>);
-    const result = await r.invoke('alpha', '{"x":7}', {
-      thread: 't1',
-      signal: new AbortController().signal,
-    });
+    const result = await r.invoke('alpha', '{"x":7}', makeToolCtx({ thread: 't1' }));
     expect(result).toEqual({ ok: true, data: 'x=7' });
     const starts = records.filter((r) => r.event === 'tool.invoke.start');
     const oks = records.filter((r) => r.event === 'tool.invoke.ok');
@@ -124,20 +124,14 @@ describe('ToolRegistry.invoke', () => {
   it('returns {ok:false} on invalid JSON args', async () => {
     const r = new ToolRegistry();
     r.register(stubTool('alpha') as unknown as ToolSpec<unknown, unknown>);
-    const result = await r.invoke('alpha', '{bad json', {
-      thread: 't',
-      signal: new AbortController().signal,
-    });
+    const result = await r.invoke('alpha', '{bad json', makeToolCtx({}));
     expect(result.ok).toBe(false);
   });
 
   it('returns {ok:false} on failed schema validation', async () => {
     const r = new ToolRegistry();
     r.register(stubTool('alpha') as unknown as ToolSpec<unknown, unknown>);
-    const result = await r.invoke('alpha', '{"x":"notANumber"}', {
-      thread: 't',
-      signal: new AbortController().signal,
-    });
+    const result = await r.invoke('alpha', '{"x":"notANumber"}', makeToolCtx({}));
     expect(result.ok).toBe(false);
   });
 
@@ -149,19 +143,13 @@ describe('ToolRegistry.invoke', () => {
     });
     const r = new ToolRegistry();
     r.register(throwing as unknown as ToolSpec<unknown, unknown>);
-    const result = await r.invoke('alpha', '{"x":1}', {
-      thread: 't',
-      signal: new AbortController().signal,
-    });
+    const result = await r.invoke('alpha', '{"x":1}', makeToolCtx({}));
     expect(result).toEqual({ ok: false, error: 'kaboom' });
   });
 
   it('returns {ok:false} for unknown tool id', async () => {
     const r = new ToolRegistry();
-    const result = await r.invoke('ghost', '{}', {
-      thread: 't',
-      signal: new AbortController().signal,
-    });
+    const result = await r.invoke('ghost', '{}', makeToolCtx({}));
     expect(result.ok).toBe(false);
   });
 });

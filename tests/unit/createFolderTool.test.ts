@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createCreateFolderTool } from '@/tools/createFolderTool';
+import { createCreateFolderTool } from '@/tools/builtin/createFolder';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
+import { makeToolCtx } from './_toolCtx';
 
 class FakeVault implements VaultAdapter {
   readonly files = new Map<string, string>();
@@ -38,14 +39,12 @@ class FakeVault implements VaultAdapter {
   }
 }
 
-const ctx = {
-  thread: 't1',
-  signal: new AbortController().signal,
-};
+const ctx = (vault: VaultAdapter): ReturnType<typeof makeToolCtx> =>
+  makeToolCtx({ thread: 't1', vault });
 
 describe('create_folder tool — shape', () => {
   it('declares id, requiresConfirmation=true, builtin source, and JSON-schema params', () => {
-    const tool = createCreateFolderTool(new FakeVault());
+    const tool = createCreateFolderTool();
     expect(tool.id).toBe('create_folder');
     expect(tool.requiresConfirmation).toBe(true);
     expect(tool.source).toBe('builtin');
@@ -62,7 +61,7 @@ describe('create_folder tool — shape', () => {
 
 describe('create_folder tool — validation', () => {
   it('rejects empty, absolute, traversal, drive-letter, and null-byte paths', () => {
-    const tool = createCreateFolderTool(new FakeVault());
+    const tool = createCreateFolderTool();
     expect(tool.validate({ path: '' }).ok).toBe(false);
     expect(tool.validate({ path: '/abs' }).ok).toBe(false);
     expect(tool.validate({ path: '../escape' }).ok).toBe(false);
@@ -73,7 +72,7 @@ describe('create_folder tool — validation', () => {
     expect(tool.validate(null).ok).toBe(false);
   });
   it('accepts simple + nested vault-relative paths', () => {
-    const tool = createCreateFolderTool(new FakeVault());
+    const tool = createCreateFolderTool();
     expect(tool.validate({ path: 'Projects' }).ok).toBe(true);
     expect(tool.validate({ path: 'Projects/2026/Q2' }).ok).toBe(true);
   });
@@ -82,11 +81,11 @@ describe('create_folder tool — validation', () => {
 describe('create_folder tool — invocation', () => {
   it('creates a single-level folder via mkdir and reports created=true', async () => {
     const vault = new FakeVault();
-    const tool = createCreateFolderTool(vault);
+    const tool = createCreateFolderTool();
     const v = tool.validate({ path: 'Projects' });
     expect(v.ok).toBe(true);
     if (!v.ok) return;
-    const result = await tool.invoke(v.data, ctx);
+    const result = await tool.invoke(v.data, ctx(vault));
     expect(result).toEqual({ ok: true, data: { path: 'Projects', created: true } });
     expect(vault.mkdirCalls).toEqual(['Projects']);
     expect(vault.folders.has('Projects')).toBe(true);
@@ -94,11 +93,11 @@ describe('create_folder tool — invocation', () => {
 
   it('creates intermediate parents for nested paths', async () => {
     const vault = new FakeVault();
-    const tool = createCreateFolderTool(vault);
+    const tool = createCreateFolderTool();
     const v = tool.validate({ path: 'Projects/2026/Q2' });
     expect(v.ok).toBe(true);
     if (!v.ok) return;
-    const result = await tool.invoke(v.data, ctx);
+    const result = await tool.invoke(v.data, ctx(vault));
     expect(result).toEqual({ ok: true, data: { path: 'Projects/2026/Q2', created: true } });
     expect(vault.mkdirCalls).toEqual(['Projects', 'Projects/2026', 'Projects/2026/Q2']);
   });
@@ -106,11 +105,11 @@ describe('create_folder tool — invocation', () => {
   it('is idempotent: pre-existing folder returns created=false and does not call mkdir', async () => {
     const vault = new FakeVault();
     vault.folders.add('Projects');
-    const tool = createCreateFolderTool(vault);
+    const tool = createCreateFolderTool();
     const v = tool.validate({ path: 'Projects' });
     expect(v.ok).toBe(true);
     if (!v.ok) return;
-    const result = await tool.invoke(v.data, ctx);
+    const result = await tool.invoke(v.data, ctx(vault));
     expect(result).toEqual({ ok: true, data: { path: 'Projects', created: false } });
     expect(vault.mkdirCalls).toEqual([]);
   });
@@ -118,13 +117,13 @@ describe('create_folder tool — invocation', () => {
   it('returns {ok:false, error:"aborted"} when ctx signal is already aborted', async () => {
     const vault = new FakeVault();
     const mkdirSpy = vi.spyOn(vault, 'mkdir');
-    const tool = createCreateFolderTool(vault);
+    const tool = createCreateFolderTool();
     const ac = new AbortController();
     ac.abort();
     const v = tool.validate({ path: 'Projects' });
     expect(v.ok).toBe(true);
     if (!v.ok) return;
-    const result = await tool.invoke(v.data, { thread: 't', signal: ac.signal });
+    const result = await tool.invoke(v.data, makeToolCtx({ vault, signal: ac.signal }));
     expect(result).toEqual({ ok: false, error: 'aborted' });
     expect(mkdirSpy).not.toHaveBeenCalled();
   });
@@ -132,11 +131,11 @@ describe('create_folder tool — invocation', () => {
   it('surfaces adapter errors as {ok:false} without throwing', async () => {
     const vault = new FakeVault();
     vault.mkdirShouldThrowOn = 'Projects';
-    const tool = createCreateFolderTool(vault);
+    const tool = createCreateFolderTool();
     const v = tool.validate({ path: 'Projects' });
     expect(v.ok).toBe(true);
     if (!v.ok) return;
-    const result = await tool.invoke(v.data, ctx);
+    const result = await tool.invoke(v.data, ctx(vault));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain('mkdir boom');
   });
