@@ -83,6 +83,7 @@ leo/
 │   │   ├── dirtyQueue.ts
 │   │   ├── indexHeader.ts
 │   │   ├── indexerStatusBar.ts
+│   │   ├── indexerStatusTap.ts          # Read-only DrainListener tap exposing latest IndexerStatusSnapshot for /rag widget
 │   │   ├── reindexService.ts
 │   │   ├── vaultIndexer.ts
 │   │   └── wireIndexerRag.ts
@@ -119,6 +120,7 @@ leo/
 │   │   ├── excludeMatcher.ts
 │   │   ├── GraphTraversal.ts
 │   │   ├── ragEngine.ts
+│   │   ├── ragSnapshot.ts               # Pure abortable RagSnapshot collector (vector store + indexer + graph + exclude) for /rag widget
 │   │   ├── scorer.ts
 │   │   └── tagMatcher.ts
 │   ├── settings/                        # Settings tab, wizard, commands, exclude store
@@ -204,6 +206,8 @@ leo/
 │   │   │   │   └── useBlink.ts
 │   │   │   ├── widgets/
 │   │   │   │   ├── ContextWidget.tsx
+│   │   │   │   ├── RagWidget.stories.tsx        # Storybook fixtures for RagWidget (idle/indexing/paused/errored/unavailable/empty/large-vault)
+│   │   │   │   ├── RagWidget.tsx                # `rag` widget — read-only RAG/index status panel rendered from RagSnapshot
 │   │   │   │   └── registry.ts
 │   │   │   ├── AttachmentChip.stories.tsx
 │   │   │   ├── AttachmentChip.tsx                  # Composer staged-attachment chip (image thumb / doc icon, remove btn)
@@ -253,6 +257,7 @@ leo/
 │   │   ├── contextSuggestions.ts
 │   │   ├── notifications.ts
 │   │   ├── openChatView.ts
+│   │   ├── ragCommand.ts                # Abortable handle for /rag slash command (mirrors contextCommand)
 │   │   ├── responsiveCollapse.ts
 │   │   ├── toolIcons.ts
 │   │   ├── viewType.ts

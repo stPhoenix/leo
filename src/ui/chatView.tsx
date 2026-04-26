@@ -51,7 +51,10 @@ import type { AttachmentRejection } from './chat/AttachmentRejectedNotice';
 import type { VaultFileEntry } from './chat/ComposerInput';
 import { createSlashRegistry, type SlashRegistry } from './chat/slashCommands';
 import { createContextCommand, type ContextCommandHandle } from './contextCommand';
+import { createRagCommand, type RagCommandHandle } from './ragCommand';
+import type { RagSnapshot } from '@/rag/ragSnapshot';
 import './chat/widgets/ContextWidget';
+import './chat/widgets/RagWidget';
 import type { MessageActions } from './chat/MessageActionBar';
 import type { IndexStatusSource } from './chat/IndexStatusBlock';
 import type { DrainListener } from '@/indexer/vaultIndexer';
@@ -91,6 +94,7 @@ export interface ChatViewDeps {
   readonly planMode?: ChatPlanModeAdapter;
   readonly analyzeContext?: (signal: AbortSignal) => Promise<ContextData>;
   readonly contextSnapshot?: ContextSnapshotStore;
+  readonly collectRagSnapshot?: (signal: AbortSignal) => Promise<RagSnapshot>;
   readonly indexStatusSource?: IndexStatusSource;
   readonly indexDrainSubscribe?: (listener: DrainListener) => () => void;
   readonly onReindexAll?: () => void;
@@ -131,6 +135,7 @@ export class ChatView extends ItemView {
   private turnDispatcher: TurnDispatcher | null = null;
   private slashRegistry: SlashRegistry | null = null;
   private contextCommand: ContextCommandHandle | null = null;
+  private ragCommand: RagCommandHandle | null = null;
   private liveRegionEl: HTMLElement | null = null;
   private phaseListeners = new Set<(p: StreamingPhase) => void>();
   private lastPhase: StreamingPhase = 'idle';
@@ -370,6 +375,8 @@ export class ChatView extends ItemView {
     this.deps.logger?.info('view.close', { type: VIEW_TYPE_LEO_CHAT });
     this.contextCommand?.cancel();
     this.contextCommand = null;
+    this.ragCommand?.cancel();
+    this.ragCommand = null;
     this.slashRegistry = null;
     this.attachmentsUnsubscribe?.();
     this.attachmentsUnsubscribe = null;
@@ -546,6 +553,21 @@ export class ChatView extends ItemView {
         run: () => handle.invoke(),
       });
     }
+    const collectRag = this.deps.collectRagSnapshot;
+    if (collectRag !== undefined) {
+      this.ragCommand = createRagCommand({
+        collect: collectRag,
+        render: (snapshot) => this.renderRagAsWidget(snapshot),
+        onError: (err) => new Notice(`RAG: ${err.message}`),
+        ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
+      });
+      const handle = this.ragCommand;
+      registry.register({
+        name: 'rag',
+        description: 'Show RAG / index status',
+        run: () => handle.invoke(),
+      });
+    }
     return registry;
   }
 
@@ -566,6 +588,21 @@ export class ChatView extends ItemView {
       content: '',
       createdAt: now,
       widget: { kind: 'context', props: { data, contextWindow } },
+    });
+  }
+
+  triggerRagSlash(): void {
+    void this.ragCommand?.invoke();
+  }
+
+  private renderRagAsWidget(snapshot: RagSnapshot): void {
+    const now = new Date().toISOString();
+    this.messageStore.append({
+      id: `rag-${Date.now()}`,
+      role: 'widget',
+      content: '',
+      createdAt: now,
+      widget: { kind: 'rag', props: { snapshot } },
     });
   }
 

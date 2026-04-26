@@ -79,6 +79,9 @@ import type { StoredMessage } from '@/storage/conversationSchema';
 import type { ChatMessageRecord } from '@/chat/types';
 import { recordsToAnalyzerInputs } from '@/chat/contextBridge';
 import { wireIndexerRag, type AppLike, type IndexerRagWiring } from '@/indexer/wireIndexerRag';
+import { IndexerStatusTap } from '@/indexer/indexerStatusTap';
+import { createRagSnapshotCollector, type RagSnapshotCollector } from '@/rag/ragSnapshot';
+import { RAG_PALETTE_COMMAND_ID, RAG_PALETTE_COMMAND_NAME } from '@/ui/ragCommand';
 import {
   createSearchVaultTool,
   filenameMatch,
@@ -228,6 +231,10 @@ export default class LeoPlugin extends Plugin {
   private contextSnapshot: ContextSnapshotStore | null = null;
   private contextSnapshotUnsub: (() => void) | null = null;
   private contextSnapshotKeepalive: (() => void) | null = null;
+  private indexerStatusTap: IndexerStatusTap | null = null;
+  private ragCollector: RagSnapshotCollector | null = null;
+  private vectorStoreUnavailableReason: string | null = null;
+  private vectorStoreCorruptionUnsub: (() => void) | null = null;
   private threadsSubUnsub: (() => void) | null = null;
   private hydrateActiveThread: (() => Promise<void>) | null = null;
   private lastActiveThreadId: string | null = null;
@@ -589,6 +596,24 @@ export default class LeoPlugin extends Plugin {
       confirmModelSwitch: async () => 'later',
     });
 
+    this.indexerStatusTap = new IndexerStatusTap({
+      subscribe: (l) => this.indexerRag.vaultIndexer.subscribe(l),
+    });
+    this.vectorStoreCorruptionUnsub = this.indexerRag.vectorStore.subscribe((event) => {
+      if (event.kind === 'corruption') {
+        this.vectorStoreUnavailableReason = event.reason;
+      }
+    });
+    this.ragCollector = createRagSnapshotCollector({
+      getVectorStore: () => this.indexerRag.vectorStore,
+      getIndexerStatus: () => this.indexerStatusTap!,
+      getGraphCache: () => this.indexerRag.graphCache,
+      getExcludeStore: () => this.indexerRag.excludeStore,
+      getEmbeddingModel: () => this.store.get().provider.embeddingModel,
+      getStoreUnavailableReason: () => this.vectorStoreUnavailableReason,
+      logger: this.logger,
+    });
+
     this.app.workspace.onLayoutReady(() => {
       void this.indexerRag.vaultIndexer.init().catch((err) => {
         this.logger.warn('indexer.init.failed', {
@@ -890,6 +915,9 @@ export default class LeoPlugin extends Plugin {
             return fresh ?? snap.getSnapshot() ?? this.analyzeContextForChat(signal);
           },
           ...(this.contextSnapshot !== null ? { contextSnapshot: this.contextSnapshot } : {}),
+          ...(this.ragCollector !== null
+            ? { collectRagSnapshot: (signal: AbortSignal) => this.ragCollector!.collect(signal) }
+            : {}),
           compactRunner,
           getContextWindow: () => {
             const s = this.store.get();
@@ -979,6 +1007,19 @@ export default class LeoPlugin extends Plugin {
       },
     });
 
+    registerLeoCommand(this, {
+      id: RAG_PALETTE_COMMAND_ID,
+      name: RAG_PALETTE_COMMAND_NAME,
+      callback: () => {
+        void (async (): Promise<void> => {
+          await openOrFocusChatView(this.app.workspace);
+          const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_LEO_CHAT);
+          const view = leaves[0]?.view;
+          if (view instanceof ChatView) view.triggerRagSlash();
+        })();
+      },
+    });
+
     this.logger.info('plugin.load', {
       version: this.manifest.version,
       graphRuntime: USE_GRAPH_RUNTIME,
@@ -996,6 +1037,11 @@ export default class LeoPlugin extends Plugin {
     this.contextSnapshotKeepalive?.();
     this.contextSnapshotKeepalive = null;
     this.contextSnapshot = null;
+    this.vectorStoreCorruptionUnsub?.();
+    this.vectorStoreCorruptionUnsub = null;
+    this.indexerStatusTap?.dispose();
+    this.indexerStatusTap = null;
+    this.ragCollector = null;
     try {
       await this.threadsStore?.shutdown();
     } catch {
