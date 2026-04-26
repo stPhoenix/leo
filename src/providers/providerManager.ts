@@ -128,8 +128,12 @@ export class ProviderManager {
 
       let started = false;
       this.opts.logger?.info('provider.request', { attempt: attempt + 1, model: req.model });
+      const iter = this.activeProvider.stream(req, attemptCtl.signal)[Symbol.asyncIterator]();
       try {
-        for await (const ev of this.activeProvider.stream(req, attemptCtl.signal)) {
+        for (;;) {
+          const next = await raceAbort(iter.next(), attemptCtl.signal);
+          if (next.done === true) break;
+          const ev = next.value;
           bumpTimer();
           if (
             ev.type === 'block_start' ||
@@ -192,6 +196,9 @@ export class ProviderManager {
       } finally {
         clearTimeout(timer);
         callerSignal.removeEventListener('abort', onCallerAbort);
+        if (iter.return !== undefined) {
+          void iter.return().catch(() => undefined);
+        }
       }
     }
   }
@@ -239,4 +246,32 @@ function backoffMs(attempt: number, base: number, max: number): number {
 function toError(err: unknown): Error {
   if (err instanceof Error) return err;
   return new Error(String(err));
+}
+
+function abortReason(signal: AbortSignal): Error {
+  const reason = (signal as AbortSignal & { reason?: unknown }).reason;
+  if (reason instanceof Error) return reason;
+  if (typeof reason === 'string') return new Error(reason);
+  return new Error('aborted');
+}
+
+function raceAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort);
+      reject(abortReason(signal));
+    };
+    signal.addEventListener('abort', onAbort);
+    p.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(e);
+      },
+    );
+  });
 }

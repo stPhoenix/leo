@@ -107,6 +107,37 @@ describe('ProviderManager — FIFO queue (AC3, FR-PROV-05)', () => {
       expect(last.error.name).toMatch(/Timeout|Abort/i);
     }
   });
+
+  it('surfaces ProviderTimeoutError even when provider iterator ignores the abort signal', async () => {
+    // Simulates a provider stream (e.g. ChatOpenAI) whose async iterator
+    // hangs forever after fetch is aborted instead of throwing/returning.
+    const provider = makeFakeProvider({
+      stream(): AsyncIterable<StreamEvent> {
+        return {
+          [Symbol.asyncIterator]: (): AsyncIterator<StreamEvent> => ({
+            next: (): Promise<IteratorResult<StreamEvent>> => new Promise(() => undefined),
+          }),
+        };
+      },
+    });
+
+    const mgr = makeManager(provider, {
+      firstEventTimeoutMs: 30,
+      idleTimeoutMs: 30,
+      maxAttempts: 1,
+    });
+    const events = await collect(
+      mgr.stream(
+        { model: 'm', messages: [{ role: 'user', content: 'x' }] },
+        new AbortController().signal,
+      ),
+    );
+    const last = events[events.length - 1]!;
+    expect(last.type).toBe('error');
+    if (last.type === 'error') {
+      expect(last.error.name).toBe('ProviderTimeoutError');
+    }
+  });
 });
 
 describe('ProviderManager — retry/backoff (AC4, FR-PROV-06)', () => {
