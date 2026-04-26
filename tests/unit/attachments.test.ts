@@ -137,6 +137,8 @@ describe('buildUserContent — AC4', () => {
           media_type: 'image/png',
           data: toBase64(new Uint8Array([1, 2, 3])),
         },
+        name: 'p.png',
+        size: 3,
       },
       {
         type: 'document',
@@ -145,6 +147,8 @@ describe('buildUserContent — AC4', () => {
           media_type: 'application/pdf',
           data: toBase64(new Uint8Array([4, 5, 6])),
         },
+        name: 'r.pdf',
+        size: 3,
       },
     ]);
   });

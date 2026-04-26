@@ -85,30 +85,14 @@ export function captureAttachments(
   return { attachments: accepted, rejected };
 }
 
-export interface ContentBlockText {
-  readonly type: 'text';
-  readonly text: string;
-}
+import type {
+  ContentBlock,
+  TextBlock as ContentBlockText,
+  ImageBlock as ContentBlockImage,
+  DocumentBlock as ContentBlockDocument,
+} from './types';
 
-export interface ContentBlockImage {
-  readonly type: 'image';
-  readonly source: {
-    readonly type: 'base64';
-    readonly media_type: string;
-    readonly data: string;
-  };
-}
-
-export interface ContentBlockDocument {
-  readonly type: 'document';
-  readonly source: {
-    readonly type: 'base64';
-    readonly media_type: string;
-    readonly data: string;
-  };
-}
-
-export type ContentBlock = ContentBlockText | ContentBlockImage | ContentBlockDocument;
+export type { ContentBlock, ContentBlockText, ContentBlockImage, ContentBlockDocument };
 
 export function buildUserContent(
   text: string,
@@ -125,6 +109,8 @@ export function buildUserContent(
           media_type: a.mimeType,
           data: base64(a.bytes),
         },
+        name: a.name,
+        size: a.size,
       });
     } else {
       blocks.push({
@@ -134,6 +120,8 @@ export function buildUserContent(
           media_type: a.mimeType,
           data: base64(a.bytes),
         },
+        name: a.name,
+        size: a.size,
       });
     }
   }

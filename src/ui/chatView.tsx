@@ -13,7 +13,7 @@ import { makeContextUsageSource } from './chat/headerStatsSources';
 import type { Logger } from '@/platform/Logger';
 import { ChatMessageStore } from '@/chat/messageStore';
 import { toLegacyContent } from '@/chat/types';
-import type { ToolUseBlock } from '@/chat/types';
+import type { ContentBlock, ToolUseBlock } from '@/chat/types';
 import { RunStateStore } from '@/chat/runStateStore';
 import { ProgressLines } from './chat/blocks/ProgressLines';
 import { DiffView } from './chat/blocks/DiffView';
@@ -42,6 +42,11 @@ import type { ThreadsSnapshot } from '@/storage/threadsStore';
 import { ChatRoot } from './chat/ChatRoot';
 import type { CodeBlockClipboard } from './chat/codeBlockEnhancer';
 import { TurnDispatcher } from './chat/turnDispatcher';
+import type { AttachmentsWiring } from '@/chat/wireAttachments';
+import type { CaptureFileInput, AttachmentRejectReason } from '@/chat/attachments';
+import type { StagedAttachment } from '@/chat/attachmentsStore';
+import type { AttachmentRejection } from './chat/AttachmentRejectedNotice';
+import type { VaultFileEntry } from './chat/ComposerInput';
 import { createSlashRegistry, type SlashRegistry } from './chat/slashCommands';
 import { createContextCommand, type ContextCommandHandle } from './contextCommand';
 import './chat/widgets/ContextWidget';
@@ -51,7 +56,11 @@ import type { DrainListener } from '@/indexer/vaultIndexer';
 import { VIEW_TYPE_LEO_CHAT } from './viewType';
 
 export interface ChatStreamStarter {
-  (prompt: string, signal: AbortSignal): AsyncIterable<StreamEvent>;
+  (
+    prompt: string,
+    signal: AbortSignal,
+    blocks?: readonly ContentBlock[],
+  ): AsyncIterable<StreamEvent>;
 }
 
 export interface ChatPlanModeAdapter {
@@ -83,9 +92,18 @@ export interface ChatViewDeps {
   readonly onReindexAll?: () => void;
   readonly onReindexChanged?: () => void;
   readonly planApprovalController?: PlanApprovalController;
-  readonly resolveCostUSD?: (usage: { input: number; output: number }) => number | null;
   readonly getContextWindow?: () => number;
   readonly skillSlash?: SkillSlashAdapter;
+  readonly compactRunner?: CompactRunnerAdapter;
+  readonly attachments?: AttachmentsWiring;
+  readonly modelSupportsVision?: () => boolean;
+  readonly pickFiles?: () => Promise<readonly CaptureFileInput[]>;
+  readonly vaultFiles?: () => readonly VaultFileEntry[];
+  readonly readVaultFile?: (path: string) => Promise<CaptureFileInput | null>;
+}
+
+export interface CompactRunnerAdapter {
+  readonly run: (customInstructions?: string) => Promise<void>;
 }
 
 export interface SkillSlashCommandInfo {
@@ -113,6 +131,10 @@ export class ChatView extends ItemView {
   private liveRegionEl: HTMLElement | null = null;
   private phaseListeners = new Set<(p: StreamingPhase) => void>();
   private lastPhase: StreamingPhase = 'idle';
+  private attachmentRejections: AttachmentRejection[] = [];
+  private rejectionListeners = new Set<() => void>();
+  private attachmentsUnsubscribe: (() => void) | null = null;
+  private buildChatRootProps: (() => Parameters<typeof ChatRoot>[0]) | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -235,83 +257,99 @@ export class ChatView extends ItemView {
     };
 
     const headerStats = this.buildHeaderStats();
+    const attachmentsWiring = this.deps.attachments;
+    if (attachmentsWiring !== undefined) {
+      const unsubscribe = attachmentsWiring.store.subscribe(() => this.requestRender());
+      this.attachmentsUnsubscribe = unsubscribe;
+    }
 
-    this.root = createRoot(host);
-    this.root.render(
-      createElement(ChatRoot, {
-        initialWidth: host.clientWidth,
-        observeWidth,
-        onOverflowMenu: (anchor) => this.openOverflowMenu(anchor),
-        messageStore: this.messageStore,
-        renderMarkdown,
-        clipboard,
-        toolUseSlots: this.buildToolUseSlots(),
-        liveIndicatorRunState: this.runStateStore,
-        lastEventAtSource: () => this.streamingController?.lastEventAt ?? null,
-        onCancelLive: () => {
+    const buildProps = (): Parameters<typeof ChatRoot>[0] => ({
+      initialWidth: host.clientWidth,
+      observeWidth,
+      onOverflowMenu: (anchor) => this.openOverflowMenu(anchor),
+      messageStore: this.messageStore,
+      renderMarkdown,
+      clipboard,
+      toolUseSlots: this.buildToolUseSlots(),
+      liveIndicatorRunState: this.runStateStore,
+      lastEventAtSource: () => this.streamingController?.lastEventAt ?? null,
+      onCancelLive: () => {
+        this.runStateStore.cancelAllInProgress();
+        this.streamingController?.stop();
+      },
+      resolveToolName: (id: string) => this.resolveToolName(id),
+      setIcon: (el, name) => setIcon(el, name),
+      ...(focusedContextSource !== null
+        ? {
+            contextIndicatorSource: focusedContextSource,
+            onRevealContextFile: (path: string) => this.revealFile(path),
+          }
+        : {}),
+      messageActions,
+      ...(confirmationSource !== undefined ? { confirmationSource } : {}),
+      ...(acceptRejectSource !== undefined ? { acceptRejectSource } : {}),
+      ...(this.deps.threadsSource !== undefined ? { threadsSource: this.deps.threadsSource } : {}),
+      ...(headerStats !== null ? { headerStats } : {}),
+      ...(this.deps.indexStatusSource !== undefined
+        ? { indexStatusSource: this.deps.indexStatusSource }
+        : {}),
+      ...(this.deps.indexDrainSubscribe !== undefined
+        ? { indexDrainSubscribe: this.deps.indexDrainSubscribe }
+        : {}),
+      ...(this.deps.onReindexAll !== undefined ? { onReindexAll: this.deps.onReindexAll } : {}),
+      ...(this.deps.onReindexChanged !== undefined
+        ? { onReindexChanged: this.deps.onReindexChanged }
+        : {}),
+      ...(planApprovalSource !== undefined ? { planApprovalSource } : {}),
+      renderPlanMarkdown,
+      phaseSource: {
+        getPhase: () => this.lastPhase,
+        subscribe: (cb) => {
+          const wrapped = (): void => cb();
+          this.phaseListeners.add(wrapped);
+          return () => {
+            this.phaseListeners.delete(wrapped);
+          };
+        },
+      },
+      queueSource: {
+        getLength: () => this.turnDispatcher?.queueLength() ?? 0,
+        subscribe: (cb) => this.turnDispatcher?.subscribe(cb) ?? ((): void => undefined),
+      },
+      composer: {
+        onSubmit: (text) => {
+          this.deps.logger?.info('composer.submit', { length: text.length });
+          if (this.slashRegistry?.tryHandle(text) === true) return;
+          this.beginTurn(text);
+        },
+        onStopIntent: () => {
+          this.deps.logger?.info('composer.stop_intent', {});
           this.runStateStore.cancelAllInProgress();
           this.streamingController?.stop();
         },
-        resolveToolName: (id: string) => this.resolveToolName(id),
-        setIcon: (el, name) => setIcon(el, name),
-        ...(focusedContextSource !== null
+        onOpenCommandPalette: () => this.openCommandPalette(),
+        ...(this.slashRegistry !== null ? { slashCommands: this.slashRegistry.list() } : {}),
+        ...(this.deps.attachments !== undefined
           ? {
-              contextIndicatorSource: focusedContextSource,
-              onRevealContextFile: (path: string) => this.revealFile(path),
+              attachments: this.attachmentItems(),
+              onAttachmentRemove: (id) => this.deps.attachments?.store.remove(id),
+              onCaptureFiles: (files) => this.captureAttachmentFiles(files),
+              attachmentRejections: this.attachmentRejections,
+              onDismissAttachmentRejections: () => this.clearAttachmentRejections(),
+              ...(this.deps.pickFiles !== undefined
+                ? { onPickFiles: () => this.openFilePicker() }
+                : {}),
+              ...(this.deps.vaultFiles !== undefined ? { vaultFiles: this.deps.vaultFiles() } : {}),
+              ...(this.deps.readVaultFile !== undefined
+                ? { onMentionSelect: (entry) => this.captureMentionedFile(entry.path) }
+                : {}),
             }
           : {}),
-        messageActions,
-        ...(confirmationSource !== undefined ? { confirmationSource } : {}),
-        ...(acceptRejectSource !== undefined ? { acceptRejectSource } : {}),
-        ...(this.deps.threadsSource !== undefined
-          ? { threadsSource: this.deps.threadsSource }
-          : {}),
-        ...(headerStats !== null ? { headerStats } : {}),
-        ...(this.deps.indexStatusSource !== undefined
-          ? { indexStatusSource: this.deps.indexStatusSource }
-          : {}),
-        ...(this.deps.indexDrainSubscribe !== undefined
-          ? { indexDrainSubscribe: this.deps.indexDrainSubscribe }
-          : {}),
-        ...(this.deps.onReindexAll !== undefined ? { onReindexAll: this.deps.onReindexAll } : {}),
-        ...(this.deps.onReindexChanged !== undefined
-          ? { onReindexChanged: this.deps.onReindexChanged }
-          : {}),
-        ...(planApprovalSource !== undefined ? { planApprovalSource } : {}),
-        renderPlanMarkdown,
-        ...(this.deps.resolveCostUSD !== undefined
-          ? { resolveCostUSD: this.deps.resolveCostUSD }
-          : {}),
-        phaseSource: {
-          getPhase: () => this.lastPhase,
-          subscribe: (cb) => {
-            const wrapped = (): void => cb();
-            this.phaseListeners.add(wrapped);
-            return () => {
-              this.phaseListeners.delete(wrapped);
-            };
-          },
-        },
-        queueSource: {
-          getLength: () => this.turnDispatcher?.queueLength() ?? 0,
-          subscribe: (cb) => this.turnDispatcher?.subscribe(cb) ?? ((): void => undefined),
-        },
-        composer: {
-          onSubmit: (text) => {
-            this.deps.logger?.info('composer.submit', { length: text.length });
-            if (this.slashRegistry?.tryHandle(text) === true) return;
-            this.beginTurn(text);
-          },
-          onStopIntent: () => {
-            this.deps.logger?.info('composer.stop_intent', {});
-            this.runStateStore.cancelAllInProgress();
-            this.streamingController?.stop();
-          },
-          onOpenCommandPalette: () => this.openCommandPalette(),
-          ...(this.slashRegistry !== null ? { slashCommands: this.slashRegistry.list() } : {}),
-        },
-      }),
-    );
+      },
+    });
+    this.buildChatRootProps = buildProps;
+    this.root = createRoot(host);
+    this.root.render(createElement(ChatRoot, buildProps()));
 
     this.resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0];
@@ -329,6 +367,9 @@ export class ChatView extends ItemView {
     this.contextCommand?.cancel();
     this.contextCommand = null;
     this.slashRegistry = null;
+    this.attachmentsUnsubscribe?.();
+    this.attachmentsUnsubscribe = null;
+    this.buildChatRootProps = null;
     this.turnDispatcher?.dispose();
     this.turnDispatcher = null;
     this.streamingController?.dispose();
@@ -348,7 +389,92 @@ export class ChatView extends ItemView {
   }
 
   private beginTurn(text: string): void {
-    this.turnDispatcher?.submit(text);
+    const wiring = this.deps.attachments;
+    if (wiring === undefined) {
+      this.turnDispatcher?.submit(text);
+      return;
+    }
+    const staged = wiring.store.getSnapshot();
+    if (staged.length === 0) {
+      this.turnDispatcher?.submit(text);
+      return;
+    }
+    const modelSupportsVision = this.deps.modelSupportsVision?.() ?? true;
+    if (wiring.isVisionGateBlocked({ attachments: staged, modelSupportsVision })) {
+      const blocked: AttachmentRejection[] = staged
+        .filter((a) => a.kind === 'image')
+        .map((a) => ({ name: a.name, reason: { kind: 'vision_blocked' as const } }));
+      this.appendAttachmentRejections(blocked);
+      return;
+    }
+    const drained = wiring.store.drainForNext();
+    const blocks = wiring.buildUserContent(text, drained);
+    this.turnDispatcher?.submit(text, { blocks });
+  }
+
+  private attachmentItems(): readonly StagedAttachment[] {
+    return this.deps.attachments?.store.getSnapshot() ?? [];
+  }
+
+  private async captureAttachmentFiles(files: readonly CaptureFileInput[]): Promise<void> {
+    const wiring = this.deps.attachments;
+    if (wiring === undefined) return;
+    const out = wiring.store.capture(files);
+    if (out.rejected.length > 0) {
+      this.appendAttachmentRejections(
+        out.rejected.map((r) => ({
+          name: r.name,
+          reason: r.reason satisfies AttachmentRejectReason,
+        })),
+      );
+    }
+    this.requestRender();
+  }
+
+  private async openFilePicker(): Promise<void> {
+    const picker = this.deps.pickFiles;
+    if (picker === undefined) return;
+    const files = await picker();
+    if (files.length === 0) return;
+    await this.captureAttachmentFiles(files);
+  }
+
+  private async captureMentionedFile(path: string): Promise<void> {
+    const reader = this.deps.readVaultFile;
+    if (reader === undefined) return;
+    try {
+      const file = await reader(path);
+      if (file === null) return;
+      await this.captureAttachmentFiles([file]);
+    } catch (err) {
+      this.deps.logger?.warn('mention.capture.failure', {
+        path,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private appendAttachmentRejections(items: readonly AttachmentRejection[]): void {
+    if (items.length === 0) return;
+    this.attachmentRejections = [...this.attachmentRejections, ...items];
+    this.notifyRejections();
+    this.requestRender();
+  }
+
+  private clearAttachmentRejections(): void {
+    if (this.attachmentRejections.length === 0) return;
+    this.attachmentRejections = [];
+    this.notifyRejections();
+    this.requestRender();
+  }
+
+  private notifyRejections(): void {
+    for (const l of this.rejectionListeners) l();
+  }
+
+  private requestRender(): void {
+    if (this.root === null || this.buildChatRootProps === null) return;
+    this.root.render(createElement(ChatRoot, this.buildChatRootProps()));
   }
 
   private buildSlashRegistry(): SlashRegistry {
@@ -387,6 +513,28 @@ export class ChatView extends ItemView {
           },
         });
       }
+    }
+    const compact = this.deps.compactRunner;
+    if (compact !== undefined) {
+      registry.register({
+        name: 'compact',
+        description: 'Compact conversation now (optional custom instructions)',
+        match: (ctx) => ctx.name === 'compact',
+        run: async (ctx): Promise<void> => {
+          const phase = this.streamingController?.phase;
+          if (phase === 'streaming' || phase === 'cancelling') {
+            new Notice('Cannot /compact while a turn is streaming.');
+            return;
+          }
+          const args = (ctx.args ?? '').trim();
+          try {
+            await compact.run(args.length > 0 ? args : undefined);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            new Notice(`Compact failed: ${msg}`);
+          }
+        },
+      });
     }
     const analyze = this.deps.analyzeContext;
     if (analyze !== undefined) {

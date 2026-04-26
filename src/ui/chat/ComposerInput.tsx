@@ -1,3 +1,4 @@
+import * as React from 'react';
 import {
   useCallback,
   useEffect,
@@ -5,12 +6,25 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent,
+  type DragEvent,
   type KeyboardEvent,
   type ChangeEvent,
 } from 'react';
 import { fuzzyFilter } from './fuzzyMatch';
 import { SlashPicker, type SlashPickerItem } from './SlashPicker';
 import type { SlashCommandInfo } from './slashCommands';
+import { AttachmentTray } from './AttachmentTray';
+import { AttachmentRejectedNotice, type AttachmentRejection } from './AttachmentRejectedNotice';
+import { MentionPicker, type MentionPickerItem } from './MentionPicker';
+import type { StagedAttachment } from '@/chat/attachmentsStore';
+import type { CaptureFileInput } from '@/chat/attachments';
+
+export interface VaultFileEntry {
+  readonly path: string;
+  readonly name: string;
+  readonly kind: 'image' | 'document';
+}
 
 export interface ComposerMatchMedia {
   (query: string): MediaQueryList;
@@ -28,9 +42,21 @@ export interface ComposerInputProps {
   readonly setIcon?: (el: HTMLElement, name: string) => void;
   readonly matchMedia?: ComposerMatchMedia;
   readonly slashCommands?: readonly SlashCommandInfo[];
+  readonly attachments?: readonly StagedAttachment[];
+  readonly onAttachmentRemove?: (id: string) => void;
+  readonly onPickFiles?: () => void;
+  readonly onCaptureFiles?: (files: readonly CaptureFileInput[]) => void;
+  readonly attachmentRejections?: readonly AttachmentRejection[];
+  readonly onDismissAttachmentRejections?: () => void;
+  readonly vaultFiles?: readonly VaultFileEntry[];
+  readonly onMentionSelect?: (entry: VaultFileEntry) => void;
 }
 
 const SLASH_PICKER_REGEX = /^\s*\/([A-Za-z][A-Za-z0-9_-]*)?$/;
+
+const MENTION_PICKER_REGEX = /(?:^|\s)@([^\s@]*)$/;
+
+const MENTION_PICKER_LIMIT = 8;
 
 const MAX_TEXTAREA_HEIGHT_PX = 280;
 
@@ -38,8 +64,11 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
   const [draft, setDraft] = useState<string>('');
   const [reduceMotion, setReduceMotion] = useState<boolean>(false);
   const [slashActiveIndex, setSlashActiveIndex] = useState<number>(0);
+  const [mentionActiveIndex, setMentionActiveIndex] = useState<number>(0);
+  const [caret, setCaret] = useState<number>(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const sendButtonRef = useRef<HTMLButtonElement | null>(null);
+  const attachButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const submitting = props.isSubmitting === true;
   const confirmationOpen = props.inlineConfirmationOpen === true;
@@ -63,9 +92,56 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
 
   const slashOpen = slashItems.length > 0;
 
+  const vaultFiles = props.vaultFiles;
+  const mentionMatch = useMemo(() => {
+    if (vaultFiles === undefined || vaultFiles.length === 0) return null;
+    if (slashOpen) return null;
+    const head = draft.slice(0, caret);
+    const m = MENTION_PICKER_REGEX.exec(head);
+    if (m === null) return null;
+    return {
+      query: (m[1] ?? '').toLowerCase(),
+      tokenStart: m.index + (m[0].startsWith('@') ? 0 : 1),
+    };
+  }, [draft, caret, vaultFiles, slashOpen]);
+
+  const mentionItems = useMemo<readonly MentionPickerItem[]>(() => {
+    if (mentionMatch === null || vaultFiles === undefined) return [];
+    const ranked = fuzzyFilter(mentionMatch.query, vaultFiles, (f) => f.name);
+    const top = ranked.slice(0, MENTION_PICKER_LIMIT);
+    return top.map((r) => ({
+      path: r.item.path,
+      name: r.item.name,
+      kind: r.item.kind,
+      matches: r.matches,
+    }));
+  }, [mentionMatch, vaultFiles]);
+
+  const mentionOpen = mentionItems.length > 0;
+
   useEffect(() => {
     if (slashActiveIndex >= slashItems.length) setSlashActiveIndex(0);
   }, [slashItems.length, slashActiveIndex]);
+
+  useEffect(() => {
+    if (mentionActiveIndex >= mentionItems.length) setMentionActiveIndex(0);
+  }, [mentionItems.length, mentionActiveIndex]);
+
+  const onMentionSelect = props.onMentionSelect;
+  const applyMentionSelection = useCallback(
+    (item: MentionPickerItem): void => {
+      if (mentionMatch === null || vaultFiles === undefined) return;
+      const entry = vaultFiles.find((f) => f.path === item.path);
+      if (entry === undefined) return;
+      const head = draft.slice(0, mentionMatch.tokenStart);
+      const tail = draft.slice(caret);
+      const next = `${head}${tail}`;
+      setDraft(next);
+      setMentionActiveIndex(0);
+      onMentionSelect?.(entry);
+    },
+    [draft, caret, mentionMatch, vaultFiles, onMentionSelect],
+  );
 
   const applySlashCompletion = useCallback(
     (item: SlashPickerItem, trailingSpace: boolean): void => {
@@ -96,6 +172,14 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
       btn.textContent = submitting ? 'Stop' : 'Send';
     }
   }, [submitting, props.setIcon]);
+
+  useLayoutEffect(() => {
+    const btn = attachButtonRef.current;
+    if (btn === null) return;
+    btn.replaceChildren();
+    if (props.setIcon !== undefined) props.setIcon(btn, 'paperclip');
+    else btn.textContent = 'Attach';
+  }, [props.setIcon, props.onPickFiles]);
 
   useEffect(() => {
     const mm = props.matchMedia ?? ((q: string) => window.matchMedia(q));
@@ -129,7 +213,60 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
 
   const onTextareaChange = useCallback((e: ChangeEvent<HTMLTextAreaElement>): void => {
     setDraft(e.target.value);
+    setCaret(e.target.selectionStart ?? e.target.value.length);
   }, []);
+
+  const onTextareaSelect = useCallback((e: React.SyntheticEvent<HTMLTextAreaElement>): void => {
+    const t = e.currentTarget;
+    setCaret(t.selectionStart ?? t.value.length);
+  }, []);
+
+  const onCaptureFiles = props.onCaptureFiles;
+  const captureFromFileList = useCallback(
+    async (list: FileList | null): Promise<void> => {
+      if (list === null || list.length === 0 || onCaptureFiles === undefined) return;
+      const out: CaptureFileInput[] = [];
+      for (let i = 0; i < list.length; i += 1) {
+        const f = list.item(i);
+        if (f === null) continue;
+        const buf = await f.arrayBuffer();
+        out.push({
+          name: f.name,
+          mimeType: f.type !== '' ? f.type : 'application/octet-stream',
+          bytes: new Uint8Array(buf),
+          size: f.size,
+        });
+      }
+      if (out.length > 0) onCaptureFiles(out);
+    },
+    [onCaptureFiles],
+  );
+
+  const onPaste = useCallback(
+    (e: ClipboardEvent<HTMLTextAreaElement>): void => {
+      const files = e.clipboardData?.files;
+      if (files === undefined || files.length === 0) return;
+      e.preventDefault();
+      void captureFromFileList(files);
+    },
+    [captureFromFileList],
+  );
+
+  const onDragOver = useCallback((e: DragEvent<HTMLElement>): void => {
+    if (e.dataTransfer.types.includes('Files')) {
+      e.preventDefault();
+    }
+  }, []);
+
+  const onDrop = useCallback(
+    (e: DragEvent<HTMLElement>): void => {
+      const files = e.dataTransfer?.files;
+      if (files === undefined || files.length === 0) return;
+      e.preventDefault();
+      void captureFromFileList(files);
+    },
+    [captureFromFileList],
+  );
 
   const onRootKeyDown = useCallback(
     (e: KeyboardEvent<HTMLElement>): void => {
@@ -144,6 +281,12 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
       if (e.key === 'Escape') {
         e.stopPropagation();
         e.preventDefault();
+        if (mentionOpen) {
+          setMentionActiveIndex(0);
+          // closing achieved by clearing match — easiest: reset caret to draft end without picker
+          textareaRef.current?.focus();
+          return;
+        }
         if (slashOpen) {
           setDraft('');
           setSlashActiveIndex(0);
@@ -162,6 +305,21 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
       }
 
       if (e.target !== textareaRef.current) return;
+
+      if (mentionOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault();
+        const delta = e.key === 'ArrowDown' ? 1 : -1;
+        const len = mentionItems.length;
+        setMentionActiveIndex((prev) => (prev + delta + len) % len);
+        return;
+      }
+
+      if (mentionOpen && (e.key === 'Tab' || e.key === 'Enter')) {
+        e.preventDefault();
+        const item = mentionItems[mentionActiveIndex] ?? mentionItems[0];
+        if (item !== undefined) applyMentionSelection(item);
+        return;
+      }
 
       if (slashOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
         e.preventDefault();
@@ -204,6 +362,10 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
       slashItems,
       slashActiveIndex,
       applySlashCompletion,
+      mentionOpen,
+      mentionItems,
+      mentionActiveIndex,
+      applyMentionSelection,
       props.onOpenCommandPalette,
       props.onCloseConfirmation,
       props.onStopIntent,
@@ -230,6 +392,9 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
     .filter((s) => s.length > 0)
     .join(' ');
 
+  const attachments = props.attachments ?? [];
+  const rejections = props.attachmentRejections ?? [];
+
   return (
     <section
       className={rootClass}
@@ -238,7 +403,26 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
       data-submitting={submitting ? 'true' : 'false'}
       data-reduced-motion={reduceMotion ? 'true' : 'false'}
       onKeyDown={onRootKeyDown}
+      onDragOver={onCaptureFiles !== undefined ? onDragOver : undefined}
+      onDrop={onCaptureFiles !== undefined ? onDrop : undefined}
     >
+      {attachments.length > 0 ? (
+        <AttachmentTray
+          items={attachments}
+          {...(props.onAttachmentRemove !== undefined
+            ? { onRemove: props.onAttachmentRemove }
+            : {})}
+          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+        />
+      ) : null}
+      {rejections.length > 0 ? (
+        <AttachmentRejectedNotice
+          rejections={rejections}
+          {...(props.onDismissAttachmentRejections !== undefined
+            ? { onDismiss: props.onDismissAttachmentRejections }
+            : {})}
+        />
+      ) : null}
       <textarea
         ref={textareaRef}
         className="leo-composer-textarea"
@@ -246,10 +430,22 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
         rows={1}
         value={draft}
         onChange={onTextareaChange}
+        onSelect={onTextareaSelect}
+        onPaste={onCaptureFiles !== undefined ? onPaste : undefined}
         aria-describedby="leo-composer-hint"
         aria-multiline="true"
         data-slot="composer-textarea"
       />
+      {props.onPickFiles !== undefined ? (
+        <button
+          ref={attachButtonRef}
+          type="button"
+          className="leo-composer-attach"
+          aria-label="Attach file"
+          onClick={props.onPickFiles}
+          data-slot="composer-attach"
+        />
+      ) : null}
       <button
         ref={sendButtonRef}
         type="button"
@@ -286,6 +482,15 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
             textareaRef.current?.focus();
           }}
           onHover={(i) => setSlashActiveIndex(i)}
+        />
+      ) : null}
+      {mentionOpen ? (
+        <MentionPicker
+          items={mentionItems}
+          activeIndex={mentionActiveIndex}
+          onSelect={(item) => applyMentionSelection(item)}
+          onHover={(i) => setMentionActiveIndex(i)}
+          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
         />
       ) : null}
     </section>

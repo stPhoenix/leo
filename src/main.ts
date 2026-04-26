@@ -8,7 +8,6 @@ import { createObsidianUserErrorChannel } from '@/platform/obsidianUserErrorChan
 import { ProviderManager } from '@/providers/providerManager';
 import { EmbeddingClient } from '@/providers/embeddingClient';
 import { createProviderForKind } from '@/providers/registry';
-import { resolvePricing, computeCostUSD, LOCAL_PROVIDER_IDS } from '@/providers/pricing';
 import {
   SafeStorage,
   type SecretsPersistence,
@@ -30,7 +29,7 @@ import { FocusedContextChannel } from '@/editor/focusedContextChannel';
 import { WorkspaceFocusProbe } from '@/editor/workspaceFocusProbe';
 import { AgentRunner } from '@/agent/agentRunner';
 import { USE_GRAPH_RUNTIME } from '@/agent/graph';
-import type { AgentHistoryMessage } from '@/agent/types';
+import type { AgentHistoryMessage, AgentUserMessage } from '@/agent/types';
 import { PlanModeController } from '@/agent/planModeController';
 import { TodoStore } from '@/agent/todoStore';
 import {
@@ -39,12 +38,15 @@ import {
   type ContextData,
 } from '@/agent/contextAnalyzer';
 import { resolveContextWindow } from '@/agent/compactConstants';
+import { runManualCompaction, type CompactionResult } from '@/agent/autocompact';
+import { createTrackingState } from '@/agent/autocompactBreaker';
 import { estimateMessageTokens, roughTokenCountEstimation } from '@/agent/tokenEstimator';
 import type { TokenMessage } from '@/agent/tokenEstimator';
 import type { ChatMessage } from '@/providers/types';
 import { ToolRegistry } from '@/tools/toolRegistry';
 import { createReadNoteTool } from '@/tools/builtin/readNote';
 import { createListNotesTool } from '@/tools/builtin/listNotes';
+import { createReadFileTool } from '@/tools/builtin/readFile';
 import { createCreateNoteTool } from '@/tools/builtin/createNote';
 import { createAppendToNoteTool } from '@/tools/builtin/appendToNote';
 import { createCreateFolderTool } from '@/tools/builtin/createFolder';
@@ -90,6 +92,91 @@ import {
   type UserToolsWiring,
 } from '@/tools/user/wireUserTools';
 import { wireAttachments, type AttachmentsWiring } from '@/chat/wireAttachments';
+import type { CaptureFileInput } from '@/chat/attachments';
+
+function modelSupportsVision(provider: { kind: string; chatModel: string }): boolean {
+  const model = provider.chatModel.toLowerCase();
+  if (model.includes('claude')) return true;
+  if (model.includes('gpt-4o') || model.includes('gpt-4.1') || model.includes('gpt-5')) return true;
+  if (model.includes('gemini')) return true;
+  if (model.includes('vision') || model.includes('vl')) return true;
+  return false;
+}
+
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'heic']);
+
+function classifyVaultFile(ext: string): 'image' | 'document' {
+  return IMAGE_EXTS.has(ext.toLowerCase()) ? 'image' : 'document';
+}
+
+function mimeFromExtension(ext: string): string {
+  switch (ext.toLowerCase()) {
+    case 'png':
+      return 'image/png';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'svg':
+      return 'image/svg+xml';
+    case 'pdf':
+      return 'application/pdf';
+    case 'json':
+      return 'application/json';
+    case 'md':
+    case 'txt':
+    case 'csv':
+    case 'log':
+    case 'yaml':
+    case 'yml':
+    case 'toml':
+    case 'ts':
+    case 'tsx':
+    case 'js':
+    case 'jsx':
+    case 'css':
+    case 'html':
+      return 'text/plain';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+function pickFilesViaInput(): Promise<readonly CaptureFileInput[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.style.display = 'none';
+    input.addEventListener('change', async () => {
+      const files = input.files;
+      if (files === null || files.length === 0) {
+        resolve([]);
+        return;
+      }
+      const out: CaptureFileInput[] = [];
+      for (let i = 0; i < files.length; i += 1) {
+        const f = files.item(i);
+        if (f === null) continue;
+        const buf = await f.arrayBuffer();
+        out.push({
+          name: f.name,
+          mimeType: f.type !== '' ? f.type : 'application/octet-stream',
+          bytes: new Uint8Array(buf),
+          size: f.size,
+        });
+      }
+      resolve(out);
+    });
+    input.addEventListener('cancel', () => resolve([]));
+    document.body.appendChild(input);
+    input.click();
+    setTimeout(() => input.remove(), 0);
+  });
+}
 import { wireUiHelpers, type UiHelpersWiring } from '@/ui/wireUiHelpers';
 import { wireContextStatusLine, type ContextStatusLineWiring } from '@/ui/wireContextStatusLine';
 
@@ -141,6 +228,7 @@ export default class LeoPlugin extends Plugin {
   private providerStatusEl: HTMLElement | null = null;
   private connectionUnsub: (() => void) | null = null;
   private indexerStatusEl: HTMLElement | null = null;
+  private autocompactTracking = createTrackingState();
 
   override async onload(): Promise<void> {
     this.store = new SettingsStore(this);
@@ -246,6 +334,7 @@ export default class LeoPlugin extends Plugin {
     this.toolRegistry = new ToolRegistry({ logger: this.logger });
     this.toolRegistry.register(createReadNoteTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createListNotesTool() as unknown as ToolSpec<unknown, unknown>);
+    this.toolRegistry.register(createReadFileTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createCreateNoteTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createAppendToNoteTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createCreateFolderTool() as unknown as ToolSpec<unknown, unknown>);
@@ -581,12 +670,72 @@ export default class LeoPlugin extends Plugin {
       },
     });
 
+    const fmtK = (n: number): string => `${(n / 1000).toFixed(1)}k`;
+    const emitCompactBanner = (result: CompactionResult, source: 'auto' | 'manual'): void => {
+      const now = new Date().toISOString();
+      this.chatMessageStore.append({
+        id: `compact-${Date.now()}`,
+        role: 'banner',
+        content: `Compacted ${fmtK(result.preCompactTokenCount)} → ${fmtK(result.postCompactTokenCount)} tokens (${source})`,
+        createdAt: now,
+        banner: { kind: 'compact', message: source },
+      });
+    };
+    const replaceHistoryAfterCompact = (thread: string, result: CompactionResult): void => {
+      const history: AgentHistoryMessage[] = result.summaryMessages.map((m) => ({
+        role: 'user',
+        content: m.content,
+      }));
+      agentHistory.set(thread, history);
+    };
+    const compactRunner = {
+      run: async (customInstructions?: string): Promise<void> => {
+        const history = agentHistory.get(DEFAULT_THREAD_ID) ?? [];
+        const messages: ChatMessage[] = history.map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+        if (messages.length === 0) {
+          new Notice('Compact: no conversation to compact.');
+          return;
+        }
+        const settings = this.store.get();
+        const result = await runManualCompaction(messages, {
+          logger: this.logger,
+          provider: this.providerManager,
+          model: settings.provider.chatModel,
+          querySource: 'manual_compact',
+          tracking: this.autocompactTracking,
+          ...(settings.contextWindowOverride !== undefined
+            ? { userOverride: settings.contextWindowOverride }
+            : {}),
+          ...(customInstructions !== undefined ? { customInstructions } : {}),
+          invokedSkills: this.invokedSkills.toAutocompactList(MAIN_AGENT_ID),
+        });
+        if (result === null) {
+          new Notice('Compact: nothing changed.');
+          return;
+        }
+        replaceHistoryAfterCompact(DEFAULT_THREAD_ID, result);
+        emitCompactBanner(result, 'manual');
+      },
+    };
+
     this.agentRunner = new AgentRunner({
       provider: this.providerManager,
       focusedContext: this.focusedContext,
       logger: this.logger,
       model: () => this.store.get().provider.chatModel,
       historyByThread: agentHistory,
+      autocompact: {
+        enabled: true,
+        provider: this.providerManager,
+        tracking: this.autocompactTracking,
+        userOverride: () => this.store.get().contextWindowOverride,
+        invokedSkills: () => this.invokedSkills.toAutocompactList(MAIN_AGENT_ID),
+        onResult: (r) => emitCompactBanner(r, 'auto'),
+        replaceHistory: (thread, r) => replaceHistoryAfterCompact(thread, r),
+      },
       toolRegistry: this.toolRegistry,
       vault: vaultAdapter,
       editor: editBridge,
@@ -620,11 +769,15 @@ export default class LeoPlugin extends Plugin {
     });
 
     const confirmationController = this.confirmationController;
-    const streamStarter: ChatStreamStarter = (prompt, signal) => {
+    const streamStarter: ChatStreamStarter = (prompt, signal, blocks) => {
       const thread = DEFAULT_THREAD_ID;
       const onAbort = (): void => this.agentRunner.cancel(thread);
       signal.addEventListener('abort', onAbort, { once: true });
-      const source = this.agentRunner.send({ role: 'user', content: prompt }, thread);
+      const message: AgentUserMessage =
+        blocks !== undefined && blocks.length > 0
+          ? { role: 'user', content: prompt, blocks }
+          : { role: 'user', content: prompt };
+      const source = this.agentRunner.send(message, thread);
       return (async function* () {
         try {
           for await (const ev of source) {
@@ -690,6 +843,7 @@ export default class LeoPlugin extends Plugin {
             exit: () => this.planModeController.exitPlan(DEFAULT_THREAD_ID),
           },
           analyzeContext: (signal) => this.analyzeContextForChat(signal),
+          compactRunner,
           getContextWindow: () => {
             const s = this.store.get();
             return resolveContextWindow({
@@ -714,13 +868,20 @@ export default class LeoPlugin extends Plugin {
             })();
           },
           planApprovalController: this.planApprovalController,
-          resolveCostUSD: ({ input, output }) => {
-            const s = this.store.get().provider;
-            if (LOCAL_PROVIDER_IDS.has(s.kind)) return null;
-            const pricing = resolvePricing({ provider: s.kind, model: s.chatModel });
-            if (pricing === null) return null;
-            return computeCostUSD(pricing, { input, output });
-          },
+          ...(this.attachments !== null
+            ? {
+                attachments: this.attachments,
+                modelSupportsVision: () => modelSupportsVision(this.store.get().provider),
+                pickFiles: () => pickFilesViaInput(),
+                vaultFiles: () =>
+                  this.app.vault.getFiles().map((f) => ({
+                    path: f.path,
+                    name: f.name,
+                    kind: classifyVaultFile(f.extension),
+                  })),
+                readVaultFile: (path) => this.readVaultFileBytes(path),
+              }
+            : {}),
         }),
     );
     this.addRibbonIcon('bot', 'Leo: Open chat', () => {
@@ -838,6 +999,18 @@ export default class LeoPlugin extends Plugin {
       rename: (id, title) => store.rename(id, title),
       delete: (id) => store.delete(id),
     };
+  }
+
+  private async readVaultFileBytes(path: string): Promise<CaptureFileInput | null> {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (file === null) return null;
+    const adapter = this.app.vault.adapter;
+    const ext = path.includes('.') ? path.slice(path.lastIndexOf('.') + 1) : '';
+    const mimeType = mimeFromExtension(ext);
+    const buf = await adapter.readBinary(path);
+    const bytes = new Uint8Array(buf);
+    const name = path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
+    return { name, mimeType, bytes, size: bytes.byteLength };
   }
 
   private async analyzeContextForChat(signal: AbortSignal): Promise<ContextData> {
@@ -962,7 +1135,9 @@ function storedToRecords(messages: readonly StoredMessage[]): ChatMessageRecord[
                   ? 'error'
                   : m.banner.kind === 'info'
                     ? 'info'
-                    : 'cancelled',
+                    : m.banner.kind === 'compact'
+                      ? 'compact'
+                      : 'cancelled',
               ...(m.banner.toolCount !== undefined ? { toolCount: m.banner.toolCount } : {}),
               ...(m.banner.message !== undefined ? { message: m.banner.message } : {}),
             },

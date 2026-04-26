@@ -13,6 +13,7 @@ import { isNearBottom } from './scrollAnchoring';
 import { InlineEditor, MessageActionBar, type MessageActions } from './MessageActionBar';
 import { lookupWidget } from './widgets/registry';
 import { AssistantBlocks, type ToolUseBlockSlots } from './blocks';
+import { SentAttachmentList } from './SentAttachmentList';
 
 export interface MarkdownRenderFn {
   (text: string, container: HTMLElement): (() => void) | void;
@@ -35,7 +36,6 @@ export interface MessageListProps {
   readonly clipboard: CodeBlockClipboard;
   readonly setIcon?: (el: HTMLElement, name: string) => void;
   readonly actions?: MessageActions;
-  readonly resolveCostUSD?: (usage: { input: number; output: number }) => number | null;
   readonly toolUseSlots?: ToolUseBlockSlots;
 }
 
@@ -129,9 +129,6 @@ export function MessageList(props: MessageListProps): JSX.Element {
                     clipboard={props.clipboard}
                     setIcon={props.setIcon}
                     {...(props.actions !== undefined ? { actions: props.actions } : {})}
-                    {...(props.resolveCostUSD !== undefined
-                      ? { resolveCostUSD: props.resolveCostUSD }
-                      : {})}
                     {...(props.toolUseSlots !== undefined
                       ? { toolUseSlots: props.toolUseSlots }
                       : {})}
@@ -187,6 +184,8 @@ function UserBubble(props: UserBubbleProps): JSX.Element {
       </div>
     );
   }
+  const userBlocks = record.blocks ?? [];
+  const hasAttachments = userBlocks.some((b) => b.type === 'image' || b.type === 'document');
   return (
     <div className="leo-bubble leo-bubble-user">
       <header className="leo-bubble-header">
@@ -195,6 +194,12 @@ function UserBubble(props: UserBubbleProps): JSX.Element {
           {formatBubbleTime(record.createdAt)}
         </time>
       </header>
+      {hasAttachments ? (
+        <SentAttachmentList
+          blocks={userBlocks}
+          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+        />
+      ) : null}
       <div className="leo-bubble-body" data-slot="user-text">
         {record.content}
       </div>
@@ -216,7 +221,6 @@ interface AssistantBubbleProps {
   readonly clipboard: CodeBlockClipboard;
   readonly setIcon?: (el: HTMLElement, name: string) => void;
   readonly actions?: MessageActions;
-  readonly resolveCostUSD?: (usage: { input: number; output: number }) => number | null;
   readonly toolUseSlots?: ToolUseBlockSlots;
 }
 
@@ -300,10 +304,15 @@ function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
           total={props.record.tokens.total}
           estimatedInput={props.record.tokens.estimatedInput === true}
           estimatedOutput={props.record.tokens.estimatedOutput === true}
-          costUSD={props.resolveCostUSD?.({
-            input: props.record.tokens.input,
-            output: props.record.tokens.output,
-          })}
+          {...(props.record.tokens.reasoning !== undefined
+            ? { reasoning: props.record.tokens.reasoning }
+            : {})}
+          {...(props.record.tokens.cacheCreation !== undefined
+            ? { cacheCreation: props.record.tokens.cacheCreation }
+            : {})}
+          {...(props.record.tokens.cacheRead !== undefined
+            ? { cacheRead: props.record.tokens.cacheRead }
+            : {})}
         />
       ) : null}
       {!streaming && props.actions !== undefined ? (
@@ -323,7 +332,9 @@ interface TokenUsageFooterProps {
   readonly total: number;
   readonly estimatedInput: boolean;
   readonly estimatedOutput: boolean;
-  readonly costUSD?: number | null;
+  readonly reasoning?: number;
+  readonly cacheCreation?: number;
+  readonly cacheRead?: number;
 }
 
 function TokenUsageFooter(props: TokenUsageFooterProps): JSX.Element {
@@ -334,25 +345,43 @@ function TokenUsageFooter(props: TokenUsageFooterProps): JSX.Element {
       <span data-slot="usage-input" data-estimated={props.estimatedInput ? 'true' : 'false'}>
         input {prefix(props.estimatedInput)}
         {props.input}
+        {(props.cacheRead !== undefined && props.cacheRead > 0) ||
+        (props.cacheCreation !== undefined && props.cacheCreation > 0) ? (
+          <span className="leo-usage-cache" data-slot="usage-cache">
+            {' '}
+            (
+            {props.cacheRead !== undefined && props.cacheRead > 0 ? (
+              <span data-slot="usage-cache-read">cache hit {props.cacheRead}</span>
+            ) : null}
+            {props.cacheRead !== undefined &&
+            props.cacheRead > 0 &&
+            props.cacheCreation !== undefined &&
+            props.cacheCreation > 0
+              ? ', '
+              : ''}
+            {props.cacheCreation !== undefined && props.cacheCreation > 0 ? (
+              <span data-slot="usage-cache-write">cache write {props.cacheCreation}</span>
+            ) : null}
+            )
+          </span>
+        ) : null}
       </span>
       <span data-slot="usage-output" data-estimated={props.estimatedOutput ? 'true' : 'false'}>
         output {prefix(props.estimatedOutput)}
         {props.output}
+        {props.reasoning !== undefined && props.reasoning > 0 ? (
+          <span className="leo-usage-reasoning" data-slot="usage-reasoning">
+            {' '}
+            (thinking {props.reasoning})
+          </span>
+        ) : null}
       </span>
       <span data-slot="usage-total" data-estimated={totalEstimated ? 'true' : 'false'}>
         total {prefix(totalEstimated)}
         {props.total}
       </span>
-      {typeof props.costUSD === 'number' && props.costUSD > 0 ? (
-        <span data-slot="usage-cost">{formatCostInline(props.costUSD)}</span>
-      ) : null}
     </footer>
   );
-}
-
-function formatCostInline(cost: number): string {
-  if (cost < 0.01) return `$${cost.toFixed(4)}`;
-  return `$${cost.toFixed(2)}`;
 }
 
 function WidgetRow({ record }: { record: ChatMessageRecord }): JSX.Element {

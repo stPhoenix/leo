@@ -1,4 +1,5 @@
 import type { ChatMessage } from '@/providers/types';
+import { chatContentText } from '@/providers/types';
 import { estimateMessageTokens, type TokenMessage } from './tokenEstimator';
 
 export const PROMPT_TOO_LONG_ERROR_MESSAGE = 'prompt is too long';
@@ -122,5 +123,8 @@ function dropCountByTwentyPercent(groupCount: number): number {
 }
 
 function groupToTokenMessages(group: readonly ChatMessage[]): TokenMessage[] {
-  return group.map((m) => ({ role: m.role, content: m.content }));
+  return group.map((m) => ({
+    role: m.role,
+    content: typeof m.content === 'string' ? m.content : chatContentText(m.content),
+  }));
 }

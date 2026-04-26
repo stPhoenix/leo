@@ -1,5 +1,6 @@
 import type { Logger } from '@/platform/Logger';
 import type { ChatMessage, ProviderChatRequest, StreamEvent } from '@/providers/types';
+import { chatContentText } from '@/providers/types';
 import {
   COMPACT_MAX_OUTPUT_TOKENS,
   MAX_COMPACT_STREAMING_RETRIES,
@@ -212,7 +213,17 @@ export async function autoCompactIfNeeded(
   return runCompaction(messages, opts);
 }
 
-async function runCompaction(
+export async function runManualCompaction(
+  messages: readonly ChatMessage[],
+  opts: AutocompactOptions,
+): Promise<CompactionResult | null> {
+  if (opts.tracking !== undefined && shouldSkipForCircuitBreaker(opts.tracking)) {
+    return null;
+  }
+  return runCompaction(messages, { ...opts, trigger: 'manual' });
+}
+
+export async function runCompaction(
   messages: readonly ChatMessage[],
   opts: AutocompactOptions,
 ): Promise<CompactionResult | null> {
@@ -534,16 +545,15 @@ const SKILL_LISTING_PREFIX = '[leo.skill.listing]';
 export function stripReinjectedAttachments(messages: readonly ChatMessage[]): ChatMessage[] {
   return messages.filter((m) => {
     if (m.role !== 'system') return true;
-    return (
-      !m.content.startsWith(SKILL_DISCOVERY_PREFIX) && !m.content.startsWith(SKILL_LISTING_PREFIX)
-    );
+    const text = chatContentText(m.content);
+    return !text.startsWith(SKILL_DISCOVERY_PREFIX) && !text.startsWith(SKILL_LISTING_PREFIX);
   });
 }
 
 export function stripImagesFromMessages(messages: readonly ChatMessage[]): ChatMessage[] {
   return messages.map((m) => ({
     ...m,
-    content: m.content
+    content: chatContentText(m.content)
       .replace(/\[image:[^\]]*\]/g, '[image]')
       .replace(/\[document:[^\]]*\]/g, '[document]'),
   }));
@@ -565,7 +575,7 @@ export function normalizeMessagesForAPI(messages: readonly ChatMessage[]): ChatM
     ) {
       out[out.length - 1] = {
         role: 'assistant',
-        content: last.content + m.content,
+        content: chatContentText(last.content) + chatContentText(m.content),
       };
       continue;
     }
@@ -699,7 +709,9 @@ function buildSkillAttachments(
 function collectVisibleFilePaths(messages: readonly ChatMessage[]): ReadonlySet<string> {
   const paths = new Set<string>();
   for (const m of messages) {
-    const matches = m.content.match(/[A-Za-z0-9_\-./]+\.(?:md|ts|tsx|js|jsx|json|canvas)/g);
+    const matches = chatContentText(m.content).match(
+      /[A-Za-z0-9_\-./]+\.(?:md|ts|tsx|js|jsx|json|canvas)/g,
+    );
     if (matches !== null) {
       for (const p of matches) paths.add(p);
     }
@@ -718,7 +730,7 @@ function truncateToTokens(text: string, tokenCap: number): string {
 function toTokenMessages(messages: readonly ChatMessage[]): TokenMessage[] {
   return messages.map((m) => ({
     role: m.role,
-    content: m.content,
+    content: typeof m.content === 'string' ? m.content : chatContentText(m.content),
   }));
 }
 

@@ -4,7 +4,7 @@ export type MessageRole = 'user' | 'assistant' | 'banner' | 'widget';
 
 export type AssistantStatus = 'streaming' | 'done' | 'cancelled' | 'error';
 
-export type BannerKind = 'cancelled' | 'error' | 'info';
+export type BannerKind = 'cancelled' | 'error' | 'info' | 'compact';
 
 export interface WidgetPayload {
   readonly kind: string;
@@ -45,12 +45,36 @@ export interface ToolResultBlock {
   readonly is_error?: boolean;
 }
 
+export interface ImageBlock {
+  readonly type: 'image';
+  readonly source: {
+    readonly type: 'base64';
+    readonly media_type: string;
+    readonly data: string;
+  };
+  readonly name?: string;
+  readonly size?: number;
+}
+
+export interface DocumentBlock {
+  readonly type: 'document';
+  readonly source: {
+    readonly type: 'base64';
+    readonly media_type: string;
+    readonly data: string;
+  };
+  readonly name?: string;
+  readonly size?: number;
+}
+
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock
   | RedactedThinkingBlock
   | ToolUseBlock
-  | ToolResultBlock;
+  | ToolResultBlock
+  | ImageBlock
+  | DocumentBlock;
 
 export interface ChatMessageRecord {
   readonly id: string;

@@ -96,15 +96,15 @@ leo/
 │   │   ├── obsidianUserErrorChannel.ts
 │   │   ├── rotatingFileSink.ts
 │   │   └── tracer.ts                    # TracerService — per-thread Langfuse trace, per-turn span
-│   ├── providers/                       # LLM + embedding providers, langchain bridge, pricing, manager, registry, trace config
+│   ├── providers/                       # LLM + embedding providers, langchain bridge, content normalization, manager, registry, trace config
 │   │   ├── anthropicProvider.ts
 │   │   ├── connectionState.ts
+│   │   ├── contentNormalize.ts          # OpenAI-compatible normalizer: inline document blocks as text, gate images on vision support
 │   │   ├── embeddingClient.ts
 │   │   ├── langchainMessages.ts
 │   │   ├── langchainStream.ts
 │   │   ├── lmStudioProvider.ts
 │   │   ├── openAICompatibleProvider.ts
-│   │   ├── pricing.ts
 │   │   ├── providerManager.ts
 │   │   ├── registry.ts
 │   │   ├── traceConfig.ts               # ProviderTraceContext → LangChain RunnableConfig
@@ -156,6 +156,7 @@ leo/
 │   │   │   ├── createNote.ts
 │   │   │   ├── editNote.ts
 │   │   │   ├── listNotes.ts
+│   │   │   ├── readFile.ts              # Generic any-file reader with binary detection + maxBytes cap
 │   │   │   ├── readNote.ts
 │   │   │   ├── searchVault.ts
 │   │   │   └── skillTool.ts
@@ -196,6 +197,12 @@ leo/
 │   │   │   ├── widgets/
 │   │   │   │   ├── ContextWidget.tsx
 │   │   │   │   └── registry.ts
+│   │   │   ├── AttachmentChip.stories.tsx
+│   │   │   ├── AttachmentChip.tsx                  # Composer staged-attachment chip (image thumb / doc icon, remove btn)
+│   │   │   ├── AttachmentRejectedNotice.stories.tsx
+│   │   │   ├── AttachmentRejectedNotice.tsx        # Inline notice for oversize / limit / unsupported / vision-blocked
+│   │   │   ├── AttachmentTray.stories.tsx
+│   │   │   ├── AttachmentTray.tsx                  # Horizontal list of staged attachment chips above the textarea
 │   │   │   ├── BottomLiveIndicator.stories.tsx
 │   │   │   ├── BottomLiveIndicator.tsx
 │   │   │   ├── ChatRoot.stories.tsx
@@ -203,7 +210,7 @@ leo/
 │   │   │   ├── ChatRoot.tsx
 │   │   │   ├── codeBlockEnhancer.ts
 │   │   │   ├── ComposerInput.stories.tsx
-│   │   │   ├── ComposerInput.tsx
+│   │   │   ├── ComposerInput.tsx                   # Textarea + slash picker + @ mention picker + paste/drop + paperclip
 │   │   │   ├── ContextIndicator.stories.tsx
 │   │   │   ├── ContextIndicator.tsx
 │   │   │   ├── fuzzyMatch.ts
@@ -216,12 +223,16 @@ leo/
 │   │   │   ├── IndexStatusBlock.tsx
 │   │   │   ├── InlineConfirmation.tsx
 │   │   │   ├── InlineDialog.tsx
+│   │   │   ├── MentionPicker.stories.tsx
+│   │   │   ├── MentionPicker.tsx                   # Vault-file fuzzy picker for `@` operator (mirrors SlashPicker pattern)
 │   │   │   ├── MessageActionBar.stories.tsx
 │   │   │   ├── MessageActionBar.tsx
 │   │   │   ├── MessageList.tsx
 │   │   │   ├── PlanApprovalDialog.stories.tsx
 │   │   │   ├── PlanApprovalDialog.tsx
 │   │   │   ├── scrollAnchoring.ts
+│   │   │   ├── SentAttachmentList.stories.tsx
+│   │   │   ├── SentAttachmentList.tsx              # Chips on the sent user bubble (renders `record.blocks` image/document)
 │   │   │   ├── slashCommands.ts
 │   │   │   ├── SlashPicker.stories.tsx
 │   │   │   ├── SlashPicker.tsx

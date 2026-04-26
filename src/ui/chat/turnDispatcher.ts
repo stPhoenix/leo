@@ -1,11 +1,15 @@
 import type { ChatMessageStore } from '@/chat/messageStore';
-import type { ChatMessageRecord } from '@/chat/types';
+import type { ChatMessageRecord, ContentBlock } from '@/chat/types';
 import type { StreamingTurnController } from '@/chat/streamingController';
 import type { StreamEvent } from '@/agent/streamEvents';
 import { computeTokenUsage } from '@/chat/tokenUsage';
 
 export interface TurnDispatcherStarter {
-  (prompt: string, signal: AbortSignal): AsyncIterable<StreamEvent>;
+  (
+    prompt: string,
+    signal: AbortSignal,
+    blocks?: readonly ContentBlock[],
+  ): AsyncIterable<StreamEvent>;
 }
 
 export interface TurnDispatcherOptions {
@@ -21,6 +25,7 @@ interface PendingTurn {
   readonly userId: string;
   readonly assistantId: string;
   readonly text: string;
+  readonly blocks?: readonly ContentBlock[];
 }
 
 export class TurnDispatcher {
@@ -32,9 +37,12 @@ export class TurnDispatcher {
 
   constructor(private readonly deps: TurnDispatcherOptions) {}
 
-  submit(text: string, opts: { appendUserRecord?: boolean } = {}): void {
+  submit(
+    text: string,
+    opts: { appendUserRecord?: boolean; blocks?: readonly ContentBlock[] } = {},
+  ): void {
     if (this.disposed) return;
-    if (text.length === 0) return;
+    if (text.length === 0 && (opts.blocks === undefined || opts.blocks.length === 0)) return;
     this.counter += 1;
     const userId = `${this.deps.idPrefixUser ?? 'u-'}${this.counter}`;
     const assistantId = `${this.deps.idPrefixAssistant ?? 'a-'}${this.counter}`;
@@ -45,10 +53,16 @@ export class TurnDispatcher {
         role: 'user',
         content: text,
         createdAt: now,
+        ...(opts.blocks !== undefined && opts.blocks.length > 0 ? { blocks: opts.blocks } : {}),
       };
       this.deps.messageStore.append(userRecord);
     }
-    this.pending.push({ userId, assistantId, text });
+    this.pending.push({
+      userId,
+      assistantId,
+      text,
+      ...(opts.blocks !== undefined && opts.blocks.length > 0 ? { blocks: opts.blocks } : {}),
+    });
     this.notify();
     void this.pump();
   }
@@ -90,11 +104,15 @@ export class TurnDispatcher {
         const signal = this.deps.controller.startTurn(turn.assistantId);
         const starter = this.deps.starter;
         if (starter === undefined) {
-          this.commitUsage(turn, 0, undefined, undefined);
+          this.commitUsage(turn, 0, {});
           this.deps.controller.consume({ type: 'done' });
           continue;
         }
-        const tracked = this.trackUsage(turn, starter(turn.text, signal));
+        const stream =
+          turn.blocks !== undefined && turn.blocks.length > 0
+            ? starter(turn.text, signal, turn.blocks)
+            : starter(turn.text, signal);
+        const tracked = this.trackUsage(turn, stream);
         try {
           await this.deps.controller.consumeIterable(tracked);
         } catch {
@@ -113,32 +131,60 @@ export class TurnDispatcher {
   ): AsyncIterable<StreamEvent> {
     let providerInput: number | undefined;
     let providerOutput: number | undefined;
+    let providerReasoning: number | undefined;
+    let providerCacheCreation: number | undefined;
+    let providerCacheRead: number | undefined;
     let outputChars = 0;
+    const captureUsage = (u: {
+      input?: number;
+      output?: number;
+      reasoning?: number;
+      cacheCreation?: number;
+      cacheRead?: number;
+    }): void => {
+      if (typeof u.input === 'number') providerInput = u.input;
+      if (typeof u.output === 'number') providerOutput = u.output;
+      if (typeof u.reasoning === 'number') providerReasoning = u.reasoning;
+      if (typeof u.cacheCreation === 'number') providerCacheCreation = u.cacheCreation;
+      if (typeof u.cacheRead === 'number') providerCacheRead = u.cacheRead;
+    };
     try {
       for await (const ev of iter) {
         if (ev.type === 'token') outputChars += ev.text.length;
         if (ev.type === 'usage') {
-          providerInput = ev.input;
-          providerOutput = ev.output;
+          captureUsage(ev);
+        }
+        if (ev.type === 'message_delta' && ev.usage !== undefined) {
+          captureUsage(ev.usage);
         }
         yield ev;
       }
     } finally {
-      this.commitUsage(turn, outputChars, providerInput, providerOutput);
+      this.commitUsage(turn, outputChars, {
+        ...(providerInput !== undefined ? { providerInput } : {}),
+        ...(providerOutput !== undefined ? { providerOutput } : {}),
+        ...(providerReasoning !== undefined ? { providerReasoning } : {}),
+        ...(providerCacheCreation !== undefined ? { providerCacheCreation } : {}),
+        ...(providerCacheRead !== undefined ? { providerCacheRead } : {}),
+      });
     }
   }
 
   private commitUsage(
     turn: PendingTurn,
     outputChars: number,
-    providerInput: number | undefined,
-    providerOutput: number | undefined,
+    extras: {
+      providerInput?: number;
+      providerOutput?: number;
+      providerReasoning?: number;
+      providerCacheCreation?: number;
+      providerCacheRead?: number;
+    },
   ): void {
     const usage = computeTokenUsage({
       promptChars: turn.text.length,
       outputChars,
-      ...(providerInput !== undefined ? { providerInput } : {}),
-      ...(providerOutput !== undefined ? { providerOutput } : {}),
+      ...extras,
     });
     this.deps.messageStore.update(turn.assistantId, (prev) => ({ ...prev, tokens: usage }));
   }

@@ -58,7 +58,6 @@ export interface ChatRootProps {
   readonly indexDrainSubscribe?: (listener: DrainListener) => () => void;
   readonly onReindexAll?: () => void;
   readonly onReindexChanged?: () => void;
-  readonly resolveCostUSD?: (usage: { input: number; output: number }) => number | null;
   readonly toolUseSlots?: ToolUseBlockSlots;
   readonly liveIndicatorRunState?: RunStateSource;
   readonly lastEventAtSource?: () => number | null;
@@ -139,7 +138,6 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
         clipboard={props.clipboard}
         {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
         {...(props.messageActions !== undefined ? { actions: props.messageActions } : {})}
-        {...(props.resolveCostUSD !== undefined ? { resolveCostUSD: props.resolveCostUSD } : {})}
         {...(props.toolUseSlots !== undefined ? { toolUseSlots: props.toolUseSlots } : {})}
       />
       <InlineConfirmation

@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { fn } from 'storybook/test';
 import { ComposerInput } from './ComposerInput';
-import { mockMatchMedia, mockSetIcon } from './__stories__/mocks/sources';
+import { makeStagedAttachment, mockMatchMedia, mockSetIcon } from './__stories__/mocks/sources';
 
 const slashCommands = [
   { name: 'clear', description: 'Clear the current thread' },
@@ -39,3 +39,26 @@ export const Submitting: Story = { args: { isSubmitting: true } };
 export const WithQueue: Story = { args: { queueLength: 3 } };
 
 export const ConfirmationOpen: Story = { args: { inlineConfirmationOpen: true } };
+
+export const WithAttachments: Story = {
+  args: {
+    attachments: [
+      makeStagedAttachment({ kind: 'image', name: 'shot.png', size: 84_000 }),
+      makeStagedAttachment({ kind: 'document', name: 'spec.pdf', size: 1_200_000 }),
+    ],
+    onAttachmentRemove: fn(),
+    onPickFiles: fn(),
+    onCaptureFiles: fn(),
+  },
+};
+
+export const WithRejections: Story = {
+  args: {
+    onPickFiles: fn(),
+    attachmentRejections: [
+      { name: 'big.mp4', reason: { kind: 'oversize', size: 25 * 1024 * 1024 } },
+      { name: 'photo.jpg', reason: { kind: 'vision_blocked' } },
+    ],
+    onDismissAttachmentRejections: fn(),
+  },
+};

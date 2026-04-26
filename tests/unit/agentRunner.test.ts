@@ -690,7 +690,9 @@ describe('AgentRunner', () => {
     provider.plan({ events: [{ type: 'done' }] });
     await collect(runner.send({ role: 'user', content: 'q' }, 't'));
     const systemMessages = provider.calls[0]!.messages.filter((m) => m.role === 'system');
-    expect(systemMessages.some((m) => m.content.includes('SKILLS'))).toBe(true);
+    expect(
+      systemMessages.some((m) => typeof m.content === 'string' && m.content.includes('SKILLS')),
+    ).toBe(true);
   });
 
   it('plan-mode permission gate blocks non-allowlisted tools without invoking confirmation', async () => {

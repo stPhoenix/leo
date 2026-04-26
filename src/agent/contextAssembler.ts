@@ -59,7 +59,11 @@ export function renderPrompt(prompt: AssembledPrompt): ChatMessage[] {
     });
   }
   for (const msg of segments.history) {
-    out.push({ role: msg.role, content: msg.content });
+    if (msg.role === 'user' && msg.blocks !== undefined && msg.blocks.length > 0) {
+      out.push({ role: 'user', content: msg.blocks });
+    } else {
+      out.push({ role: msg.role, content: msg.content });
+    }
   }
   return out;
 }

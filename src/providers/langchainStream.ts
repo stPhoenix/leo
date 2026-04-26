@@ -18,6 +18,9 @@ interface State {
   toolByLangchainIdx: Map<number, ToolBuf>;
   finalInputTokens: number | null;
   finalOutputTokens: number | null;
+  finalReasoningTokens: number | null;
+  finalCacheCreationTokens: number | null;
+  finalCacheReadTokens: number | null;
 }
 
 function makeState(): State {
@@ -29,6 +32,9 @@ function makeState(): State {
     toolByLangchainIdx: new Map(),
     finalInputTokens: null,
     finalOutputTokens: null,
+    finalReasoningTokens: null,
+    finalCacheCreationTokens: null,
+    finalCacheReadTokens: null,
   };
 }
 
@@ -60,6 +66,13 @@ interface ChunkWithMeta {
   readonly usage_metadata?: {
     readonly input_tokens?: number;
     readonly output_tokens?: number;
+    readonly input_token_details?: {
+      readonly cache_creation?: number;
+      readonly cache_read?: number;
+    };
+    readonly output_token_details?: {
+      readonly reasoning?: number;
+    };
   };
 }
 
@@ -141,6 +154,19 @@ function* processChunk(chunk: AIMessageChunk, st: State): Iterable<StreamEvent> 
   if (usage !== undefined) {
     if (typeof usage.input_tokens === 'number') st.finalInputTokens = usage.input_tokens;
     if (typeof usage.output_tokens === 'number') st.finalOutputTokens = usage.output_tokens;
+    const outDetails = usage.output_token_details;
+    if (outDetails !== undefined && typeof outDetails.reasoning === 'number') {
+      st.finalReasoningTokens = outDetails.reasoning;
+    }
+    const inDetails = usage.input_token_details;
+    if (inDetails !== undefined) {
+      if (typeof inDetails.cache_creation === 'number') {
+        st.finalCacheCreationTokens = inDetails.cache_creation;
+      }
+      if (typeof inDetails.cache_read === 'number') {
+        st.finalCacheReadTokens = inDetails.cache_read;
+      }
+    }
   }
 }
 
@@ -156,12 +182,23 @@ function* finalize(st: State): Iterable<StreamEvent> {
       yield { type: 'block_stop', index: buf.streamIndex };
     }
   }
-  if (st.finalInputTokens !== null || st.finalOutputTokens !== null) {
+  if (
+    st.finalInputTokens !== null ||
+    st.finalOutputTokens !== null ||
+    st.finalReasoningTokens !== null ||
+    st.finalCacheCreationTokens !== null ||
+    st.finalCacheReadTokens !== null
+  ) {
     yield {
       type: 'message_delta',
       usage: {
         input: st.finalInputTokens ?? 0,
         output: st.finalOutputTokens ?? 0,
+        ...(st.finalReasoningTokens !== null ? { reasoning: st.finalReasoningTokens } : {}),
+        ...(st.finalCacheCreationTokens !== null
+          ? { cacheCreation: st.finalCacheCreationTokens }
+          : {}),
+        ...(st.finalCacheReadTokens !== null ? { cacheRead: st.finalCacheReadTokens } : {}),
       },
     };
   }

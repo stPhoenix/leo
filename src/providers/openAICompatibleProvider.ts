@@ -4,6 +4,7 @@ import type { AIMessageChunk, BaseMessage } from '@langchain/core/messages';
 import type { Provider, ProviderChatRequest, ProviderModel, StreamEvent } from './types';
 import { ProviderConnectError } from './types';
 import { toLangchainMessages } from './langchainMessages';
+import { normalizeForOpenAI } from './contentNormalize';
 import { toStreamEvents } from './langchainStream';
 import { toRunnableConfig } from './traceConfig';
 
@@ -17,6 +18,7 @@ export interface OpenAICompatibleProviderOptions {
   readonly fetch?: FetchLike;
   readonly modelListPath?: string;
   readonly listModelsFromHttp?: boolean;
+  readonly modelSupportsVision?: (model: string) => boolean;
 }
 
 interface OpenAIModelsResponse {
@@ -60,7 +62,10 @@ export class OpenAICompatibleProvider implements Provider {
     const callable: OpenAICallable =
       req.tools !== undefined && req.tools.length > 0 ? model.bindTools([...req.tools]) : model;
 
-    const messages = toLangchainMessages(req.messages);
+    const supportsVision =
+      this.opts.modelSupportsVision?.(req.model) ?? defaultModelSupportsVision(req.model);
+    const normalized = normalizeForOpenAI(req.messages, { supportsVision });
+    const messages = toLangchainMessages(normalized);
     let stream: AsyncIterable<AIMessageChunk>;
     try {
       stream = await callable.stream(messages, { signal, ...toRunnableConfig(req.trace) });
@@ -173,6 +178,13 @@ function asConnectError(err: unknown, fallback: string): ProviderConnectError {
       cause: err,
     });
   return new ProviderConnectError(fallback);
+}
+
+function defaultModelSupportsVision(model: string): boolean {
+  const m = model.toLowerCase();
+  if (m.includes('gpt-4o') || m.includes('gpt-4.1') || m.includes('gpt-5')) return true;
+  if (m.includes('vision') || m.includes('-vl') || m.includes('llava')) return true;
+  return false;
 }
 
 function abortReason(signal: AbortSignal): Error {

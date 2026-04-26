@@ -6,6 +6,7 @@ import type {
   StreamEvent as ProviderStreamEvent,
   ToolCallRequest,
 } from '@/providers/types';
+import { chatContentText } from '@/providers/types';
 import type { ToolRegistry } from '@/tools/toolRegistry';
 import type { EditNoteBridge } from '@/tools/types';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
@@ -23,6 +24,17 @@ import {
   type CompactToolCallRef,
   type CompactToolMessage,
 } from './microcompact';
+import {
+  autoCompactIfNeeded,
+  buildPostCompactMessages,
+  type AutocompactProvider,
+  type CompactionResult,
+  type InvokedSkill,
+  type PlanModeSource,
+  type PlanSource,
+  type RecentFileSource,
+} from './autocompact';
+import type { AutoCompactTrackingState, BreakerStatusChannel } from './autocompactBreaker';
 import {
   type AgentAssistantMessage,
   type AgentHistoryMessage,
@@ -117,6 +129,22 @@ export interface GraphMicrocompactOptions {
   readonly isCompactable: (toolName: string) => boolean;
 }
 
+export interface GraphAutocompactOptions {
+  readonly enabled: boolean;
+  readonly provider: AutocompactProvider;
+  readonly tracking: AutoCompactTrackingState;
+  readonly providerMaxInputTokens?: number;
+  readonly userOverride?: () => number | undefined;
+  readonly maxOutputTokensForModel?: number;
+  readonly recentFiles?: RecentFileSource;
+  readonly invokedSkills?: () => readonly InvokedSkill[];
+  readonly plan?: PlanSource;
+  readonly planMode?: PlanModeSource;
+  readonly breakerNotifications?: BreakerStatusChannel;
+  readonly onResult?: (result: CompactionResult) => void;
+  readonly replaceHistory?: (thread: ThreadId, result: CompactionResult) => void;
+}
+
 export type ConfirmationDecision = 'allow-once' | 'allow-thread' | 'deny';
 
 export interface ToolConfirmationInterruptPayload {
@@ -145,6 +173,7 @@ export interface GraphDeps {
   readonly planMode: PlanModeController | null;
   readonly agentIdFor: (thread: ThreadId) => string | null;
   readonly microcompact: GraphMicrocompactOptions;
+  readonly autocompact?: GraphAutocompactOptions | null;
   readonly getHistory: (thread: ThreadId) => readonly AgentHistoryMessage[];
   readonly appendHistory: (thread: ThreadId, msg: AgentHistoryMessage) => void;
 }
@@ -253,6 +282,7 @@ function toCompactMessages(
   for (let i = 0; i < messages.length; i += 1) {
     const m = messages[i]!;
     const ts = timestamps[i];
+    const text = chatContentText(m.content);
     if (m.role === 'assistant') {
       const calls = m.toolCalls ?? [];
       const toolCalls: CompactToolCallRef[] = calls.map((c) => ({
@@ -262,7 +292,7 @@ function toCompactMessages(
       }));
       const assistant: CompactAssistantMessage = {
         role: 'assistant',
-        content: m.content,
+        content: text,
         ...(toolCalls.length > 0 ? { toolCalls } : {}),
         ...(ts !== undefined ? { timestamp: ts } : {}),
       };
@@ -274,7 +304,7 @@ function toCompactMessages(
         role: 'tool',
         toolCallId: m.toolCallId ?? '',
         toolName: m.name ?? '',
-        content: m.content,
+        content: text,
         ...(ts !== undefined ? { timestamp: ts } : {}),
       };
       out.push(tool);
@@ -283,14 +313,14 @@ function toCompactMessages(
     if (m.role === 'user') {
       out.push({
         role: 'user',
-        content: m.content,
+        content: text,
         ...(ts !== undefined ? { timestamp: ts } : {}),
       });
       continue;
     }
     out.push({
       role: 'system',
-      content: m.content,
+      content: text,
       ...(ts !== undefined ? { timestamp: ts } : {}),
     });
   }
@@ -461,6 +491,55 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       blockIndexOffset: 0,
       cancelled: false,
       errored: false,
+    };
+  };
+
+  const applyAutocompactNode = async (state: AgentState): Promise<Partial<AgentState>> => {
+    if (turn.signal.aborted) return { cancelled: true };
+    const ac = deps.autocompact ?? null;
+    if (ac === null || !ac.enabled) return {};
+    if (state.workingMessages.length === 0) return {};
+    const userOverride = ac.userOverride?.();
+    let result: CompactionResult | null = null;
+    try {
+      result = await autoCompactIfNeeded(state.workingMessages, {
+        logger: deps.logger,
+        provider: ac.provider,
+        model: state.effectiveModel,
+        querySource: 'agent_loop',
+        trigger: 'auto',
+        signal: turn.signal,
+        tracking: ac.tracking,
+        ...(ac.providerMaxInputTokens !== undefined
+          ? { providerMaxInputTokens: ac.providerMaxInputTokens }
+          : {}),
+        ...(userOverride !== undefined ? { userOverride } : {}),
+        ...(ac.maxOutputTokensForModel !== undefined
+          ? { maxOutputTokensForModel: ac.maxOutputTokensForModel }
+          : {}),
+        ...(ac.breakerNotifications !== undefined
+          ? { breakerNotifications: ac.breakerNotifications }
+          : {}),
+        ...(ac.recentFiles !== undefined ? { recentFiles: ac.recentFiles } : {}),
+        ...(ac.invokedSkills !== undefined ? { invokedSkills: ac.invokedSkills() } : {}),
+        ...(ac.plan !== undefined ? { plan: ac.plan } : {}),
+        ...(ac.planMode !== undefined ? { planMode: ac.planMode } : {}),
+      });
+    } catch (err) {
+      deps.logger.warn('agent.autocompact.error', {
+        thread: turn.thread,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return {};
+    }
+    if (result === null) return {};
+    ac.onResult?.(result);
+    ac.replaceHistory?.(turn.thread, result);
+    const replaced = buildPostCompactMessages(result);
+    const now = deps.clock().getTime();
+    return {
+      workingMessages: replaced,
+      workingTimestamps: replaced.map(() => now),
     };
   };
 
@@ -762,7 +841,8 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
         calledTodoWrite: state.turnCalledTodoWrite,
       });
     }
-    deps.appendHistory(thread, turn.message);
+    const historyUser: AgentUserMessage = { role: 'user', content: turn.message.content };
+    deps.appendHistory(thread, historyUser);
     if (!cancelled && !state.errored && state.assistantText.length > 0) {
       const assistant: AgentAssistantMessage = {
         role: 'assistant',
@@ -788,24 +868,26 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     return 'handleToolCalls';
   };
 
-  const routeAfterTools = (state: AgentState): 'applyMicrocompact' | 'finalize' => {
+  const routeAfterTools = (state: AgentState): 'applyAutocompact' | 'finalize' => {
     if (state.cancelled) return 'finalize';
     if (state.errored) return 'finalize';
     if (state.roundTrip >= deps.maxToolRoundTrips) return 'finalize';
-    return 'applyMicrocompact';
+    return 'applyAutocompact';
   };
 
   const builder = new StateGraph(AgentStateAnnotation)
     .addNode('prepareContext', prepareContext)
+    .addNode('applyAutocompact', applyAutocompactNode)
     .addNode('applyMicrocompact', applyMicrocompactNode)
     .addNode('callModel', callModelNode)
     .addNode('handleToolCalls', handleToolCallsNode)
     .addNode('finalize', finalizeNode)
     .addEdge(START, 'prepareContext')
-    .addEdge('prepareContext', 'applyMicrocompact')
+    .addEdge('prepareContext', 'applyAutocompact')
+    .addEdge('applyAutocompact', 'applyMicrocompact')
     .addEdge('applyMicrocompact', 'callModel')
     .addConditionalEdges('callModel', routeAfterModel, ['handleToolCalls', 'finalize', END])
-    .addConditionalEdges('handleToolCalls', routeAfterTools, ['applyMicrocompact', 'finalize'])
+    .addConditionalEdges('handleToolCalls', routeAfterTools, ['applyAutocompact', 'finalize'])
     .addEdge('finalize', END);
 
   const recursionLimit = Math.max(25, deps.maxToolRoundTrips * 4 + 10);

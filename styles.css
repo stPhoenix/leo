@@ -632,15 +632,43 @@
 .leo-composer-input {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr auto auto;
   grid-template-areas:
-    'textarea send'
-    'hint hint'
-    'queue queue';
+    'tray tray tray'
+    'rej rej rej'
+    'textarea attach send'
+    'hint hint hint'
+    'queue queue queue';
   gap: var(--size-4-1) var(--size-4-2);
   padding: var(--size-4-2) var(--size-4-3);
   border-top: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
+}
+
+.leo-composer-input > .leo-attachment-tray {
+  grid-area: tray;
+}
+
+.leo-composer-input > .leo-attachment-rejected {
+  grid-area: rej;
+}
+
+.leo-composer-attach {
+  grid-area: attach;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 var(--size-4-2);
+}
+
+.leo-composer-attach:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
 }
 
 .leo-slash-picker {
@@ -761,6 +789,182 @@
 
 .leo-provider-unreachable {
   color: var(--text-error);
+}
+
+.leo-attachment-tray,
+.leo-sent-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-1);
+  padding: var(--size-4-1) 0;
+}
+
+.leo-bubble-user .leo-sent-attachments {
+  margin-bottom: var(--size-4-1);
+}
+
+.leo-attachment-tray-item {
+  display: inline-flex;
+}
+
+.leo-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: 2px var(--size-4-2);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+  max-width: 18rem;
+}
+
+.leo-attachment-chip.is-image {
+  padding-left: 2px;
+}
+
+.leo-attachment-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.leo-attachment-thumb {
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: var(--radius-s);
+  flex-shrink: 0;
+}
+
+.leo-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-normal);
+}
+
+.leo-attachment-size {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.leo-attachment-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.leo-attachment-remove:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.leo-attachment-rejected {
+  display: flex;
+  gap: var(--size-4-2);
+  padding: var(--size-4-1) var(--size-4-2);
+  background: var(--background-modifier-error);
+  color: var(--text-error);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-attachment-rejected-list {
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.leo-attachment-rejected-item {
+  display: flex;
+  gap: var(--size-4-1);
+}
+
+.leo-attachment-rejected-name {
+  font-weight: 600;
+}
+
+.leo-attachment-rejected-reason {
+  color: var(--text-muted);
+}
+
+.leo-attachment-rejected-dismiss {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.leo-mention-picker {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: var(--size-4-3);
+  right: var(--size-4-3);
+  margin: 0;
+  padding: var(--size-4-1);
+  list-style: none;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-s);
+  z-index: var(--leo-z-tooltip);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.leo-mention-item {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.leo-mention-item.is-active {
+  background: var(--background-modifier-hover);
+}
+
+.leo-mention-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.leo-mention-name {
+  flex-shrink: 0;
+  font-family: var(--font-text);
+  color: var(--text-normal);
+}
+
+.leo-mention-folder {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.leo-mention-match {
+  background: transparent;
+  color: var(--interactive-accent);
+  font-weight: 600;
 }
 
 .leo-sr-only {
@@ -1204,6 +1408,31 @@
 }
 .leo-cat-compact_buffer {
   --cat-color: var(--text-faint);
+}
+
+.leo-context-widget.is-level-warn .leo-context-widget-total,
+.leo-context-widget.is-level-warn .leo-context-widget-donut-pct {
+  color: var(--color-yellow);
+}
+.leo-context-widget.is-level-critical .leo-context-widget-total,
+.leo-context-widget.is-level-critical .leo-context-widget-donut-pct {
+  color: var(--text-error);
+}
+.leo-context-widget.is-level-warn {
+  border-color: color-mix(in srgb, var(--color-yellow) 40%, var(--background-modifier-border));
+}
+.leo-context-widget.is-level-critical {
+  border-color: color-mix(
+    in srgb,
+    var(--color-red, var(--text-error)) 40%,
+    var(--background-modifier-border)
+  );
+}
+
+.leo-banner-compact {
+  color: var(--text-normal);
+  border-color: color-mix(in srgb, var(--color-green) 40%, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--color-green) 12%, transparent);
 }
 
 .leo-section-error {

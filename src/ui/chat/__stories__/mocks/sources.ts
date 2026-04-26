@@ -1,6 +1,8 @@
 import type { FocusedContext } from '@/editor/types';
 import { NULL_FOCUSED_CONTEXT } from '@/editor/types';
 import type { ChatMessageRecord, ContentBlock, ToolUseBlock } from '@/chat/types';
+import type { StagedAttachment } from '@/chat/attachmentsStore';
+import type { MentionPickerItem } from '../../MentionPicker';
 import { ChatMessageStore } from '@/chat/messageStore';
 import { RunStateStore, type ProgressEvent, type PermissionRequest } from '@/chat/runStateStore';
 import type { StreamingPhase } from '@/chat/streamingController';
@@ -323,6 +325,40 @@ export function mockProgressEvents(
     else out.push({ kind: 'task_output', toolUseId, taskId: `T${i}`, status: 'progress' });
   }
   return out;
+}
+
+export interface MakeStagedAttachmentOpts {
+  readonly id?: string;
+  readonly kind?: 'image' | 'document';
+  readonly name?: string;
+  readonly mimeType?: string;
+  readonly size?: number;
+  readonly previewUrl?: string | null;
+}
+
+export function makeStagedAttachment(opts: MakeStagedAttachmentOpts = {}): StagedAttachment {
+  const kind = opts.kind ?? 'image';
+  const name = opts.name ?? (kind === 'image' ? 'screenshot.png' : 'notes.pdf');
+  const mimeType = opts.mimeType ?? (kind === 'image' ? 'image/png' : 'application/pdf');
+  const size = opts.size ?? 42_000;
+  return {
+    id: opts.id ?? `att-${Math.random().toString(36).slice(2, 8)}`,
+    kind,
+    name,
+    mimeType,
+    bytes: new Uint8Array(),
+    size,
+    previewUrl: opts.previewUrl ?? null,
+  };
+}
+
+export function makeMentionItem(
+  path: string,
+  matches: readonly number[] = [],
+  kind: 'image' | 'document' = 'document',
+): MentionPickerItem {
+  const name = path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
+  return { path, name, kind, matches };
 }
 
 export const mockEditDiff = {

@@ -49,7 +49,8 @@ describe('ProviderManager — FIFO queue (AC3, FR-PROV-05)', () => {
 
     const provider = makeFakeProvider({
       async *stream(req) {
-        const tag = req.messages[0]!.content;
+        const raw = req.messages[0]!.content;
+        const tag = typeof raw === 'string' ? raw : '';
         active += 1;
         peakActive = Math.max(peakActive, active);
         enterOrder.push(tag);

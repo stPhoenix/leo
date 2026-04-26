@@ -313,7 +313,8 @@ describe('autoCompactIfNeeded — AC4 summarization payload', () => {
     expect(req.messages[0]).toEqual({ role: 'system', content: COMPACT_SYSTEM_PROMPT });
     const lastMsg = req.messages[req.messages.length - 1]!;
     expect(lastMsg.role).toBe('user');
-    expect(lastMsg.content.startsWith('CRITICAL: Respond with TEXT ONLY.')).toBe(true);
+    expect(typeof lastMsg.content === 'string').toBe(true);
+    expect((lastMsg.content as string).startsWith('CRITICAL: Respond with TEXT ONLY.')).toBe(true);
   });
 });
 

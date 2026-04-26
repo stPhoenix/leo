@@ -2,6 +2,9 @@ export interface TokenUsage {
   readonly input: number;
   readonly output: number;
   readonly total: number;
+  readonly reasoning?: number;
+  readonly cacheCreation?: number;
+  readonly cacheRead?: number;
   readonly estimatedInput?: boolean;
   readonly estimatedOutput?: boolean;
 }
@@ -16,6 +19,9 @@ export interface TokenUsageInput {
   readonly outputChars: number;
   readonly providerInput?: number;
   readonly providerOutput?: number;
+  readonly providerReasoning?: number;
+  readonly providerCacheCreation?: number;
+  readonly providerCacheRead?: number;
 }
 
 export function computeTokenUsage(input: TokenUsageInput): TokenUsage {
@@ -29,6 +35,11 @@ export function computeTokenUsage(input: TokenUsageInput): TokenUsage {
     input: inputTokens,
     output: outputTokens,
     total: inputTokens + outputTokens,
+    ...(input.providerReasoning !== undefined ? { reasoning: input.providerReasoning } : {}),
+    ...(input.providerCacheCreation !== undefined
+      ? { cacheCreation: input.providerCacheCreation }
+      : {}),
+    ...(input.providerCacheRead !== undefined ? { cacheRead: input.providerCacheRead } : {}),
     ...(estimatedInput ? { estimatedInput: true } : {}),
     ...(estimatedOutput ? { estimatedOutput: true } : {}),
   };

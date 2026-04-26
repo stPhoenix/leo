@@ -23,6 +23,7 @@ import {
   EventChannel,
   USE_GRAPH_RUNTIME,
   type ConfirmationDecision,
+  type GraphAutocompactOptions,
   type GraphDeps,
   type GraphTraceContext,
   type ToolConfirmationInterruptPayload,
@@ -94,6 +95,7 @@ export interface AgentRunnerOptions {
   readonly planMode?: PlanModeController;
   readonly agentIdFor?: (thread: ThreadId) => string | null;
   readonly microcompact?: MicrocompactAgentOptions;
+  readonly autocompact?: GraphAutocompactOptions | null;
   readonly tracer?: AgentTracer;
 }
 
@@ -142,6 +144,7 @@ export class AgentRunner {
   private readonly microcompactGapMinutes: number | undefined;
   private readonly microcompactKeepRecent: number | undefined;
   private readonly microcompactIsCompactable: ((toolName: string) => boolean) | undefined;
+  private readonly autocompactOptions: GraphAutocompactOptions | null;
   private readonly tracer: AgentTracer | undefined;
   private readonly slots: TurnSlot[] = [];
   private inflight: TurnSlot | null = null;
@@ -172,6 +175,7 @@ export class AgentRunner {
     this.microcompactGapMinutes = mc.gapThresholdMinutes;
     this.microcompactKeepRecent = mc.keepRecent;
     this.microcompactIsCompactable = mc.isCompactable;
+    this.autocompactOptions = opts.autocompact ?? null;
     this.tracer = opts.tracer;
   }
 
@@ -297,6 +301,7 @@ export class AgentRunner {
         keepRecent: this.microcompactKeepRecent,
         isCompactable: this.microcompactIsCompactable ?? this.defaultIsCompactable.bind(this),
       },
+      autocompact: this.autocompactOptions,
       getHistory: (t): readonly AgentHistoryMessage[] => this.getHistory(t),
       appendHistory: (t, m): void => this.appendHistory(t, m),
     };

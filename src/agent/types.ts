@@ -1,10 +1,12 @@
 import type { FocusedContext } from '@/editor/types';
+import type { ContentBlock } from '@/chat/types';
 
 export type ThreadId = string;
 
 export interface AgentUserMessage {
   readonly role: 'user';
   readonly content: string;
+  readonly blocks?: readonly ContentBlock[];
 }
 
 export interface AgentAssistantMessage {

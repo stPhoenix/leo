@@ -1,6 +1,12 @@
 import type { ContextData } from '@/agent/contextAnalyzer';
 import { type CategoryId, type ContextCategory } from '@/ui/contextGrid';
-import { AUTOCOMPACT_BUFFER_TOKENS } from '@/agent/compactConstants';
+import {
+  AUTOCOMPACT_BUFFER_TOKENS,
+  MANUAL_COMPACT_BUFFER_TOKENS,
+  MAX_OUTPUT_TOKENS_DEFAULT,
+  WARNING_THRESHOLD_BUFFER_TOKENS,
+  effectiveContextWindow,
+} from '@/agent/compactConstants';
 import { registerWidget, type WidgetComponentProps } from './registry';
 
 export interface ContextWidgetPayload {
@@ -43,17 +49,24 @@ function ContextWidgetBody({ data, contextWindow }: BodyProps): JSX.Element {
   const source = data.tokenTotalSource === 'api' ? 'measured' : 'estimated';
   const legend = categories.filter((c) => c.isFreeSpace !== true && c.tokens > 0);
   const arcs = buildArcs(categories, window);
+  const effective = effectiveContextWindow(window, MAX_OUTPUT_TOKENS_DEFAULT);
+  const warnAt = effective - WARNING_THRESHOLD_BUFFER_TOKENS;
+  const critAt = effective - MANUAL_COMPACT_BUFFER_TOKENS;
+  const level: 'ok' | 'warn' | 'critical' =
+    totalTokens >= critAt ? 'critical' : totalTokens >= warnAt ? 'warn' : 'ok';
+  const percentLeft = Math.max(0, 100 - pct);
 
   return (
     <section
-      className="leo-context-widget"
+      className={`leo-context-widget is-level-${level}`}
       data-slot="context-widget"
+      data-level={level}
       aria-label="Context usage breakdown"
     >
       <header className="leo-context-widget-head">
         <span className="leo-context-widget-title">Context</span>
         <span className="leo-context-widget-total" data-slot="widget-total">
-          {fmt(totalTokens)} / {fmt(window)} ({pct}%)
+          {fmt(totalTokens)} / {fmt(window)} ({pct}% used · {percentLeft}% left)
         </span>
         <span className="leo-context-widget-meta" data-slot="widget-meta">
           {source} · {data.model} · {data.pipelineMessageCount} msgs

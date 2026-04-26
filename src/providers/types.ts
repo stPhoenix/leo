@@ -1,3 +1,5 @@
+import type { ContentBlock } from '@/chat/types';
+
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 
 export interface ToolCallRequest {
@@ -6,12 +8,26 @@ export interface ToolCallRequest {
   readonly argsJson: string;
 }
 
+export type ChatMessageContent = string | readonly ContentBlock[];
+
 export interface ChatMessage {
   readonly role: ChatRole;
-  readonly content: string;
+  readonly content: ChatMessageContent;
   readonly toolCalls?: readonly ToolCallRequest[];
   readonly toolCallId?: string;
   readonly name?: string;
+}
+
+export type { ContentBlock };
+
+export function chatContentText(content: ChatMessageContent): string {
+  if (typeof content === 'string') return content;
+  const out: string[] = [];
+  for (const b of content) {
+    if (b.type === 'text') out.push(b.text);
+    else if (b.type === 'thinking') out.push(b.thinking);
+  }
+  return out.join('');
 }
 
 export interface OpenAITool {

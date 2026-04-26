@@ -49,7 +49,14 @@ export type StreamEvent =
       readonly resolve: (decision: ToolConfirmationDecision) => void;
     }
   | { readonly type: 'tool_result'; readonly id: string; readonly result: ToolResult }
-  | { readonly type: 'usage'; readonly input: number; readonly output: number }
+  | {
+      readonly type: 'usage';
+      readonly input: number;
+      readonly output: number;
+      readonly reasoning?: number;
+      readonly cacheCreation?: number;
+      readonly cacheRead?: number;
+    }
   | { readonly type: 'done'; readonly cancelled?: boolean }
   | { readonly type: 'error'; readonly error: Error }
   | {
@@ -66,7 +73,13 @@ export type StreamEvent =
   | {
       readonly type: 'message_delta';
       readonly stopReason?: AssistantStopReason;
-      readonly usage?: { readonly input?: number; readonly output?: number };
+      readonly usage?: {
+        readonly input?: number;
+        readonly output?: number;
+        readonly reasoning?: number;
+        readonly cacheCreation?: number;
+        readonly cacheRead?: number;
+      };
     }
   | { readonly type: 'progress'; readonly event: ProgressEvent };
 
