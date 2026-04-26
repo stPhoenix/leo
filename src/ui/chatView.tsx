@@ -575,8 +575,26 @@ export class ChatView extends ItemView {
     this.streamingController?.stop();
     this.streamingController?.dispose();
     this.turnDispatcher?.clear();
-    this.messageStore.clear();
-    this.deps.logger?.info('slash.clear', {});
+    const threads = this.deps.threadsSource;
+    if (threads === undefined) {
+      this.messageStore.clear();
+      this.deps.logger?.info('slash.clear', { mode: 'in-memory' });
+      return;
+    }
+    const oldId = threads.getSnapshot().activeId;
+    void (async (): Promise<void> => {
+      try {
+        const newId = await threads.create();
+        if (oldId !== null && oldId !== newId) {
+          await threads.delete(oldId);
+        }
+        this.deps.logger?.info('slash.clear', { mode: 'rotate', oldId, newId });
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        this.deps.logger?.warn('slash.clear.failed', { error: error.message });
+        new Notice(`Clear failed: ${error.message}`);
+      }
+    })();
   }
 
   private renderContextAsWidget(data: ContextData): void {
