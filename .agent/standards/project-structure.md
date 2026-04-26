@@ -62,7 +62,7 @@ leo/
 │   │   ├── tokenUsage.ts
 │   │   ├── types.ts
 │   │   └── wireAttachments.ts
-│   ├── editor/                          # CM6 edit lock, editor bridge, focused context, highlights
+│   ├── editor/                          # CM6 edit lock, editor bridge, focused context, highlights, workspace navigation
 │   │   ├── activeNoteEditBridge.ts
 │   │   ├── cm6LockDecoration.ts
 │   │   ├── editLock.ts
@@ -72,7 +72,8 @@ leo/
 │   │   ├── highlights.ts
 │   │   ├── types.ts
 │   │   ├── withLock.ts
-│   │   └── workspaceFocusProbe.ts
+│   │   ├── workspaceFocusProbe.ts
+│   │   └── workspaceNavigator.ts        # WorkspaceNavigator adapter — open/reveal a note in a leaf, set cursor/selection, fire 3s flash highlight
 │   ├── graph/
 │   │   └── GraphCache.ts                # Link graph cache
 │   ├── indexer/                         # Vault + canvas chunking, dirty queue, reindex
@@ -161,8 +162,10 @@ leo/
 │   │   │   ├── createNote.ts
 │   │   │   ├── editNote.ts
 │   │   │   ├── listNotes.ts
+│   │   │   ├── openNote.ts              # open_note tool — open or reveal a note in an Obsidian leaf
 │   │   │   ├── readFile.ts              # Generic any-file reader with binary detection + maxBytes cap
 │   │   │   ├── readNote.ts
+│   │   │   ├── revealInNote.ts          # reveal_in_note tool — open + cursor/select + flash highlight
 │   │   │   ├── searchVault.ts
 │   │   │   └── skillTool.ts
 │   │   ├── user/

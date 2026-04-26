@@ -11,6 +11,8 @@ const BUILTIN: Record<string, string> = {
   create_note: 'file-plus',
   append_to_note: 'file-plus-2',
   edit_note: 'pencil',
+  open_note: 'external-link',
+  reveal_in_note: 'crosshair',
 };
 
 const MCP_ICON = 'plug';

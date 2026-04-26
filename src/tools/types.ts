@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import type { Logger } from '@/platform/Logger';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
+import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
 
 /**
  * Edit-capable editor facade supplied to tools via ToolCtx. `ctx.editor` is
@@ -43,6 +44,7 @@ export interface ToolCtx {
   readonly signal: AbortSignal;
   readonly vault: VaultAdapter;
   readonly editor: EditNoteBridge;
+  readonly navigator?: WorkspaceNavigator;
   readonly logger?: Logger;
   readonly agentId?: string | null;
   readonly progress?: (event: ToolProgressEvent) => void;

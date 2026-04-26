@@ -59,6 +59,9 @@ import { createCreateNoteTool } from '@/tools/builtin/createNote';
 import { createAppendToNoteTool } from '@/tools/builtin/appendToNote';
 import { createCreateFolderTool } from '@/tools/builtin/createFolder';
 import { createEditNoteTool } from '@/tools/builtin/editNote';
+import { createOpenNoteTool } from '@/tools/builtin/openNote';
+import { createRevealInNoteTool } from '@/tools/builtin/revealInNote';
+import { createObsidianWorkspaceNavigator } from '@/editor/workspaceNavigator';
 import type { ToolSpec } from '@/tools/types';
 import { ConfirmationController, prettifyArgs } from '@/agent/confirmationController';
 import { AcceptRejectController } from '@/agent/acceptRejectController';
@@ -202,6 +205,7 @@ export default class LeoPlugin extends Plugin {
   indexerRag!: IndexerRagWiring;
   editLock!: EditLockController;
   highlightController!: HighlightController;
+  workspaceNavigator!: ReturnType<typeof createObsidianWorkspaceNavigator>;
   planStore!: PlanStore;
   planApprovalController!: PlanApprovalController;
   safeStorage!: SafeStorage;
@@ -377,6 +381,13 @@ export default class LeoPlugin extends Plugin {
         logger: this.logger,
       }) as unknown as ToolSpec<unknown, unknown>,
     );
+    this.workspaceNavigator = createObsidianWorkspaceNavigator({
+      app: this.app,
+      highlights: this.highlightController,
+      logger: this.logger,
+    });
+    this.toolRegistry.register(createOpenNoteTool() as unknown as ToolSpec<unknown, unknown>);
+    this.toolRegistry.register(createRevealInNoteTool() as unknown as ToolSpec<unknown, unknown>);
     this.skillsStore = new SkillsStore({
       vault: vaultAdapter,
       logger: this.logger,
@@ -754,6 +765,7 @@ export default class LeoPlugin extends Plugin {
       toolRegistry: this.toolRegistry,
       vault: vaultAdapter,
       editor: editBridge,
+      navigator: this.workspaceNavigator,
       planMode: this.planModeController,
       ragEngine: this.indexerRag.ragEngine,
       skillListing: {
@@ -823,6 +835,7 @@ export default class LeoPlugin extends Plugin {
         new ChatView(leaf, {
           logger: this.logger,
           focusedContext: this.focusedContext,
+          workspaceNavigator: this.workspaceNavigator,
           streamStarter,
           messageStore: this.chatMessageStore,
           ...(this.threadsStore !== null

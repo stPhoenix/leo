@@ -29,6 +29,7 @@ const EDIT_TOOL_NAMES = new Set([
 import { StreamingTurnController, type StreamingPhase } from '@/chat/streamingController';
 import type { StreamEvent } from '@/agent/streamEvents';
 import type { FocusedContextChannel } from '@/editor/focusedContextChannel';
+import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
 import type { FocusedContext } from '@/editor/types';
 import type { ConfirmationController } from '@/agent/confirmationController';
 import type { AcceptRejectController } from '@/agent/acceptRejectController';
@@ -84,6 +85,7 @@ export interface ChatViewDeps {
   readonly threadsSource?: ThreadsSource;
   readonly streamStarter?: ChatStreamStarter;
   readonly focusedContext?: FocusedContextChannel;
+  readonly workspaceNavigator?: WorkspaceNavigator;
   readonly confirmationController?: ConfirmationController;
   readonly acceptRejectController?: AcceptRejectController;
   readonly planMode?: ChatPlanModeAdapter;
@@ -641,6 +643,22 @@ export class ChatView extends ItemView {
   }
 
   private revealFile(path: string): void {
+    const nav = this.deps.workspaceNavigator;
+    const focus = this.deps.focusedContext?.current() ?? null;
+    if (nav !== undefined && focus !== null && focus.file === path && focus.selection !== null) {
+      void nav.revealInNote({
+        path,
+        lineStart: focus.selection.from.line,
+        lineEnd: focus.selection.to.line,
+        chStart: focus.selection.from.ch,
+        chEnd: focus.selection.to.ch,
+      });
+      return;
+    }
+    if (nav !== undefined) {
+      void nav.openNote(path);
+      return;
+    }
     void this.app.workspace.openLinkText(path, '', false);
   }
 

@@ -52,6 +52,7 @@ function toTokenBlock(b: ContentBlock): TokenBlock {
 
 function recordUsage(r: ChatMessageRecord): TokenUsage | null {
   if (r.role !== 'assistant') return null;
+  if (r.status === 'error') return null;
   const t = r.tokens;
   if (t === undefined || typeof t.input !== 'number') return null;
   const usage: TokenUsage = {

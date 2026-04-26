@@ -19,8 +19,8 @@ const DEFAULT_DURATION_MS = 3000;
 
 export class HighlightController {
   private readonly duration: number;
-  private readonly setTimer: typeof setTimeout;
-  private readonly clearTimer: typeof clearTimeout;
+  private readonly setTimer: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  private readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
   private readonly logger: Logger | undefined;
   private readonly timers = new Map<number, ReturnType<typeof setTimeout>>();
   private readonly active = new Map<number, HighlightRange>();
@@ -29,8 +29,14 @@ export class HighlightController {
 
   constructor(opts: HighlightControllerOptions = {}) {
     this.duration = opts.durationMs ?? DEFAULT_DURATION_MS;
-    this.setTimer = opts.setTimeoutImpl ?? setTimeout;
-    this.clearTimer = opts.clearTimeoutImpl ?? clearTimeout;
+    const customSet = opts.setTimeoutImpl;
+    this.setTimer =
+      customSet !== undefined
+        ? (cb, ms): ReturnType<typeof setTimeout> => customSet(cb, ms)
+        : (cb, ms): ReturnType<typeof setTimeout> => setTimeout(cb, ms);
+    const customClear = opts.clearTimeoutImpl;
+    this.clearTimer =
+      customClear !== undefined ? (h): void => customClear(h) : (h): void => clearTimeout(h);
     this.logger = opts.logger;
   }
 

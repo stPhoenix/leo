@@ -1,5 +1,6 @@
 import type { ToolCtx, EditNoteBridge } from '@/tools/types';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
+import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
 
 export const noopEditor: EditNoteBridge = {
   isActiveNote: () => false,
@@ -9,6 +10,7 @@ export const noopEditor: EditNoteBridge = {
 export function makeToolCtx(overrides: {
   readonly vault?: VaultAdapter;
   readonly editor?: EditNoteBridge;
+  readonly navigator?: WorkspaceNavigator;
   readonly thread?: string;
   readonly signal?: AbortSignal;
 }): ToolCtx {
@@ -17,5 +19,6 @@ export function makeToolCtx(overrides: {
     signal: overrides.signal ?? new AbortController().signal,
     vault: overrides.vault ?? ({} as VaultAdapter),
     editor: overrides.editor ?? noopEditor,
+    ...(overrides.navigator !== undefined ? { navigator: overrides.navigator } : {}),
   };
 }

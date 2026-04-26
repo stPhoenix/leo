@@ -84,9 +84,10 @@ export async function* toStreamEvents(
     for await (const chunk of source) {
       yield* processChunk(chunk, st);
     }
-    yield* finalize(st);
+    yield* drain(st);
+    yield { type: 'done' };
   } catch (err) {
-    yield* finalize(st);
+    yield* drain(st);
     yield { type: 'error', error: err instanceof Error ? err : new Error(String(err)) };
   }
 }
@@ -170,7 +171,7 @@ function* processChunk(chunk: AIMessageChunk, st: State): Iterable<StreamEvent> 
   }
 }
 
-function* finalize(st: State): Iterable<StreamEvent> {
+function* drain(st: State): Iterable<StreamEvent> {
   if (st.textStarted && !st.textClosed) {
     st.textClosed = true;
     yield { type: 'block_stop', index: st.textIndex };
@@ -202,5 +203,4 @@ function* finalize(st: State): Iterable<StreamEvent> {
       },
     };
   }
-  yield { type: 'done' };
 }

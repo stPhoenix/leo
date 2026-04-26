@@ -138,4 +138,32 @@ describe('toStreamEvents — error path', () => {
     if (last.type === 'error') expect(last.error.message).toBe('upstream blew up');
     expect(events.some((e) => e.type === 'block_stop')).toBe(true);
   });
+
+  it('does NOT emit a done event on the error path (otherwise providerManager swallows the error)', async () => {
+    const boomEmpty: AsyncIterable<AIMessageChunk> = {
+      // eslint-disable-next-line @typescript-eslint/require-await
+      [Symbol.asyncIterator](): AsyncIterator<AIMessageChunk> {
+        return {
+          next: async (): Promise<IteratorResult<AIMessageChunk>> => {
+            throw new Error('timeout');
+          },
+        };
+      },
+    };
+    const events = await collect(toStreamEvents(boomEmpty));
+    expect(events.some((e) => e.type === 'done')).toBe(false);
+    expect(events[events.length - 1]?.type).toBe('error');
+  });
+
+  it('error after partial text: drains block_stop, then error, no done', async () => {
+    async function* boomPartial(): AsyncIterable<AIMessageChunk> {
+      yield new AIMessageChunk({ content: 'partial' });
+      throw new Error('mid-stream timeout');
+    }
+    const events = await collect(toStreamEvents(boomPartial()));
+    const types = events.map((e) => e.type);
+    expect(types).not.toContain('done');
+    expect(types).toContain('block_stop');
+    expect(types[types.length - 1]).toBe('error');
+  });
 });

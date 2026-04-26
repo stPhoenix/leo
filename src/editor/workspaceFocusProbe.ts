@@ -15,11 +15,10 @@ export class WorkspaceFocusProbe implements EditorFocusProbe {
   }
 
   onLeafChange(leaf: WorkspaceLeaf | null): void {
-    this.last = null;
     const view = leaf?.view;
     if (view instanceof MarkdownView) {
       const cm = extractView(view.editor);
-      if (cm !== null) this.last = { view: cm, file: view.file ?? null };
+      this.last = cm !== null ? { view: cm, file: view.file ?? null } : null;
     }
   }
 
@@ -35,9 +34,10 @@ export class WorkspaceFocusProbe implements EditorFocusProbe {
 
   read(): FocusedContext {
     const active = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (active === null) return NULL_FOCUSED_CONTEXT;
-    const cm = extractView(active.editor);
-    if (cm !== null) return readFocusedContextFromView(cm, active.file?.path ?? null);
+    if (active !== null) {
+      const cm = extractView(active.editor);
+      if (cm !== null) return readFocusedContextFromView(cm, active.file?.path ?? null);
+    }
     if (this.last !== null) {
       return readFocusedContextFromView(this.last.view, this.last.file?.path ?? null);
     }

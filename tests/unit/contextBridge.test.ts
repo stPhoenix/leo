@@ -13,6 +13,7 @@ function rec(
     createdAt: over.createdAt ?? '2026-04-26T00:00:00Z',
     ...(over.tokens !== undefined ? { tokens: over.tokens } : {}),
     ...(over.blocks !== undefined ? { blocks: over.blocks } : {}),
+    ...(over.status !== undefined ? { status: over.status } : {}),
   };
 }
 
@@ -92,6 +93,32 @@ describe('recordsToAnalyzerInputs', () => {
     const records: ChatMessageRecord[] = [rec({ role: 'assistant', content: 'no usage yet' })];
     const { originalMessages } = recordsToAnalyzerInputs(records);
     expect(originalMessages[0]?.usage).toBeUndefined();
+    expect(apiUsageTokens(originalMessages)).toBeNull();
+  });
+
+  it('skips usage on error-status assistants (timeout leftovers must not anchor apiUsageTokens)', () => {
+    const records: ChatMessageRecord[] = [
+      rec({
+        role: 'assistant',
+        id: 'a-1',
+        content: 'prior turn',
+        tokens: { input: 4000, output: 50, total: 4050 },
+      }),
+      rec({ role: 'user', content: 'follow-up that timed out' }),
+      rec({
+        role: 'assistant',
+        id: 'a-2',
+        content: '',
+        status: 'error',
+        tokens: { input: 7, output: 0, total: 7, estimatedInput: true, estimatedOutput: true },
+      }),
+    ];
+    const { originalMessages } = recordsToAnalyzerInputs(records);
+    const errored = originalMessages[originalMessages.length - 1]!;
+    expect(errored.role).toBe('assistant');
+    expect(errored.usage).toBeUndefined();
+    // apiUsageTokens looks only at the last assistant; with the errored one
+    // skipped from usage it returns null, letting analyzer fall back to estimate.
     expect(apiUsageTokens(originalMessages)).toBeNull();
   });
 });

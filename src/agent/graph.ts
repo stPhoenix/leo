@@ -10,6 +10,7 @@ import { chatContentText } from '@/providers/types';
 import type { ToolRegistry } from '@/tools/toolRegistry';
 import type { EditNoteBridge } from '@/tools/types';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
+import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
 import type { FocusedContext } from '@/editor/types';
 import type { ContextModifier } from '@/skills/types';
 import { Annotation, StateGraph, START, END, interrupt, MemorySaver } from '@langchain/langgraph';
@@ -167,6 +168,7 @@ export interface GraphDeps {
   readonly toolRegistry: ToolRegistry | null;
   readonly vault: VaultAdapter;
   readonly editor: EditNoteBridge;
+  readonly navigator?: WorkspaceNavigator;
   readonly maxToolRoundTrips: number;
   readonly allowedToolsForThread?: (thread: ThreadId) => ReadonlySet<string>;
   readonly markThreadAllowed?: (thread: ThreadId, toolId: string) => void;
@@ -780,6 +782,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
           signal: turn.signal,
           vault: deps.vault,
           editor: deps.editor,
+          ...(deps.navigator !== undefined ? { navigator: deps.navigator } : {}),
           logger: deps.logger,
           agentId,
         });

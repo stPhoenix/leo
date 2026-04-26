@@ -6,6 +6,7 @@ import type { StreamEvent } from './streamEvents';
 import type { ToolRegistry } from '@/tools/toolRegistry';
 import type { EditNoteBridge } from '@/tools/types';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
+import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
 import type { PlanModeController } from './planModeController';
 import { BUILTIN_COMPACTABLE_TOOLS } from './microcompact';
 import {
@@ -89,6 +90,7 @@ export interface AgentRunnerOptions {
   readonly toolRegistry?: ToolRegistry;
   readonly vault?: VaultAdapter;
   readonly editor?: EditNoteBridge;
+  readonly navigator?: WorkspaceNavigator;
   readonly maxToolRoundTrips?: number;
   readonly allowedToolsForThread?: (thread: ThreadId) => ReadonlySet<string>;
   readonly markThreadAllowed?: (thread: ThreadId, toolId: string) => void;
@@ -135,6 +137,7 @@ export class AgentRunner {
   private readonly toolRegistry: ToolRegistry | null;
   private readonly vault: VaultAdapter | null;
   private readonly editor: EditNoteBridge | null;
+  private readonly navigator: WorkspaceNavigator | null;
   private readonly maxToolRoundTrips: number;
   private readonly allowedToolsForThread: AgentRunnerOptions['allowedToolsForThread'];
   private readonly markThreadAllowed: AgentRunnerOptions['markThreadAllowed'];
@@ -165,6 +168,7 @@ export class AgentRunner {
     this.toolRegistry = opts.toolRegistry ?? null;
     this.vault = opts.vault ?? null;
     this.editor = opts.editor ?? null;
+    this.navigator = opts.navigator ?? null;
     this.maxToolRoundTrips = opts.maxToolRoundTrips ?? DEFAULT_MAX_TOOL_ROUND_TRIPS;
     this.allowedToolsForThread = opts.allowedToolsForThread;
     this.markThreadAllowed = opts.markThreadAllowed;
@@ -286,6 +290,7 @@ export class AgentRunner {
       toolRegistry: this.toolRegistry,
       vault: this.vault ?? noopVault,
       editor: this.editor ?? noopEditor,
+      ...(this.navigator !== null ? { navigator: this.navigator } : {}),
       maxToolRoundTrips: this.maxToolRoundTrips,
       ...(this.allowedToolsForThread !== undefined
         ? { allowedToolsForThread: this.allowedToolsForThread }
