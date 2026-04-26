@@ -237,6 +237,10 @@ export default class LeoPlugin extends Plugin {
   private indexerStatusEl: HTMLElement | null = null;
   private autocompactTracking = createTrackingState();
 
+  private getActiveThreadId(): string {
+    return this.threadsStore?.activeIdOrNull() ?? DEFAULT_THREAD_ID;
+  }
+
   override async onload(): Promise<void> {
     this.store = new SettingsStore(this);
     const settings = await this.store.load();
@@ -453,7 +457,7 @@ export default class LeoPlugin extends Plugin {
       } finally {
         suspendPersist = false;
       }
-      agentHistory.set(DEFAULT_THREAD_ID, deriveAgentHistory(thread.messages));
+      agentHistory.set(this.getActiveThreadId(), deriveAgentHistory(thread.messages));
     };
 
     this.confirmationController = new ConfirmationController();
@@ -724,7 +728,8 @@ export default class LeoPlugin extends Plugin {
     };
     const compactRunner = {
       run: async (customInstructions?: string): Promise<void> => {
-        const history = agentHistory.get(DEFAULT_THREAD_ID) ?? [];
+        const activeThread = this.getActiveThreadId();
+        const history = agentHistory.get(activeThread) ?? [];
         const messages: ChatMessage[] = history.map((m) => ({
           role: m.role,
           content: m.content,
@@ -750,7 +755,7 @@ export default class LeoPlugin extends Plugin {
           new Notice('Compact: nothing changed.');
           return;
         }
-        replaceHistoryAfterCompact(DEFAULT_THREAD_ID, result);
+        replaceHistoryAfterCompact(activeThread, result);
         emitCompactBanner(result, 'manual');
       },
     };
@@ -805,7 +810,7 @@ export default class LeoPlugin extends Plugin {
 
     const confirmationController = this.confirmationController;
     const streamStarter: ChatStreamStarter = (prompt, signal, blocks) => {
-      const thread = DEFAULT_THREAD_ID;
+      const thread = this.getActiveThreadId();
       const onAbort = (): void => this.agentRunner.cancel(thread);
       signal.addEventListener('abort', onAbort, { once: true });
       const message: AgentUserMessage =
@@ -864,7 +869,7 @@ export default class LeoPlugin extends Plugin {
                 args,
                 agentId: MAIN_AGENT_ID,
                 trigger: 'user',
-                invocationContext: { threadId: DEFAULT_THREAD_ID },
+                invocationContext: { threadId: this.getActiveThreadId() },
               });
               if (!processed.ok) {
                 new Notice(`Skill failed: ${processed.error}`);
@@ -875,8 +880,8 @@ export default class LeoPlugin extends Plugin {
             },
           },
           planMode: {
-            enter: () => this.planModeController.enterPlan(DEFAULT_THREAD_ID),
-            exit: () => this.planModeController.exitPlan(DEFAULT_THREAD_ID),
+            enter: () => this.planModeController.enterPlan(this.getActiveThreadId()),
+            exit: () => this.planModeController.exitPlan(this.getActiveThreadId()),
           },
           analyzeContext: async (signal) => {
             const snap = this.contextSnapshot;
@@ -1060,7 +1065,7 @@ export default class LeoPlugin extends Plugin {
   }
 
   private async analyzeContextForChat(signal: AbortSignal): Promise<ContextData> {
-    const thread = DEFAULT_THREAD_ID;
+    const thread = this.getActiveThreadId();
     const model = this.store.get().provider.chatModel;
     const history = this.chatMessageStore.getSnapshot();
     const { messages, originalMessages } = recordsToAnalyzerInputs(history);
