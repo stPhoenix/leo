@@ -62,14 +62,28 @@ describe('estimateBlockTokens — per-block rules', () => {
 });
 
 describe('Tier 1 apiUsageTokens', () => {
-  it('returns total from latest assistant usage', () => {
+  it('returns input + cache_creation + cache_read from latest assistant usage', () => {
     const msgs: TokenMessage[] = [
       { role: 'user', content: 'hi' },
-      { role: 'assistant', content: 'hello', usage: { input_tokens: 10, output_tokens: 5 } },
+      {
+        role: 'assistant',
+        content: 'hello',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_creation_input_tokens: 3,
+          cache_read_input_tokens: 7,
+        },
+      },
     ];
-    expect(apiUsageTokens(msgs)).toBe(15);
+    // 10 + 3 + 7 = 20 (output_tokens ignored)
+    expect(apiUsageTokens(msgs)).toBe(20);
   });
-  it('honours provided total_tokens when present', () => {
+  it('treats missing cache fields as zero', () => {
+    const msgs: TokenMessage[] = [{ role: 'assistant', content: 'x', usage: { input_tokens: 42 } }];
+    expect(apiUsageTokens(msgs)).toBe(42);
+  });
+  it('ignores total_tokens (not the contract anymore)', () => {
     const msgs: TokenMessage[] = [
       {
         role: 'assistant',
@@ -77,7 +91,7 @@ describe('Tier 1 apiUsageTokens', () => {
         usage: { input_tokens: 10, output_tokens: 5, total_tokens: 99 },
       },
     ];
-    expect(apiUsageTokens(msgs)).toBe(99);
+    expect(apiUsageTokens(msgs)).toBe(10);
   });
   it('returns null when no assistant usage', () => {
     const msgs: TokenMessage[] = [{ role: 'user', content: 'hi' }];
@@ -123,10 +137,20 @@ describe('estimateTokens — 3-tier orchestration', () => {
   it('picks tier 1 when latest message is assistant with usage', () => {
     const msgs: TokenMessage[] = [
       { role: 'user', content: 'q' },
-      { role: 'assistant', content: 'a', usage: { input_tokens: 100, output_tokens: 20 } },
+      {
+        role: 'assistant',
+        content: 'a',
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_creation_input_tokens: 5,
+          cache_read_input_tokens: 15,
+        },
+      },
     ];
     const r = estimateTokens(msgs);
     expect(r.tier).toBe('usage');
+    // 100 + 5 + 15 = 120 (output_tokens ignored)
     expect(r.total).toBe(120);
   });
 

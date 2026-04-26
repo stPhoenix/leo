@@ -2,6 +2,8 @@ import type { Logger } from '@/platform/Logger';
 import type { ChatMessage } from '@/providers/types';
 import { MICROCOMPACT_BOUNDARY_MARKER } from './microcompact';
 import { COMPACT_BOUNDARY_MARKER } from './autocompact';
+import { apiUsageTokens, type TokenMessage } from './tokenEstimator';
+import type { MessageBreakdown } from './messageBreakdown';
 
 export interface ContextAnalyzerInputs {
   readonly messages: readonly ChatMessage[];
@@ -15,6 +17,11 @@ export interface ContextAnalyzerInputs {
   readonly microcompact?: (messages: readonly ChatMessage[]) => readonly ChatMessage[];
 }
 
+export interface MessageTokenResult {
+  readonly total: number;
+  readonly breakdown: MessageBreakdown;
+}
+
 export interface ContextCounters {
   readonly countSystemTokens: (ctx: CounterContext) => Promise<number>;
   readonly countMemoryFileTokens: (ctx: CounterContext) => Promise<number>;
@@ -22,7 +29,7 @@ export interface ContextCounters {
   readonly countMcpToolTokens: (ctx: CounterContext) => Promise<number>;
   readonly countCustomAgentTokens: (ctx: CounterContext) => Promise<number>;
   readonly countSlashCommandTokens: (ctx: CounterContext) => Promise<number>;
-  readonly approximateMessageTokens: (ctx: CounterContext) => Promise<number>;
+  readonly approximateMessageTokens: (ctx: CounterContext) => Promise<MessageTokenResult>;
   readonly countSkillTokens: (ctx: CounterContext) => Promise<number>;
 }
 
@@ -41,6 +48,7 @@ export interface ContextData {
   readonly customAgentTokens: number;
   readonly slashCommandTokens: number;
   readonly messageTokens: number;
+  readonly messageBreakdown: MessageBreakdown;
   readonly skillTokens: number;
   readonly skillCountFailed: boolean;
   readonly totalTokens: number;
@@ -72,7 +80,7 @@ export async function analyzeContextUsage(inputs: ContextAnalyzerInputs): Promis
     mcpToolTokens,
     customAgentTokens,
     slashCommandTokens,
-    messageTokens,
+    messageResult,
   ] = await Promise.all([
     inputs.counters.countSystemTokens(counterCtx),
     inputs.counters.countMemoryFileTokens(counterCtx),
@@ -82,6 +90,8 @@ export async function analyzeContextUsage(inputs: ContextAnalyzerInputs): Promis
     inputs.counters.countSlashCommandTokens(counterCtx),
     inputs.counters.approximateMessageTokens(counterCtx),
   ]);
+  const messageTokens = messageResult.total;
+  const messageBreakdown = messageResult.breakdown;
 
   throwIfAborted(inputs.signal);
 
@@ -106,7 +116,9 @@ export async function analyzeContextUsage(inputs: ContextAnalyzerInputs): Promis
     slashCommandTokens +
     messageTokens +
     skillTokens;
-  const apiTotal = extractApiUsageTotal(counterCtx.originalMessages);
+  const apiTotal = apiUsageTokens(
+    counterCtx.originalMessages as unknown as readonly TokenMessage[],
+  );
   const totalTokens = apiTotal ?? estimatedTotal;
   const tokenTotalSource: 'api' | 'estimated' = apiTotal !== null ? 'api' : 'estimated';
 
@@ -118,6 +130,7 @@ export async function analyzeContextUsage(inputs: ContextAnalyzerInputs): Promis
     customAgentTokens,
     slashCommandTokens,
     messageTokens,
+    messageBreakdown,
     skillTokens,
     skillCountFailed,
     totalTokens,
@@ -139,28 +152,6 @@ export function filterAfterLastBoundary(messages: readonly ChatMessage[]): ChatM
     }
   }
   return messages.slice(lastIdx + 1);
-}
-
-interface MessageWithUsage extends ChatMessage {
-  readonly usage?: {
-    readonly input_tokens?: number;
-    readonly output_tokens?: number;
-    readonly cache_creation_input_tokens?: number;
-    readonly cache_read_input_tokens?: number;
-  };
-}
-
-function extractApiUsageTotal(messages: readonly ChatMessage[]): number | null {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const m = messages[i] as MessageWithUsage;
-    if (m.role !== 'assistant') continue;
-    if (m.usage === undefined) continue;
-    const input = m.usage.input_tokens ?? 0;
-    const cacheCreate = m.usage.cache_creation_input_tokens ?? 0;
-    const cacheRead = m.usage.cache_read_input_tokens ?? 0;
-    return input + cacheCreate + cacheRead;
-  }
-  return null;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

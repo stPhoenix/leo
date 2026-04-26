@@ -38,10 +38,18 @@ import {
   type ContextData,
 } from '@/agent/contextAnalyzer';
 import { resolveContextWindow } from '@/agent/compactConstants';
+import {
+  createContextSnapshotStore,
+  type ContextSnapshotStore,
+} from '@/agent/contextSnapshotStore';
 import { runManualCompaction, type CompactionResult } from '@/agent/autocompact';
 import { createTrackingState } from '@/agent/autocompactBreaker';
-import { estimateMessageTokens, roughTokenCountEstimation } from '@/agent/tokenEstimator';
+import { roughTokenCountEstimation } from '@/agent/tokenEstimator';
 import type { TokenMessage } from '@/agent/tokenEstimator';
+import { breakdownMessages } from '@/agent/messageBreakdown';
+import { countToolDescriptorTokens, type ToolDescriptor } from '@/agent/toolTokenCount';
+import { countSkillFrontmatterTokens } from '@/agent/skillTokenCount';
+import { LEO_PREAMBLE } from '@/agent/types';
 import type { ChatMessage } from '@/providers/types';
 import { ToolRegistry } from '@/tools/toolRegistry';
 import { createReadNoteTool } from '@/tools/builtin/readNote';
@@ -66,6 +74,7 @@ import { DEFAULT_THREAD_ID, type ConversationStore } from '@/storage/conversatio
 import { createObsidianVaultAdapter } from '@/storage/vaultAdapter';
 import type { StoredMessage } from '@/storage/conversationSchema';
 import type { ChatMessageRecord } from '@/chat/types';
+import { recordsToAnalyzerInputs } from '@/chat/contextBridge';
 import { wireIndexerRag, type AppLike, type IndexerRagWiring } from '@/indexer/wireIndexerRag';
 import {
   createSearchVaultTool,
@@ -212,6 +221,9 @@ export default class LeoPlugin extends Plugin {
     subscribe: (cb: () => void) => () => void;
   } | null = null;
   private chatStoreUnsub: (() => void) | null = null;
+  private contextSnapshot: ContextSnapshotStore | null = null;
+  private contextSnapshotUnsub: (() => void) | null = null;
+  private contextSnapshotKeepalive: (() => void) | null = null;
   private threadsSubUnsub: (() => void) | null = null;
   private hydrateActiveThread: (() => Promise<void>) | null = null;
   private lastActiveThreadId: string | null = null;
@@ -406,6 +418,18 @@ export default class LeoPlugin extends Plugin {
         ...prev,
         messages: recordsToStored(snapshot),
       }));
+    });
+
+    this.contextSnapshot = createContextSnapshotStore({
+      analyze: (signal) => this.analyzeContextForChat(signal ?? new AbortController().signal),
+      onError: (err) =>
+        this.logger.warn('context.snapshot_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+    });
+    this.contextSnapshotKeepalive = this.contextSnapshot.subscribe(() => {});
+    this.contextSnapshotUnsub = this.chatMessageStore.subscribe(() => {
+      this.contextSnapshot?.refresh();
     });
     this.hydrateActiveThread = async (): Promise<void> => {
       if (this.threadsStore === null) return;
@@ -833,7 +857,13 @@ export default class LeoPlugin extends Plugin {
             enter: () => this.planModeController.enterPlan(DEFAULT_THREAD_ID),
             exit: () => this.planModeController.exitPlan(DEFAULT_THREAD_ID),
           },
-          analyzeContext: (signal) => this.analyzeContextForChat(signal),
+          analyzeContext: async (signal) => {
+            const snap = this.contextSnapshot;
+            if (snap === null) return this.analyzeContextForChat(signal);
+            const fresh = await snap.refreshNow(signal);
+            return fresh ?? snap.getSnapshot() ?? this.analyzeContextForChat(signal);
+          },
+          ...(this.contextSnapshot !== null ? { contextSnapshot: this.contextSnapshot } : {}),
           compactRunner,
           getContextWindow: () => {
             const s = this.store.get();
@@ -935,6 +965,11 @@ export default class LeoPlugin extends Plugin {
     this.threadsSubUnsub = null;
     this.chatStoreUnsub?.();
     this.chatStoreUnsub = null;
+    this.contextSnapshotUnsub?.();
+    this.contextSnapshotUnsub = null;
+    this.contextSnapshotKeepalive?.();
+    this.contextSnapshotKeepalive = null;
+    this.contextSnapshot = null;
     try {
       await this.threadsStore?.shutdown();
     } catch {
@@ -1007,30 +1042,58 @@ export default class LeoPlugin extends Plugin {
     const thread = DEFAULT_THREAD_ID;
     const model = this.store.get().provider.chatModel;
     const history = this.chatMessageStore.getSnapshot();
-    const messages = history
-      .filter((r) => r.role === 'user' || r.role === 'assistant')
-      .map((r) => ({
-        role: r.role === 'assistant' ? 'assistant' : 'user',
-        content: r.content,
-      })) as unknown as readonly TokenMessage[];
+    const { messages, originalMessages } = recordsToAnalyzerInputs(history);
 
-    const toolsJson = JSON.stringify(this.toolRegistry.toOpenAITools(thread));
-    const builtInToolTokens = roughTokenCountEstimation(toolsJson);
+    const allTools = this.toolRegistry.listFor(thread);
+    const builtInDescriptors: ToolDescriptor[] = [];
+    const mcpDescriptors: ToolDescriptor[] = [];
+    for (const spec of allTools) {
+      const desc: ToolDescriptor = {
+        name: spec.id,
+        description: spec.description,
+        schemaJson: JSON.stringify(spec.parameters ?? {}),
+      };
+      if (spec.source === 'mcp') mcpDescriptors.push(desc);
+      else builtInDescriptors.push(desc);
+    }
+    const builtInTotal = countToolDescriptorTokens(builtInDescriptors).total;
+    const mcpTotal = countToolDescriptorTokens(mcpDescriptors).total;
+
+    const skills = this.skillsStore.listAll();
+    const skillTotal = countSkillFrontmatterTokens(
+      skills.map((s) => ({
+        name: s.name,
+        description: s.description,
+        ...(s.whenToUse !== undefined ? { whenToUse: s.whenToUse } : {}),
+      })),
+    ).total;
+
+    // System prompt: LEO_PREAMBLE is the only always-on segment we can count
+    // statically here. Per-turn injections (active note, RAG hits, skill listing)
+    // vary per request and would inflate the static breakdown — they end up
+    // counted on the API tier from `usage.input_tokens`.
+    const systemTotal = roughTokenCountEstimation(LEO_PREAMBLE);
 
     const counters: ContextCounters = {
-      countSystemTokens: async () => 0,
+      countSystemTokens: async () => systemTotal,
+      // No Leo analogue for memory files (CLAUDE.md), custom agents, or
+      // standalone slash commands — slash is bound to skills. Per SRS §6.
       countMemoryFileTokens: async () => 0,
-      countBuiltInToolTokens: async () => builtInToolTokens,
-      countMcpToolTokens: async () => 0,
+      countBuiltInToolTokens: async () => builtInTotal,
+      countMcpToolTokens: async () => mcpTotal,
       countCustomAgentTokens: async () => 0,
       countSlashCommandTokens: async () => 0,
-      approximateMessageTokens: async (ctx) =>
-        estimateMessageTokens(ctx.messages as unknown as readonly TokenMessage[]),
-      countSkillTokens: async () => 0,
+      approximateMessageTokens: async (ctx) => {
+        const msgs = ctx.messages as unknown as readonly TokenMessage[];
+        const breakdown = breakdownMessages(msgs);
+        return { total: breakdown.totalTokens, breakdown };
+      },
+      countSkillTokens: async () => skillTotal,
     };
 
     return analyzeContextUsage({
       messages: messages as unknown as readonly ChatMessage[],
+      originalMessages: originalMessages as unknown as readonly ChatMessage[],
       model,
       logger: this.logger,
       counters,

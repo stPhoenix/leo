@@ -12,6 +12,8 @@ export interface TokenUsage {
   readonly input_tokens: number;
   readonly output_tokens?: number;
   readonly total_tokens?: number;
+  readonly cache_creation_input_tokens?: number;
+  readonly cache_read_input_tokens?: number;
 }
 
 export interface TokenMessage {
@@ -95,9 +97,13 @@ export function apiUsageTokens(messages: readonly TokenMessage[]): number | null
     const usage = m.usage;
     if (usage !== undefined && typeof usage.input_tokens === 'number') {
       const input = usage.input_tokens;
-      const output = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0;
-      const total = typeof usage.total_tokens === 'number' ? usage.total_tokens : input + output;
-      return total;
+      const cacheCreate =
+        typeof usage.cache_creation_input_tokens === 'number'
+          ? usage.cache_creation_input_tokens
+          : 0;
+      const cacheRead =
+        typeof usage.cache_read_input_tokens === 'number' ? usage.cache_read_input_tokens : 0;
+      return input + cacheCreate + cacheRead;
     }
     return null;
   }

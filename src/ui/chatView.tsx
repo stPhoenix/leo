@@ -34,6 +34,7 @@ import type { ConfirmationController } from '@/agent/confirmationController';
 import type { AcceptRejectController } from '@/agent/acceptRejectController';
 import type { PlanApprovalController } from '@/agent/planApprovalController';
 import type { ContextData } from '@/agent/contextAnalyzer';
+import type { ContextSnapshotStore } from '@/agent/contextSnapshotStore';
 import { resolveContextWindow } from '@/agent/compactConstants';
 import { makeInlineConfirmationSource } from './chat/InlineConfirmation';
 import { makeAcceptRejectSource } from './chat/InlineDialog';
@@ -87,6 +88,7 @@ export interface ChatViewDeps {
   readonly acceptRejectController?: AcceptRejectController;
   readonly planMode?: ChatPlanModeAdapter;
   readonly analyzeContext?: (signal: AbortSignal) => Promise<ContextData>;
+  readonly contextSnapshot?: ContextSnapshotStore;
   readonly indexStatusSource?: IndexStatusSource;
   readonly indexDrainSubscribe?: (listener: DrainListener) => () => void;
   readonly onReindexAll?: () => void;
@@ -620,8 +622,9 @@ export class ChatView extends ItemView {
 
   private buildHeaderStats(): JSX.Element | null {
     const getWindow = this.deps.getContextWindow;
-    if (getWindow === undefined) return null;
-    const context = makeContextUsageSource(this.messageStore, getWindow);
+    const snapshot = this.deps.contextSnapshot;
+    if (getWindow === undefined || snapshot === undefined) return null;
+    const context = makeContextUsageSource(snapshot, getWindow);
     return createElement(HeaderStatsLive, { context });
   }
 

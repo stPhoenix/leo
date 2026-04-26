@@ -4,7 +4,9 @@ import {
   filterAfterLastBoundary,
   type ContextCounters,
   type CounterContext,
+  type MessageTokenResult,
 } from '@/agent/contextAnalyzer';
+import { EMPTY_BREAKDOWN } from '@/agent/messageBreakdown';
 import { MICROCOMPACT_BOUNDARY_MARKER } from '@/agent/microcompact';
 import { COMPACT_BOUNDARY_MARKER } from '@/agent/autocompact';
 import { Logger } from '@/platform/Logger';
@@ -42,14 +44,22 @@ function makeCounters(
     'approximateMessageTokens',
     'countSkillTokens',
   ];
-  const out: Record<string, (ctx: CounterContext) => Promise<number>> = {};
+  const out: Record<string, unknown> = {};
   for (const name of names) {
     const v = values[name] ?? 1;
-    out[name] = async (ctx: CounterContext): Promise<number> => {
-      onCall?.(name, ctx);
-      if (typeof v === 'function') return v();
-      return v;
-    };
+    if (name === 'approximateMessageTokens') {
+      out[name] = async (ctx: CounterContext): Promise<MessageTokenResult> => {
+        onCall?.(name, ctx);
+        const total = typeof v === 'function' ? await v() : v;
+        return { total, breakdown: EMPTY_BREAKDOWN };
+      };
+    } else {
+      out[name] = async (ctx: CounterContext): Promise<number> => {
+        onCall?.(name, ctx);
+        if (typeof v === 'function') return v();
+        return v;
+      };
+    }
   }
   return out as unknown as ContextCounters;
 }
@@ -117,6 +127,7 @@ describe('analyzeContextUsage — AC1 input/output shape', () => {
       totalTokens: 10 + 20 + 30 + 40 + 50 + 60 + 70 + 80,
       model: 'm',
     });
+    expect(res.messageBreakdown).toEqual(EMPTY_BREAKDOWN);
   });
 });
 
@@ -171,6 +182,13 @@ describe('analyzeContextUsage — AC4 parallel fan-out', () => {
       active.delete(name);
       return 1;
     };
+    const slowMessage = async (): Promise<MessageTokenResult> => {
+      active.add('approximateMessageTokens');
+      maxConcurrency = Math.max(maxConcurrency, active.size);
+      await new Promise((r) => setTimeout(r, 15));
+      active.delete('approximateMessageTokens');
+      return { total: 1, breakdown: EMPTY_BREAKDOWN };
+    };
     const counters: ContextCounters = {
       countSystemTokens: slow('countSystemTokens'),
       countMemoryFileTokens: slow('countMemoryFileTokens'),
@@ -178,7 +196,7 @@ describe('analyzeContextUsage — AC4 parallel fan-out', () => {
       countMcpToolTokens: slow('countMcpToolTokens'),
       countCustomAgentTokens: slow('countCustomAgentTokens'),
       countSlashCommandTokens: slow('countSlashCommandTokens'),
-      approximateMessageTokens: slow('approximateMessageTokens'),
+      approximateMessageTokens: slowMessage,
       countSkillTokens: async (): Promise<number> => {
         skillCallOrder = batchDone ? 'after-batch' : 'before-batch';
         return 2;

@@ -34,21 +34,26 @@ leo/
 │   │   ├── confirmationController.ts
 │   │   ├── contextAnalyzer.ts
 │   │   ├── contextAssembler.ts
+│   │   ├── contextSnapshotStore.ts       # Reactive cached ContextData (debounced refresh, abort-aware) shared by /context widget + HeaderStat
 │   │   ├── graph.ts
+│   │   ├── messageBreakdown.ts           # Pure: per-message-type token tally (toolCall/toolResult/attachment/assistantText/userText) — SRS §6.6
 │   │   ├── microcompact.ts
 │   │   ├── planApprovalController.ts
 │   │   ├── planModeController.ts
 │   │   ├── planSessionResume.ts
 │   │   ├── ptlRetry.ts
+│   │   ├── skillTokenCount.ts            # Pure: skill frontmatter token counter (name+description+whenToUse+systemPrompt)
 │   │   ├── streamEvents.ts
 │   │   ├── todoStore.ts
 │   │   ├── tokenCount.ts
 │   │   ├── tokenEstimator.ts
+│   │   ├── toolTokenCount.ts             # Pure: tool descriptor token counter with -500/tool overhead per SRS §5.3
 │   │   ├── truncator.ts
 │   │   └── types.ts
 │   ├── chat/                            # Chat message store, streaming, attachments, usage, diff, run state, group read-only
 │   │   ├── attachments.ts
 │   │   ├── attachmentsStore.ts
+│   │   ├── contextBridge.ts             # ChatMessageRecord[] → analyzer inputs (preserve blocks; mirror record.tokens to estimator usage shape)
 │   │   ├── diff.ts
 │   │   ├── groupReadOnly.ts
 │   │   ├── messageStore.ts

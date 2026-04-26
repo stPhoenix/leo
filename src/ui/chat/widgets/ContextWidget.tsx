@@ -1,4 +1,5 @@
 import type { ContextData } from '@/agent/contextAnalyzer';
+import { EMPTY_BREAKDOWN, type MessageBreakdown } from '@/agent/messageBreakdown';
 import { type CategoryId, type ContextCategory } from '@/ui/contextGrid';
 import {
   AUTOCOMPACT_BUFFER_TOKENS,
@@ -46,15 +47,18 @@ function ContextWidgetBody({ data, contextWindow }: BodyProps): JSX.Element {
   const categories = buildCategories(data, reserved, free);
   const totalTokens = data.totalTokens > 0 ? data.totalTokens : used;
   const pct = Math.min(100, Math.round((totalTokens / window) * 100));
+  const pctReserved = Math.min(100 - pct, Math.round((reserved / window) * 100));
+  const pctLeft = Math.max(0, 100 - pct - pctReserved);
   const source = data.tokenTotalSource === 'api' ? 'measured' : 'estimated';
-  const legend = categories.filter((c) => c.isFreeSpace !== true && c.tokens > 0);
+  const legend = categories.filter(
+    (c) => c.isFreeSpace !== true && c.isReserved !== true && c.tokens > 0,
+  );
   const arcs = buildArcs(categories, window);
   const effective = effectiveContextWindow(window, MAX_OUTPUT_TOKENS_DEFAULT);
   const warnAt = effective - WARNING_THRESHOLD_BUFFER_TOKENS;
   const critAt = effective - MANUAL_COMPACT_BUFFER_TOKENS;
   const level: 'ok' | 'warn' | 'critical' =
     totalTokens >= critAt ? 'critical' : totalTokens >= warnAt ? 'warn' : 'ok';
-  const percentLeft = Math.max(0, 100 - pct);
 
   return (
     <section
@@ -66,7 +70,8 @@ function ContextWidgetBody({ data, contextWindow }: BodyProps): JSX.Element {
       <header className="leo-context-widget-head">
         <span className="leo-context-widget-title">Context</span>
         <span className="leo-context-widget-total" data-slot="widget-total">
-          {fmt(totalTokens)} / {fmt(window)} ({pct}% used · {percentLeft}% left)
+          {fmt(totalTokens)} / {fmt(window)} ({pct}% used · {pctLeft}% left
+          {pctReserved > 0 ? ` · ${pctReserved}% reserved` : ''})
         </span>
         <span className="leo-context-widget-meta" data-slot="widget-meta">
           {source} · {data.model} · {data.pipelineMessageCount} msgs
@@ -87,6 +92,9 @@ function ContextWidgetBody({ data, contextWindow }: BodyProps): JSX.Element {
               </span>
               <span className="leo-context-widget-legend-label">{c.label}</span>
               <span className="leo-context-widget-legend-value">{fmt(c.tokens)}</span>
+              {c.id === 'messages' ? (
+                <MessagesSubLine breakdown={data.messageBreakdown ?? EMPTY_BREAKDOWN} />
+              ) : null}
             </li>
           ))}
         </ul>
@@ -110,7 +118,7 @@ function buildArcs(categories: readonly ContextCategory[], window: number): read
   const out: DonutArc[] = [];
   let cursor = 0;
   for (const c of categories) {
-    if (c.isFreeSpace === true || c.tokens <= 0) continue;
+    if (c.isFreeSpace === true || c.isReserved === true || c.tokens <= 0) continue;
     const len = (c.tokens / window) * DONUT_CIRCUMFERENCE;
     out.push({ id: c.id, len, offset: cursor });
     cursor += len;
@@ -203,6 +211,37 @@ function buildCategories(data: ContextData, reserved: number, free: number): Con
 
 function fmt(n: number): string {
   return n.toLocaleString('en-US');
+}
+
+interface MessagesSubLineProps {
+  readonly breakdown: MessageBreakdown;
+}
+
+function MessagesSubLine({ breakdown }: MessagesSubLineProps): JSX.Element | null {
+  const parts: { label: string; tokens: number }[] = [];
+  if (breakdown.toolResultTokens > 0)
+    parts.push({ label: 'tool_result', tokens: breakdown.toolResultTokens });
+  if (breakdown.toolCallTokens > 0)
+    parts.push({ label: 'tool_use', tokens: breakdown.toolCallTokens });
+  if (breakdown.attachmentTokens > 0)
+    parts.push({ label: 'attachments', tokens: breakdown.attachmentTokens });
+  const text = breakdown.assistantTextTokens + breakdown.userTextTokens;
+  if (text > 0) parts.push({ label: 'text', tokens: text });
+  if (parts.length <= 1) return null;
+  return (
+    <span
+      className="leo-context-widget-legend-sub"
+      data-slot="messages-breakdown"
+      aria-label="messages breakdown"
+    >
+      {parts.map((p, i) => (
+        <span key={p.label} className="leo-context-widget-legend-sub-part">
+          {i > 0 ? ' · ' : ''}
+          {p.label} {fmt(p.tokens)}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 registerWidget('context', ContextWidget);

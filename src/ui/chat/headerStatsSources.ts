@@ -1,25 +1,18 @@
-import type { ChatMessageStore } from '@/chat/messageStore';
+import type { ContextSnapshotStore } from '@/agent/contextSnapshotStore';
 import type { ContextUsageSnapshot, ContextUsageSource } from './HeaderStatsLive';
 
 export function makeContextUsageSource(
-  store: ChatMessageStore,
+  snapshotStore: ContextSnapshotStore,
   getWindow: () => number,
 ): ContextUsageSource {
-  let cached: ContextUsageSnapshot = compute();
-
   function compute(): ContextUsageSnapshot {
     const window = Math.max(0, getWindow());
-    const records = store.getSnapshot();
-    let tokens = 0;
-    for (let i = records.length - 1; i >= 0; i -= 1) {
-      const r = records[i];
-      if (r?.role === 'assistant' && r.tokens !== undefined && r.tokens.total > 0) {
-        tokens = r.tokens.total;
-        break;
-      }
-    }
+    const data = snapshotStore.getSnapshot();
+    const tokens = data !== null && data.totalTokens > 0 ? data.totalTokens : 0;
     return { tokens, window };
   }
+
+  let cached: ContextUsageSnapshot = compute();
 
   function getSnapshot(): ContextUsageSnapshot {
     const next = compute();
@@ -30,6 +23,6 @@ export function makeContextUsageSource(
 
   return {
     getSnapshot,
-    subscribe: store.subscribe,
+    subscribe: snapshotStore.subscribe,
   };
 }
