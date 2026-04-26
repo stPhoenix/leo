@@ -46,6 +46,7 @@ export interface ComposerInputProps {
   readonly onAttachmentRemove?: (id: string) => void;
   readonly onPickFiles?: () => void;
   readonly onCaptureFiles?: (files: readonly CaptureFileInput[]) => void;
+  readonly onCaptureRejected?: (rejections: readonly AttachmentRejection[]) => void;
   readonly attachmentRejections?: readonly AttachmentRejection[];
   readonly onDismissAttachmentRejections?: () => void;
   readonly vaultFiles?: readonly VaultFileEntry[];
@@ -222,24 +223,37 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
   }, []);
 
   const onCaptureFiles = props.onCaptureFiles;
+  const onCaptureRejected = props.onCaptureRejected;
   const captureFromFileList = useCallback(
     async (list: FileList | null): Promise<void> => {
       if (list === null || list.length === 0 || onCaptureFiles === undefined) return;
       const out: CaptureFileInput[] = [];
+      const failures: AttachmentRejection[] = [];
       for (let i = 0; i < list.length; i += 1) {
         const f = list.item(i);
         if (f === null) continue;
-        const buf = await f.arrayBuffer();
-        out.push({
-          name: f.name,
-          mimeType: f.type !== '' ? f.type : 'application/octet-stream',
-          bytes: new Uint8Array(buf),
-          size: f.size,
-        });
+        try {
+          const buf = await f.arrayBuffer();
+          out.push({
+            name: f.name,
+            mimeType: f.type !== '' ? f.type : 'application/octet-stream',
+            bytes: new Uint8Array(buf),
+            size: f.size,
+          });
+        } catch (err) {
+          failures.push({
+            name: f.name,
+            reason: {
+              kind: 'upload_failed',
+              message: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
       }
       if (out.length > 0) onCaptureFiles(out);
+      if (failures.length > 0) onCaptureRejected?.(failures);
     },
-    [onCaptureFiles],
+    [onCaptureFiles, onCaptureRejected],
   );
 
   const onPaste = useCallback(

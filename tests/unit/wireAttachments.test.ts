@@ -8,7 +8,6 @@ describe('wireAttachments', () => {
     const blocks = w.buildUserContent('hi', []);
     expect(blocks).toEqual([{ type: 'text', text: 'hi' }]);
     expect(w.estimateTokens(blocks)).toBeGreaterThanOrEqual(0);
-    expect(w.isVisionGateBlocked({ attachments: [], modelSupportsVision: false })).toBe(false);
     expect(w.detectVaultDrop({ textPlain: '[[notes/a.md]]' })).toEqual({
       wikilink: '[[notes/a.md]]',
       path: 'notes/a.md',

@@ -873,10 +873,12 @@
 
 .leo-attachment-rejected {
   display: flex;
+  align-items: flex-start;
   gap: var(--size-4-2);
   padding: var(--size-4-1) var(--size-4-2);
-  background: var(--background-modifier-error);
+  background: var(--background-secondary);
   color: var(--text-error);
+  border: 1px solid var(--background-modifier-error);
   border-radius: var(--radius-s);
   font-size: var(--font-ui-smaller);
 }
@@ -891,14 +893,17 @@
 .leo-attachment-rejected-item {
   display: flex;
   gap: var(--size-4-1);
+  color: var(--text-error);
 }
 
 .leo-attachment-rejected-name {
   font-weight: 600;
+  color: var(--text-normal);
 }
 
 .leo-attachment-rejected-reason {
-  color: var(--text-muted);
+  color: var(--text-error);
+  opacity: 0.85;
 }
 
 .leo-attachment-rejected-dismiss {
@@ -1016,6 +1021,14 @@
     var(--background-modifier-border)
   );
   background: color-mix(in srgb, var(--color-red, var(--text-error)) 14%, transparent);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.leo-banner-timeout {
+  color: var(--color-orange);
+  border-color: color-mix(in srgb, var(--color-orange) 35%, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--color-orange) 12%, transparent);
   word-break: break-word;
   overflow-wrap: anywhere;
 }

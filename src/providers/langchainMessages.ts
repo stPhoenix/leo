@@ -10,14 +10,17 @@ import type { ContentBlock } from '@/chat/types';
 
 type LcContentPart =
   | { readonly type: 'text'; readonly text: string }
-  | { readonly type: 'image_url'; readonly image_url: { readonly url: string } }
   | {
-      readonly type: 'document';
-      readonly source: {
-        readonly type: 'base64';
-        readonly media_type: string;
-        readonly data: string;
-      };
+      readonly type: 'image';
+      readonly source_type: 'base64';
+      readonly data: string;
+      readonly mime_type: string;
+    }
+  | {
+      readonly type: 'file';
+      readonly source_type: 'base64';
+      readonly data: string;
+      readonly mime_type: string;
     };
 
 export function toLangchainMessages(messages: readonly ChatMessage[]): BaseMessage[] {
@@ -69,17 +72,17 @@ function toLcContent(content: ChatMessageContent): string | LcContentPart[] {
       parts.push({ type: 'text', text: b.text });
     } else if (b.type === 'image') {
       parts.push({
-        type: 'image_url',
-        image_url: { url: `data:${b.source.media_type};base64,${b.source.data}` },
+        type: 'image',
+        source_type: 'base64',
+        data: b.source.data,
+        mime_type: b.source.media_type,
       });
     } else if (b.type === 'document') {
       parts.push({
-        type: 'document',
-        source: {
-          type: 'base64',
-          media_type: b.source.media_type,
-          data: b.source.data,
-        },
+        type: 'file',
+        source_type: 'base64',
+        data: b.source.data,
+        mime_type: b.source.media_type,
       });
     }
   }

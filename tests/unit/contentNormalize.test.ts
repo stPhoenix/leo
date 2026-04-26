@@ -18,7 +18,7 @@ describe('normalizeForOpenAI — document blocks', () => {
         ],
       },
     ];
-    const out = normalizeForOpenAI(msgs, { supportsVision: false });
+    const out = normalizeForOpenAI(msgs);
     expect(out).toHaveLength(1);
     const content = out[0]!.content;
     expect(typeof content).toBe('string');
@@ -38,7 +38,7 @@ describe('normalizeForOpenAI — document blocks', () => {
         ],
       },
     ];
-    const out = normalizeForOpenAI(msgs, { supportsVision: false });
+    const out = normalizeForOpenAI(msgs);
     expect(out[0]!.content as string).toContain('{"a":1}');
   });
 
@@ -55,7 +55,7 @@ describe('normalizeForOpenAI — document blocks', () => {
         ],
       },
     ];
-    const out = normalizeForOpenAI(msgs, { supportsVision: false });
+    const out = normalizeForOpenAI(msgs);
     const content = out[0]!.content as string;
     expect(content).toContain('see attached');
     expect(content).toContain('application/pdf');
@@ -64,7 +64,7 @@ describe('normalizeForOpenAI — document blocks', () => {
 });
 
 describe('normalizeForOpenAI — image blocks', () => {
-  it('preserves image blocks when vision is supported', () => {
+  it('preserves image blocks unchanged (provider/server decides vision support)', () => {
     const msgs: ChatMessage[] = [
       {
         role: 'user',
@@ -74,39 +74,23 @@ describe('normalizeForOpenAI — image blocks', () => {
         ],
       },
     ];
-    const out = normalizeForOpenAI(msgs, { supportsVision: true });
+    const out = normalizeForOpenAI(msgs);
     const content = out[0]!.content;
     expect(Array.isArray(content)).toBe(true);
     expect((content as readonly { type: string }[])[1]!.type).toBe('image');
-  });
-
-  it('replaces image blocks with placeholder when vision is unsupported', () => {
-    const msgs: ChatMessage[] = [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'look' },
-          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
-        ],
-      },
-    ];
-    const out = normalizeForOpenAI(msgs, { supportsVision: false });
-    const content = out[0]!.content;
-    expect(typeof content).toBe('string');
-    expect(content as string).toContain('does not support vision');
   });
 });
 
 describe('normalizeForOpenAI — passthrough', () => {
   it('leaves string content unchanged', () => {
     const msgs: ChatMessage[] = [{ role: 'user', content: 'hello' }];
-    const out = normalizeForOpenAI(msgs, { supportsVision: true });
+    const out = normalizeForOpenAI(msgs);
     expect(out[0]!.content).toBe('hello');
   });
 
   it('leaves text-only block array unchanged in shape (collapsed to string)', () => {
     const msgs: ChatMessage[] = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }];
-    const out = normalizeForOpenAI(msgs, { supportsVision: true });
+    const out = normalizeForOpenAI(msgs);
     expect(out[0]!.content).toBe('hi');
   });
 });

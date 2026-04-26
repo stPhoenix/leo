@@ -1,8 +1,9 @@
 import type { AttachmentRejectReason } from '@/chat/attachments';
 
-export type AttachmentRejection =
-  | { readonly name: string; readonly reason: AttachmentRejectReason }
-  | { readonly name: string; readonly reason: { readonly kind: 'vision_blocked' } };
+export type AttachmentRejection = {
+  readonly name: string;
+  readonly reason: AttachmentRejectReason;
+};
 
 export interface AttachmentRejectedNoticeProps {
   readonly rejections: readonly AttachmentRejection[];
@@ -48,8 +49,8 @@ function describe(reason: AttachmentRejection['reason']): string {
       return `limit reached (${reason.currentCount} attached)`;
     case 'unsupported_mime':
       return `unsupported type: ${reason.mimeType}`;
-    case 'vision_blocked':
-      return 'current model does not support images';
+    case 'upload_failed':
+      return `upload failed: ${reason.message}`;
   }
 }
 

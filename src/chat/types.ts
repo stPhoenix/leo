@@ -4,7 +4,7 @@ export type MessageRole = 'user' | 'assistant' | 'banner' | 'widget';
 
 export type AssistantStatus = 'streaming' | 'done' | 'cancelled' | 'error';
 
-export type BannerKind = 'cancelled' | 'error' | 'info' | 'compact';
+export type BannerKind = 'cancelled' | 'error' | 'timeout' | 'info' | 'compact';
 
 export interface WidgetPayload {
   readonly kind: string;

@@ -99,7 +99,7 @@ leo/
 │   ├── providers/                       # LLM + embedding providers, langchain bridge, content normalization, manager, registry, trace config
 │   │   ├── anthropicProvider.ts
 │   │   ├── connectionState.ts
-│   │   ├── contentNormalize.ts          # OpenAI-compatible normalizer: inline document blocks as text, gate images on vision support
+│   │   ├── contentNormalize.ts          # OpenAI-compatible normalizer: inline document blocks as text (images pass through; provider/server is vision authority)
 │   │   ├── embeddingClient.ts
 │   │   ├── langchainMessages.ts
 │   │   ├── langchainStream.ts
@@ -200,7 +200,7 @@ leo/
 │   │   │   ├── AttachmentChip.stories.tsx
 │   │   │   ├── AttachmentChip.tsx                  # Composer staged-attachment chip (image thumb / doc icon, remove btn)
 │   │   │   ├── AttachmentRejectedNotice.stories.tsx
-│   │   │   ├── AttachmentRejectedNotice.tsx        # Inline notice for oversize / limit / unsupported / vision-blocked
+│   │   │   ├── AttachmentRejectedNotice.tsx        # Inline notice for oversize / limit / unsupported / upload-failed
 │   │   │   ├── AttachmentTray.stories.tsx
 │   │   │   ├── AttachmentTray.tsx                  # Horizontal list of staged attachment chips above the textarea
 │   │   │   ├── BottomLiveIndicator.stories.tsx

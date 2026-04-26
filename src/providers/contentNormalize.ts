@@ -41,18 +41,11 @@ function inlineDocumentAsText(block: ContentBlock & { type: 'document' }): strin
   return `\n\n[document mime=${mt}${nameAttr} bytes=${approxBytes} — content omitted; the current provider does not accept document attachments]\n`;
 }
 
-export interface NormalizeOptions {
-  readonly supportsVision: boolean;
+export function normalizeForOpenAI(messages: readonly ChatMessage[]): ChatMessage[] {
+  return messages.map((m) => ({ ...m, content: normalizeContent(m.content) }));
 }
 
-export function normalizeForOpenAI(
-  messages: readonly ChatMessage[],
-  opts: NormalizeOptions,
-): ChatMessage[] {
-  return messages.map((m) => ({ ...m, content: normalizeContent(m.content, opts) }));
-}
-
-function normalizeContent(content: ChatMessageContent, opts: NormalizeOptions): ChatMessageContent {
+function normalizeContent(content: ChatMessageContent): ChatMessageContent {
   if (typeof content === 'string') return content;
   const out: ContentBlock[] = [];
   const appendText = (text: string): void => {
@@ -66,16 +59,6 @@ function normalizeContent(content: ChatMessageContent, opts: NormalizeOptions): 
   for (const b of content) {
     if (b.type === 'text') {
       appendText(b.text);
-      continue;
-    }
-    if (b.type === 'image') {
-      if (opts.supportsVision) {
-        out.push(b);
-      } else {
-        appendText(
-          `\n\n[image mime=${b.source.media_type} — omitted; current model does not support vision]\n`,
-        );
-      }
       continue;
     }
     if (b.type === 'document') {

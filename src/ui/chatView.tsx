@@ -96,7 +96,6 @@ export interface ChatViewDeps {
   readonly skillSlash?: SkillSlashAdapter;
   readonly compactRunner?: CompactRunnerAdapter;
   readonly attachments?: AttachmentsWiring;
-  readonly modelSupportsVision?: () => boolean;
   readonly pickFiles?: () => Promise<readonly CaptureFileInput[]>;
   readonly vaultFiles?: () => readonly VaultFileEntry[];
   readonly readVaultFile?: (path: string) => Promise<CaptureFileInput | null>;
@@ -334,6 +333,7 @@ export class ChatView extends ItemView {
               attachments: this.attachmentItems(),
               onAttachmentRemove: (id) => this.deps.attachments?.store.remove(id),
               onCaptureFiles: (files) => this.captureAttachmentFiles(files),
+              onCaptureRejected: (rejections) => this.appendAttachmentRejections(rejections),
               attachmentRejections: this.attachmentRejections,
               onDismissAttachmentRejections: () => this.clearAttachmentRejections(),
               ...(this.deps.pickFiles !== undefined
@@ -399,14 +399,6 @@ export class ChatView extends ItemView {
       this.turnDispatcher?.submit(text);
       return;
     }
-    const modelSupportsVision = this.deps.modelSupportsVision?.() ?? true;
-    if (wiring.isVisionGateBlocked({ attachments: staged, modelSupportsVision })) {
-      const blocked: AttachmentRejection[] = staged
-        .filter((a) => a.kind === 'image')
-        .map((a) => ({ name: a.name, reason: { kind: 'vision_blocked' as const } }));
-      this.appendAttachmentRejections(blocked);
-      return;
-    }
     const drained = wiring.store.drainForNext();
     const blocks = wiring.buildUserContent(text, drained);
     this.turnDispatcher?.submit(text, { blocks });
@@ -447,10 +439,9 @@ export class ChatView extends ItemView {
       if (file === null) return;
       await this.captureAttachmentFiles([file]);
     } catch (err) {
-      this.deps.logger?.warn('mention.capture.failure', {
-        path,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      const message = err instanceof Error ? err.message : String(err);
+      this.deps.logger?.warn('mention.capture.failure', { path, error: message });
+      this.appendAttachmentRejections([{ name: path, reason: { kind: 'upload_failed', message } }]);
     }
   }
 

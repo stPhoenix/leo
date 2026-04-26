@@ -12,7 +12,7 @@ describe('toLangchainMessages — multimodal user blocks', () => {
     expect((lc[0] as HumanMessage).content).toBe('hello');
   });
 
-  it('maps image block to image_url data URI', () => {
+  it('maps image block to standardized v1 content block', () => {
     const msgs: ChatMessage[] = [
       {
         role: 'user',
@@ -27,12 +27,14 @@ describe('toLangchainMessages — multimodal user blocks', () => {
     expect(Array.isArray(content)).toBe(true);
     expect(content[0]).toEqual({ type: 'text', text: 'look' });
     expect(content[1]).toEqual({
-      type: 'image_url',
-      image_url: { url: 'data:image/png;base64,AAAA' },
+      type: 'image',
+      source_type: 'base64',
+      data: 'AAAA',
+      mime_type: 'image/png',
     });
   });
 
-  it('passes document block through with base64 source', () => {
+  it('maps document block to standardized v1 file content block', () => {
     const msgs: ChatMessage[] = [
       {
         role: 'user',
@@ -48,8 +50,10 @@ describe('toLangchainMessages — multimodal user blocks', () => {
     const lc = toLangchainMessages(msgs);
     const content = (lc[0] as HumanMessage).content as Array<Record<string, unknown>>;
     expect(content[1]).toEqual({
-      type: 'document',
-      source: { type: 'base64', media_type: 'application/pdf', data: 'BBBB' },
+      type: 'file',
+      source_type: 'base64',
+      data: 'BBBB',
+      mime_type: 'application/pdf',
     });
   });
 

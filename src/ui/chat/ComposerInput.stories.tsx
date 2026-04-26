@@ -57,7 +57,7 @@ export const WithRejections: Story = {
     onPickFiles: fn(),
     attachmentRejections: [
       { name: 'big.mp4', reason: { kind: 'oversize', size: 25 * 1024 * 1024 } },
-      { name: 'photo.jpg', reason: { kind: 'vision_blocked' } },
+      { name: 'report.pdf', reason: { kind: 'upload_failed', message: 'permission denied' } },
     ],
     onDismissAttachmentRejections: fn(),
   },

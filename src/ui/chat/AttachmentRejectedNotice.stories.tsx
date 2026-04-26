@@ -39,9 +39,14 @@ export const UnsupportedMime: Story = {
   },
 };
 
-export const VisionBlocked: Story = {
+export const FileUploadError: Story = {
   args: {
-    rejections: [{ name: 'photo.jpg', reason: { kind: 'vision_blocked' } }],
+    rejections: [
+      {
+        name: 'report.pdf',
+        reason: { kind: 'upload_failed', message: 'permission denied reading file' },
+      },
+    ],
   },
 };
 
@@ -51,6 +56,7 @@ export const Multiple: Story = {
       { name: 'a.mp4', reason: { kind: 'oversize', size: 30 * 1024 * 1024 } },
       { name: 'b.png', reason: { kind: 'limit_reached', currentCount: 4 } },
       { name: 'c.exe', reason: { kind: 'unsupported_mime', mimeType: 'application/x-msdownload' } },
+      { name: 'd.pdf', reason: { kind: 'upload_failed', message: 'network timeout' } },
     ],
   },
 };

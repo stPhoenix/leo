@@ -15,7 +15,8 @@ export interface Attachment {
 export type AttachmentRejectReason =
   | { readonly kind: 'oversize'; readonly size: number }
   | { readonly kind: 'limit_reached'; readonly currentCount: number }
-  | { readonly kind: 'unsupported_mime'; readonly mimeType: string };
+  | { readonly kind: 'unsupported_mime'; readonly mimeType: string }
+  | { readonly kind: 'upload_failed'; readonly message: string };
 
 export interface CaptureResult {
   readonly attachments: readonly Attachment[];
@@ -165,14 +166,4 @@ export function estimateAttachmentTokens(blocks: readonly ContentBlock[]): numbe
     else sum += IMAGE_DOCUMENT_TOKENS;
   }
   return sum;
-}
-
-export interface VisionGateInput {
-  readonly attachments: readonly Attachment[];
-  readonly modelSupportsVision: boolean;
-}
-
-export function isVisionGateBlocked(input: VisionGateInput): boolean {
-  if (input.modelSupportsVision) return false;
-  return input.attachments.some((a) => a.kind === 'image');
 }

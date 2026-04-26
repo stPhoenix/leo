@@ -411,15 +411,29 @@ export class StreamingTurnController {
     }
     this.deps.messageStore.update(turn.assistantId, (prev) => ({ ...prev, status: 'error' }));
     const now = this.deps.nowIso?.() ?? new Date().toISOString();
-    const msg = err.message.length > 0 ? err.message : 'stream error';
-    this.deps.messageStore.append({
-      id: `${turn.assistantId}:banner`,
-      role: 'banner',
-      content: `stream error: ${msg}`,
-      createdAt: now,
-      banner: { kind: 'error', message: msg },
-    });
-    this.deps.announce(`stream error: ${msg}`);
+    const isTimeout = err.name === 'ProviderTimeoutError';
+    if (isTimeout) {
+      const message =
+        'generation cancelled — provider timed out (no response). Try again or increase timeout in settings.';
+      this.deps.messageStore.append({
+        id: `${turn.assistantId}:banner`,
+        role: 'banner',
+        content: message,
+        createdAt: now,
+        banner: { kind: 'timeout', message },
+      });
+      this.deps.announce(message);
+    } else {
+      const msg = err.message.length > 0 ? err.message : 'stream error';
+      this.deps.messageStore.append({
+        id: `${turn.assistantId}:banner`,
+        role: 'banner',
+        content: `stream error: ${msg}`,
+        createdAt: now,
+        banner: { kind: 'error', message: msg },
+      });
+      this.deps.announce(`stream error: ${msg}`);
+    }
     turn.phase = 'error';
     this.deps.onPhaseChange?.('error');
     this.active = null;

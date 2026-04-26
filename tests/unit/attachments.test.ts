@@ -6,7 +6,6 @@ import {
   captureAttachments,
   detectVaultDrop,
   estimateAttachmentTokens,
-  isVisionGateBlocked,
   toBase64,
   type Attachment,
 } from '@/chat/attachments';
@@ -154,42 +153,6 @@ describe('buildUserContent — AC4', () => {
   });
   it('produces single text block when no attachments', () => {
     expect(buildUserContent('hi', [], toBase64)).toEqual([{ type: 'text', text: 'hi' }]);
-  });
-});
-
-describe('isVisionGateBlocked — AC5', () => {
-  it('blocks when images present and vision unsupported', () => {
-    const img: Attachment = {
-      id: 'a',
-      kind: 'image',
-      name: 'p.png',
-      mimeType: 'image/png',
-      bytes: new Uint8Array(),
-      size: 0,
-    };
-    expect(isVisionGateBlocked({ attachments: [img], modelSupportsVision: false })).toBe(true);
-  });
-  it('passes when vision supported', () => {
-    const img: Attachment = {
-      id: 'a',
-      kind: 'image',
-      name: 'p.png',
-      mimeType: 'image/png',
-      bytes: new Uint8Array(),
-      size: 0,
-    };
-    expect(isVisionGateBlocked({ attachments: [img], modelSupportsVision: true })).toBe(false);
-  });
-  it('passes for document-only with no vision', () => {
-    const doc: Attachment = {
-      id: 'a',
-      kind: 'document',
-      name: 'r.pdf',
-      mimeType: 'application/pdf',
-      bytes: new Uint8Array(),
-      size: 0,
-    };
-    expect(isVisionGateBlocked({ attachments: [doc], modelSupportsVision: false })).toBe(false);
   });
 });
 

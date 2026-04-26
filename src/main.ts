@@ -94,15 +94,6 @@ import {
 import { wireAttachments, type AttachmentsWiring } from '@/chat/wireAttachments';
 import type { CaptureFileInput } from '@/chat/attachments';
 
-function modelSupportsVision(provider: { kind: string; chatModel: string }): boolean {
-  const model = provider.chatModel.toLowerCase();
-  if (model.includes('claude')) return true;
-  if (model.includes('gpt-4o') || model.includes('gpt-4.1') || model.includes('gpt-5')) return true;
-  if (model.includes('gemini')) return true;
-  if (model.includes('vision') || model.includes('vl')) return true;
-  return false;
-}
-
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'heic']);
 
 function classifyVaultFile(ext: string): 'image' | 'document' {
@@ -871,7 +862,6 @@ export default class LeoPlugin extends Plugin {
           ...(this.attachments !== null
             ? {
                 attachments: this.attachments,
-                modelSupportsVision: () => modelSupportsVision(this.store.get().provider),
                 pickFiles: () => pickFilesViaInput(),
                 vaultFiles: () =>
                   this.app.vault.getFiles().map((f) => ({
