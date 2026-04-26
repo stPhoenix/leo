@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_PROVIDER,
+  DEFAULT_RAG_MODE,
   DEFAULT_SETTINGS,
   SettingsStore,
   migrate,
@@ -109,6 +110,19 @@ describe('migrate()', () => {
     const partial = migrate({ langfuse: { enabled: 'yes', host: '   ' } });
     expect(partial.langfuse.enabled).toBe(false);
     expect(partial.langfuse.host).toBe('https://cloud.langfuse.com');
+  });
+
+  it('defaults ragMode to no-focus when absent', () => {
+    expect(migrate({}).ragMode).toBe(DEFAULT_RAG_MODE);
+    expect(DEFAULT_RAG_MODE).toBe('no-focus');
+  });
+
+  it('preserves a valid ragMode and rejects an invalid one', () => {
+    expect(migrate({ ragMode: 'auto' }).ragMode).toBe('auto');
+    expect(migrate({ ragMode: 'off' }).ragMode).toBe('off');
+    expect(migrate({ ragMode: 'no-focus' }).ragMode).toBe('no-focus');
+    expect(migrate({ ragMode: 'bogus' }).ragMode).toBe(DEFAULT_RAG_MODE);
+    expect(migrate({ ragMode: 42 }).ragMode).toBe(DEFAULT_RAG_MODE);
   });
 });
 

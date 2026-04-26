@@ -806,6 +806,7 @@ export default class LeoPlugin extends Plugin {
       navigator: this.workspaceNavigator,
       planMode: this.planModeController,
       ragEngine: this.indexerRag.ragEngine,
+      ragMode: () => this.store.get().ragMode,
       skillListing: {
         buildFor: ({ agentId }) => {
           const listing = buildSkillListingAttachment({

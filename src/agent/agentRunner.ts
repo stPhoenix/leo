@@ -8,6 +8,7 @@ import type { EditNoteBridge } from '@/tools/types';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
 import type { PlanModeController } from './planModeController';
+import type { RagMode } from '@/settings/settingsStore';
 import { BUILTIN_COMPACTABLE_TOOLS } from './microcompact';
 import {
   type AgentHistoryMessage,
@@ -84,6 +85,7 @@ export interface AgentRunnerOptions {
   readonly skillListing?: SkillListingProvider;
   readonly rag?: RagHitsProvider;
   readonly ragEngine?: RagEngineLike;
+  readonly ragMode?: () => RagMode;
   readonly budget?: number;
   readonly historyByThread?: Map<ThreadId, AgentHistoryMessage[]>;
   readonly clock?: () => Date;
@@ -131,6 +133,7 @@ export class AgentRunner {
   private readonly skillListing: SkillListingProvider | null;
   private readonly rag: RagHitsProvider;
   private readonly ragEngine: RagEngineLike | null;
+  private readonly ragMode: () => RagMode;
   private readonly budget: number;
   private readonly historyByThread: Map<ThreadId, AgentHistoryMessage[]>;
   private readonly clock: () => Date;
@@ -162,6 +165,7 @@ export class AgentRunner {
     this.skillListing = opts.skillListing ?? null;
     this.rag = opts.rag ?? { query: async () => [] };
     this.ragEngine = opts.ragEngine ?? null;
+    this.ragMode = opts.ragMode ?? ((): RagMode => 'auto');
     this.budget = opts.budget ?? DEFAULT_BUDGET_TOKENS;
     this.historyByThread = opts.historyByThread ?? new Map();
     this.clock = opts.clock ?? ((): Date => new Date());
@@ -285,6 +289,7 @@ export class AgentRunner {
       skillListing: this.skillListing,
       rag: this.rag,
       ragEngine: this.ragEngine,
+      ragMode: this.ragMode,
       budget: this.budget,
       clock: this.clock,
       toolRegistry: this.toolRegistry,

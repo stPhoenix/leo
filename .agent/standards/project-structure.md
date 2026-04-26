@@ -233,7 +233,9 @@ leo/
 │   │   │   ├── headerStatsSources.ts
 │   │   │   ├── IndexStatusBlock.stories.tsx
 │   │   │   ├── IndexStatusBlock.tsx
+│   │   │   ├── InlineConfirmation.stories.tsx     # Storybook fixtures for InlineConfirmation (idle/pending-read/pending-write/after-applied variants)
 │   │   │   ├── InlineConfirmation.tsx
+│   │   │   ├── InlineDialog.stories.tsx           # Storybook fixtures for InlineDialog (idle/pending-editor/pending-vault/after-applied variants)
 │   │   │   ├── InlineDialog.tsx
 │   │   │   ├── MentionPicker.stories.tsx
 │   │   │   ├── MentionPicker.tsx                   # Vault-file fuzzy picker for `@` operator (mirrors SlashPicker pattern)

@@ -14,6 +14,12 @@ export type SectionId =
 
 export type ProviderKind = 'lmstudio' | 'openai' | 'anthropic' | 'ollama' | 'custom';
 
+export type RagMode = 'auto' | 'no-focus' | 'off';
+
+export const RAG_MODES: readonly RagMode[] = ['auto', 'no-focus', 'off'];
+
+export const DEFAULT_RAG_MODE: RagMode = 'no-focus';
+
 export interface ProviderSettings {
   kind: ProviderKind;
   endpoint: string;
@@ -51,6 +57,7 @@ export interface LeoSettings {
   ui: UiSettings;
   providerTimeouts: ProviderTimeoutSettings;
   langfuse: LangfuseSettings;
+  ragMode: RagMode;
   contextWindowOverride?: number;
 }
 
@@ -108,6 +115,7 @@ export const DEFAULT_SETTINGS: LeoSettings = {
   },
   providerTimeouts: { ...DEFAULT_PROVIDER_TIMEOUTS },
   langfuse: { ...DEFAULT_LANGFUSE },
+  ragMode: DEFAULT_RAG_MODE,
 };
 
 export function migrate(raw: unknown): LeoSettings {
@@ -122,6 +130,7 @@ export function migrate(raw: unknown): LeoSettings {
   const ui = mergeUi(obj.ui, provider);
   const providerTimeouts = mergeProviderTimeouts(obj.providerTimeouts);
   const langfuse = mergeLangfuse(obj.langfuse);
+  const ragMode = parseRagMode(obj.ragMode);
   const contextWindowOverride = parseContextWindowOverride(obj.contextWindowOverride);
 
   return {
@@ -132,8 +141,16 @@ export function migrate(raw: unknown): LeoSettings {
     ui,
     providerTimeouts,
     langfuse,
+    ragMode,
     ...(contextWindowOverride !== undefined ? { contextWindowOverride } : {}),
   };
+}
+
+function parseRagMode(raw: unknown): RagMode {
+  if (typeof raw === 'string' && (RAG_MODES as readonly string[]).includes(raw)) {
+    return raw as RagMode;
+  }
+  return DEFAULT_RAG_MODE;
 }
 
 function mergeLangfuse(raw: unknown): LangfuseSettings {
@@ -247,6 +264,7 @@ function cloneDefaults(): LeoSettings {
     },
     providerTimeouts: { ...DEFAULT_PROVIDER_TIMEOUTS },
     langfuse: { ...DEFAULT_LANGFUSE },
+    ragMode: DEFAULT_RAG_MODE,
   };
 }
 

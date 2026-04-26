@@ -566,52 +566,119 @@
 .leo-inline-dialog {
   position: relative;
   z-index: var(--leo-z-inline-dialog);
-  border-top: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary);
+  margin: var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
+  overflow: hidden;
+  animation: leo-confirmation-rise 140ms ease-out;
+}
+
+@keyframes leo-confirmation-rise {
+  from {
+    transform: translateY(6px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.leo-inline-confirmation::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: var(--interactive-accent);
+}
+
+.leo-confirmation-write::before {
+  background: var(--color-yellow, var(--interactive-accent));
+}
+
+.leo-confirmation-read::before {
+  background: var(--color-blue, var(--interactive-accent));
 }
 
 .leo-confirmation-header {
   display: flex;
   gap: var(--size-4-2);
   align-items: center;
-  padding: var(--size-4-2) var(--size-4-3);
-  font-size: var(--font-ui-smaller);
+  padding: var(--size-4-3) var(--size-4-3) var(--size-4-2);
+  font-size: var(--font-ui-small);
 }
 
-.leo-confirmation-write .leo-confirmation-header {
-  background: var(--background-modifier-border-hover);
-  color: var(--color-yellow);
+.leo-confirmation-header [data-slot='confirmation-tool-name'] {
+  font-family: var(--font-monospace);
+  font-weight: 600;
+  color: var(--text-normal);
 }
 
-.leo-confirmation-read .leo-confirmation-header {
+.leo-confirmation-header [data-slot='confirmation-category'] {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 var(--size-4-2);
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-border);
   color: var(--text-muted);
+  text-transform: uppercase;
+  font-size: var(--font-ui-smaller);
+  letter-spacing: 0.04em;
+}
+
+.leo-confirmation-write [data-slot='confirmation-category'] {
+  background: color-mix(in srgb, var(--color-yellow) 22%, var(--background-primary));
+  color: var(--color-yellow, var(--text-warning));
+}
+
+.leo-confirmation-read [data-slot='confirmation-category'] {
+  background: color-mix(in srgb, var(--interactive-accent) 18%, var(--background-primary));
+  color: var(--interactive-accent);
 }
 
 .leo-confirmation-args {
-  margin: 0;
+  margin: 0 var(--size-4-3);
   padding: var(--size-4-2) var(--size-4-3);
-  background: var(--background-primary-alt);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
   color: var(--text-normal);
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
+  line-height: 1.45;
   white-space: pre-wrap;
-  overflow-x: auto;
-  max-height: 220px;
+  overflow: auto;
+  max-height: 200px;
 }
 
 .leo-confirmation-actions {
   display: flex;
   gap: var(--size-4-2);
-  padding: var(--size-4-2) var(--size-4-3);
+  justify-content: flex-end;
+  padding: var(--size-4-3);
 }
 
 .leo-confirmation-actions button {
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--size-4-3);
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
+  background: var(--background-primary);
   color: var(--text-normal);
-  padding: var(--size-4-1) var(--size-4-2);
+  font-size: var(--font-ui-small);
   cursor: pointer;
+  transition:
+    background 80ms ease,
+    border-color 80ms ease,
+    color 80ms ease;
+}
+
+.leo-confirmation-actions button:hover {
+  background: var(--background-modifier-hover);
 }
 
 .leo-confirmation-actions button:focus-visible {
@@ -619,9 +686,122 @@
   outline-offset: 1px;
 }
 
-.leo-confirmation-write [data-slot='confirmation-allow-once'],
-.leo-confirmation-write [data-slot='confirmation-allow-thread'] {
-  border-color: var(--color-yellow);
+.leo-confirmation-actions [data-slot='confirmation-allow-once'] {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+.leo-confirmation-actions [data-slot='confirmation-allow-once']:hover {
+  background: var(--interactive-accent-hover, var(--interactive-accent));
+  filter: brightness(1.05);
+}
+
+.leo-confirmation-actions [data-slot='confirmation-deny'] {
+  color: var(--text-error);
+  border-color: color-mix(in srgb, var(--text-error) 35%, var(--background-modifier-border));
+}
+
+.leo-confirmation-actions [data-slot='confirmation-deny']:hover {
+  background: color-mix(in srgb, var(--text-error) 12%, var(--background-primary));
+}
+
+.leo-inline-dialog.leo-accept-reject::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: var(--color-yellow, var(--interactive-accent));
+}
+
+.leo-accept-reject-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  align-items: baseline;
+  padding: var(--size-4-3) var(--size-4-3) var(--size-4-2);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.leo-accept-reject-header strong {
+  font-family: var(--font-monospace);
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.leo-accept-reject-header > span {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-accept-reject-header > span:first-of-type {
+  color: var(--text-normal);
+}
+
+.leo-accept-reject-header > span:last-of-type {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 var(--size-4-2);
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--color-yellow) 22%, var(--background-primary));
+  color: var(--color-yellow, var(--text-warning));
+  font-size: var(--font-ui-smaller);
+  letter-spacing: 0.04em;
+}
+
+.leo-accept-reject-actions {
+  display: flex;
+  gap: var(--size-4-2);
+  justify-content: flex-end;
+  padding: var(--size-4-3);
+}
+
+.leo-accept-reject-actions button {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+  transition:
+    background 80ms ease,
+    border-color 80ms ease,
+    color 80ms ease;
+}
+
+.leo-accept-reject-actions button:hover {
+  background: var(--background-modifier-hover);
+}
+
+.leo-accept-reject-actions button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.leo-accept-reject-actions [data-slot='accept-reject-accept'] {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+.leo-accept-reject-actions [data-slot='accept-reject-accept']:hover {
+  background: var(--interactive-accent-hover, var(--interactive-accent));
+  filter: brightness(1.05);
+}
+
+.leo-accept-reject-actions [data-slot='accept-reject-reject'] {
+  color: var(--text-error);
+  border-color: color-mix(in srgb, var(--text-error) 35%, var(--background-modifier-border));
+}
+
+.leo-accept-reject-actions [data-slot='accept-reject-reject']:hover {
+  background: color-mix(in srgb, var(--text-error) 12%, var(--background-primary));
 }
 
 .leo-inline-confirmation[hidden],

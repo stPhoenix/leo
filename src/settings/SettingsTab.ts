@@ -1,11 +1,13 @@
 import { Notice, PluginSettingTab, Setting, setIcon, type App, type Plugin } from 'obsidian';
 import {
   PROVIDER_KINDS,
+  RAG_MODES,
   SECTION_LABELS,
   SECTION_ORDER,
   SECTION_PLACEHOLDERS,
   type LeoSettings,
   type ProviderKind,
+  type RagMode,
   type SectionId,
   type SettingsStore,
 } from './settingsStore';
@@ -61,6 +63,16 @@ const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = {
   ollama: 'Ollama (local)',
   custom: 'Custom (OpenAI-compatible)',
 };
+
+const RAG_MODE_LABELS: Record<RagMode, string> = {
+  auto: 'Auto — prefetch every turn',
+  'no-focus': 'No focus — prefetch only when no note is open',
+  off: 'Off — agent must call search_vault tool',
+};
+
+const RAG_MODE_DESC =
+  'When to run RAG before the model. Default: prefetch only when no note is focused; ' +
+  'otherwise rely on the agent calling the search_vault tool.';
 
 export class SettingsTab extends PluginSettingTab {
   private discoveredModels: ProviderModel[] = [];
@@ -184,6 +196,18 @@ export class SettingsTab extends PluginSettingTab {
   }
 
   private renderIndexingBody(body: HTMLElement, settings: LeoSettings): void {
+    new Setting(body)
+      .setName('RAG mode')
+      .setDesc(RAG_MODE_DESC)
+      .addDropdown((d) => {
+        for (const mode of RAG_MODES) d.addOption(mode, RAG_MODE_LABELS[mode]);
+        d.setValue(settings.ragMode);
+        d.onChange(async (value) => {
+          const next = value as RagMode;
+          await this.deps.store.update((prev) => ({ ...prev, ragMode: next }));
+        });
+      });
+
     new Setting(body)
       .setName('Exclude patterns')
       .setDesc(

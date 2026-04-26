@@ -882,6 +882,110 @@ describe('AgentRunner', () => {
     expect(records.some((r) => r.event === 'agent.rag.failure')).toBe(true);
   });
 
+  it('ragMode "off" skips ragEngine.query entirely', async () => {
+    const provider = new FakeProvider();
+    const { logger } = makeLogger();
+    const calls: string[] = [];
+    const ragEngine = {
+      query: async (text: string): Promise<readonly never[]> => {
+        calls.push(text);
+        return [];
+      },
+    };
+    const runner = new AgentRunner({
+      provider,
+      focusedContext: new MutableFocus(),
+      logger,
+      model: () => 'm',
+      ragEngine,
+      ragMode: () => 'off',
+    });
+    provider.plan({ events: [{ type: 'done' }] });
+    await collect(runner.send({ role: 'user', content: 'ask thing' }, 't'));
+    expect(calls).toEqual([]);
+  });
+
+  it('ragMode "no-focus" runs RAG when no note is focused', async () => {
+    const provider = new FakeProvider();
+    const { logger } = makeLogger();
+    const calls: string[] = [];
+    const ragEngine = {
+      query: async (text: string): Promise<readonly never[]> => {
+        calls.push(text);
+        return [];
+      },
+    };
+    const runner = new AgentRunner({
+      provider,
+      focusedContext: new MutableFocus(),
+      logger,
+      model: () => 'm',
+      ragEngine,
+      ragMode: () => 'no-focus',
+    });
+    provider.plan({ events: [{ type: 'done' }] });
+    await collect(runner.send({ role: 'user', content: 'ask thing' }, 't'));
+    expect(calls).toEqual(['ask thing']);
+  });
+
+  it('ragMode "no-focus" skips RAG when a note is focused', async () => {
+    const provider = new FakeProvider();
+    const { logger } = makeLogger();
+    const calls: string[] = [];
+    const ragEngine = {
+      query: async (text: string): Promise<readonly never[]> => {
+        calls.push(text);
+        return [];
+      },
+    };
+    const focus = new MutableFocus({
+      file: 'a.md',
+      cursor: { line: 0, ch: 0 },
+      selection: null,
+      viewport: { from: 0, to: 10, text: 'X' },
+    });
+    const runner = new AgentRunner({
+      provider,
+      focusedContext: focus,
+      logger,
+      model: () => 'm',
+      ragEngine,
+      ragMode: () => 'no-focus',
+    });
+    provider.plan({ events: [{ type: 'done' }] });
+    await collect(runner.send({ role: 'user', content: 'ask thing' }, 't'));
+    expect(calls).toEqual([]);
+  });
+
+  it('ragMode "auto" runs RAG even when a note is focused', async () => {
+    const provider = new FakeProvider();
+    const { logger } = makeLogger();
+    const calls: string[] = [];
+    const ragEngine = {
+      query: async (text: string): Promise<readonly never[]> => {
+        calls.push(text);
+        return [];
+      },
+    };
+    const focus = new MutableFocus({
+      file: 'a.md',
+      cursor: { line: 0, ch: 0 },
+      selection: null,
+      viewport: { from: 0, to: 10, text: 'X' },
+    });
+    const runner = new AgentRunner({
+      provider,
+      focusedContext: focus,
+      logger,
+      model: () => 'm',
+      ragEngine,
+      ragMode: () => 'auto',
+    });
+    provider.plan({ events: [{ type: 'done' }] });
+    await collect(runner.send({ role: 'user', content: 'ask thing' }, 't'));
+    expect(calls).toEqual(['ask thing']);
+  });
+
   it('accumulates assistant replies into per-thread history for the next turn', async () => {
     const provider = new FakeProvider();
     const { logger } = makeLogger();

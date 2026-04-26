@@ -13,6 +13,7 @@ import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
 import type { FocusedContext } from '@/editor/types';
 import type { ContextModifier } from '@/skills/types';
+import type { RagMode } from '@/settings/settingsStore';
 import { Annotation, StateGraph, START, END, interrupt, MemorySaver } from '@langchain/langgraph';
 import type { PlanModeController } from './planModeController';
 import { assembleContext, renderPrompt } from './contextAssembler';
@@ -163,6 +164,7 @@ export interface GraphDeps {
   readonly skillListing: GraphSkillListingProvider | null;
   readonly rag: GraphRagHitsProvider;
   readonly ragEngine: GraphRagEngineLike | null;
+  readonly ragMode: () => RagMode;
   readonly budget: number;
   readonly clock: () => Date;
   readonly toolRegistry: ToolRegistry | null;
@@ -404,34 +406,40 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     const history = deps.getHistory(thread);
     const historyWithUser: readonly AgentHistoryMessage[] = [...history, turn.message];
     let ragHits: readonly RagHit[] = [];
-    const ragStart = nowMs();
-    try {
-      if (deps.ragEngine !== null) {
-        const engineHits = await deps.ragEngine.query(turn.message.content, {
-          signal: turn.signal,
+    const mode = deps.ragMode();
+    const shouldRunRag = mode === 'auto' || (mode === 'no-focus' && turn.focus.file === null);
+    if (shouldRunRag) {
+      const ragStart = nowMs();
+      try {
+        if (deps.ragEngine !== null) {
+          const engineHits = await deps.ragEngine.query(turn.message.content, {
+            signal: turn.signal,
+          });
+          ragHits = engineHits.map(
+            (h): RagHit => ({
+              path: h.path,
+              score: h.score,
+              line_start: h.line_start,
+              line_end: h.line_end,
+            }),
+          );
+        } else {
+          ragHits = await deps.rag.query(turn.message, turn.focus);
+        }
+      } catch (err) {
+        deps.logger.warn('agent.rag.failure', {
+          thread,
+          error: err instanceof Error ? err.message : String(err),
         });
-        ragHits = engineHits.map(
-          (h): RagHit => ({
-            path: h.path,
-            score: h.score,
-            line_start: h.line_start,
-            line_end: h.line_end,
-          }),
-        );
-      } else {
-        ragHits = await deps.rag.query(turn.message, turn.focus);
       }
-    } catch (err) {
-      deps.logger.warn('agent.rag.failure', {
+      deps.logger.debug('agent.turn.rag.ms', {
         thread,
-        error: err instanceof Error ? err.message : String(err),
+        ms: Math.round(nowMs() - ragStart),
       });
+      deps.logger.debug('agent.turn.rag.hits', { thread, hits: ragHits.length });
+    } else {
+      deps.logger.debug('agent.turn.rag.skip', { thread, mode, focusFile: turn.focus.file });
     }
-    deps.logger.debug('agent.turn.rag.ms', {
-      thread,
-      ms: Math.round(nowMs() - ragStart),
-    });
-    deps.logger.debug('agent.turn.rag.hits', { thread, hits: ragHits.length });
     const agentId = turn.agentId;
     const skillListing = deps.skillListing?.buildFor({ thread, agentId }) ?? null;
     const prompt = assembleContext({
