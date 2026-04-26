@@ -246,7 +246,10 @@ export async function wireIndexerRag(opts: IndexerRagWiringOptions): Promise<Ind
     isProviderReady: opts.chatProviderReady,
     isExcluded: (p) => excludeStore.matcher()(p),
   });
-  await vaultIndexer.init();
+  // Caller must invoke `vaultIndexer.init()` after the workspace layout is
+  // ready. Running it earlier races against `app.vault.getFiles()` returning
+  // an empty list, which makes `runDiffSweep` classify every persisted entry
+  // as removed and triggers a full reindex on every restart.
 
   const unsubExclude = excludeStore.subscribe(() => {
     vaultIndexer.purgeExcluded(excludeStore.matcher());

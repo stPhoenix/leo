@@ -585,6 +585,14 @@ export default class LeoPlugin extends Plugin {
       confirmModelSwitch: async () => 'later',
     });
 
+    this.app.workspace.onLayoutReady(() => {
+      void this.indexerRag.vaultIndexer.init().catch((err) => {
+        this.logger.warn('indexer.init.failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    });
+
     const settingsUnsub = this.store.on((next) => {
       void this.indexerRag.excludeStore.set(next.indexing.excludePatterns);
     });
