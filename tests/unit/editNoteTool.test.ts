@@ -2,12 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { createEditNoteTool } from '@/tools/builtin/editNote';
 import type { EditNoteBridge } from '@/tools/types';
 import { AcceptRejectController } from '@/agent/acceptRejectController';
+import { ReadFileStateStore } from '@/tools/builtin/readFileState';
+import { NOT_READ_ERROR, STALE_ERROR } from '@/tools/builtin/writeGuard';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import { makeToolCtx } from './_toolCtx';
 
 class FakeVault implements VaultAdapter {
   readonly files = new Map<string, string>();
   writeCalls: Array<{ path: string; data: string }> = [];
+  statMtime: number | null = null;
   async exists(p: string): Promise<boolean> {
     return this.files.has(p);
   }
@@ -31,6 +34,10 @@ class FakeVault implements VaultAdapter {
   }
   async list(_p: string): Promise<{ files: string[]; folders: string[] }> {
     return { files: [...this.files.keys()], folders: [] };
+  }
+  async stat(p: string): Promise<{ mtimeMs: number; size: number } | null> {
+    if (this.statMtime === null) return null;
+    return { mtimeMs: this.statMtime, size: this.files.get(p)?.length ?? 0 };
   }
 }
 
@@ -90,6 +97,7 @@ describe('edit_note tool', () => {
 
   it('routes through ctx.editor.applyActiveEdit when path is the active note', async () => {
     const vault = new FakeVault();
+    vault.files.set('active.md', 'before');
     const apply = vi.fn(async () => ({ ok: true as const, bytesWritten: 3, undo: vi.fn() }));
     const editor = defaultBridge({
       isActiveNote: (p) => p === 'active.md',
@@ -142,6 +150,7 @@ describe('edit_note tool', () => {
 
   it('Reject on the active-editor path calls undo() exactly once', async () => {
     const vault = new FakeVault();
+    vault.files.set('x.md', 'orig');
     const undo = vi.fn();
     const editor = defaultBridge({
       isActiveNote: () => true,
@@ -166,6 +175,40 @@ describe('edit_note tool', () => {
     if (!v.ok) throw new Error('validate');
     const result = await tool.invoke(v.data, makeToolCtx({ vault }));
     expect(result).toEqual({ ok: false, error: 'not found' });
+  });
+
+  it('rejects with NOT_READ_ERROR on vault path when readState entry missing', async () => {
+    const vault = new FakeVault();
+    vault.files.set('n.md', 'A');
+    const readState = new ReadFileStateStore();
+    const ar = new AcceptRejectController();
+    const tool = createEditNoteTool({ acceptReject: ar });
+    const v = tool.validate({ path: 'n.md', line_start: 0, line_end: 0, new_content: 'X' });
+    if (!v.ok) throw new Error('validate');
+    const r = await tool.invoke(v.data, makeToolCtx({ vault, readState }));
+    expect(r).toEqual({ ok: false, error: NOT_READ_ERROR });
+    expect(vault.writeCalls).toHaveLength(0);
+  });
+
+  it('rejects with STALE_ERROR on vault path when on-disk mtime advanced past read', async () => {
+    const vault = new FakeVault();
+    vault.files.set('n.md', 'A');
+    vault.statMtime = 9999;
+    const readState = new ReadFileStateStore();
+    readState.set('n.md', {
+      content: 'A',
+      mtimeMs: 100,
+      offset: undefined,
+      limit: undefined,
+      isPartialView: false,
+    });
+    const ar = new AcceptRejectController();
+    const tool = createEditNoteTool({ acceptReject: ar });
+    const v = tool.validate({ path: 'n.md', line_start: 0, line_end: 0, new_content: 'X' });
+    if (!v.ok) throw new Error('validate');
+    const r = await tool.invoke(v.data, makeToolCtx({ vault, readState }));
+    expect(r).toEqual({ ok: false, error: STALE_ERROR });
+    expect(vault.writeCalls).toHaveLength(0);
   });
 
   it('vault platform errors surface as {ok:false}, no exception escapes', async () => {

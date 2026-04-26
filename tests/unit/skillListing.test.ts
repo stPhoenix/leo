@@ -34,6 +34,9 @@ class FakeVault implements VaultAdapter {
       folders: unique,
     };
   }
+  async stat(): Promise<null> {
+    return null;
+  }
 }
 
 function makeRegistryWithSkills(count: number): SkillRegistry {

@@ -34,6 +34,9 @@ class FakeVault implements VaultAdapter {
       folders: [...new Set(folders)],
     };
   }
+  async stat(): Promise<null> {
+    return null;
+  }
 }
 
 async function makeRegistry(): Promise<{

@@ -2,12 +2,29 @@ import type { Logger } from '@/platform/Logger';
 import type { OpenAITool } from '@/providers/types';
 import type { ToolCtx, ToolResult, ToolSpec } from './types';
 
+export type PlanModeView = 'normal' | 'plan';
+
+export interface ToolListOptions {
+  readonly allowedTools?: ReadonlySet<string>;
+  readonly planMode?: PlanModeView;
+}
+
+export interface ToolRegistryOptions {
+  readonly logger?: Logger;
+  readonly isToolAllowedInPlan?: (toolId: string, thread: string) => boolean;
+  readonly recordToolBlocked?: (thread: string, toolId: string) => void;
+}
+
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolSpec<unknown, unknown>>();
   private readonly logger: Logger | undefined;
+  private readonly isToolAllowedInPlan: ((toolId: string, thread: string) => boolean) | undefined;
+  private readonly recordToolBlocked: ((thread: string, toolId: string) => void) | undefined;
 
-  constructor(opts: { readonly logger?: Logger } = {}) {
+  constructor(opts: ToolRegistryOptions = {}) {
     this.logger = opts.logger;
+    this.isToolAllowedInPlan = opts.isToolAllowedInPlan;
+    this.recordToolBlocked = opts.recordToolBlocked;
   }
 
   register(spec: ToolSpec<unknown, unknown>): void {
@@ -32,12 +49,13 @@ export class ToolRegistry {
     return had;
   }
 
-  listFor(_thread: string): readonly ToolSpec<unknown, unknown>[] {
-    return [...this.tools.values()];
+  listFor(thread: string, opts: ToolListOptions = {}): readonly ToolSpec<unknown, unknown>[] {
+    const all = [...this.tools.values()];
+    return all.filter((spec) => this.isVisible(spec.id, thread, opts));
   }
 
-  toOpenAITools(thread: string): readonly OpenAITool[] {
-    return this.listFor(thread).map((spec) => ({
+  toOpenAITools(thread: string, opts: ToolListOptions = {}): readonly OpenAITool[] {
+    return this.listFor(thread, opts).map((spec) => ({
       type: 'function' as const,
       function: {
         name: spec.id,
@@ -51,6 +69,16 @@ export class ToolRegistry {
     const spec = this.tools.get(id);
     if (spec === undefined) {
       return { ok: false, error: `unknown tool: ${id}` };
+    }
+    if (this.isToolAllowedInPlan !== undefined && !this.isToolAllowedInPlan(id, ctx.thread)) {
+      this.recordToolBlocked?.(ctx.thread, id);
+      this.logger?.warn('tool.invoke.error', {
+        toolId: id,
+        thread: ctx.thread,
+        error: 'blocked by plan mode',
+        stage: 'plan-mode',
+      });
+      return { ok: false, error: `tool blocked by plan mode: ${id}` };
     }
     let parsedArgs: unknown;
     try {
@@ -97,6 +125,14 @@ export class ToolRegistry {
       });
       return { ok: false, error };
     }
+  }
+
+  private isVisible(toolId: string, thread: string, opts: ToolListOptions): boolean {
+    if (opts.planMode === 'plan' && this.isToolAllowedInPlan !== undefined) {
+      if (!this.isToolAllowedInPlan(toolId, thread)) return false;
+    }
+    if (opts.allowedTools !== undefined && !opts.allowedTools.has(toolId)) return false;
+    return true;
   }
 }
 

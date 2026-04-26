@@ -34,6 +34,9 @@ class FakeVault implements VaultAdapter {
   async list(): Promise<VaultListing> {
     return { files: [], folders: [] };
   }
+  async stat(): Promise<null> {
+    return null;
+  }
 }
 
 describe('IndexHeader read/write + matching', () => {

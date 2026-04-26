@@ -38,6 +38,9 @@ class FakeVault implements VaultAdapter {
   async list(): Promise<{ files: string[]; folders: string[] }> {
     return { files: [...this.files.keys()], folders: [] };
   }
+  async stat(): Promise<null> {
+    return null;
+  }
 }
 
 interface Captured {

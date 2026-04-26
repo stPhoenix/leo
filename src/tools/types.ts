@@ -2,6 +2,7 @@ import type { z } from 'zod';
 import type { Logger } from '@/platform/Logger';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
+import type { ReadFileStateStore } from './builtin/readFileState';
 
 /**
  * Edit-capable editor facade supplied to tools via ToolCtx. `ctx.editor` is
@@ -48,6 +49,8 @@ export interface ToolCtx {
   readonly logger?: Logger;
   readonly agentId?: string | null;
   readonly progress?: (event: ToolProgressEvent) => void;
+  readonly readState?: ReadFileStateStore;
+  readonly excludeMatcher?: (path: string) => boolean;
 }
 
 export interface ToolSpecBase {

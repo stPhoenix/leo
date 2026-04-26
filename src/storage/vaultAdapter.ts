@@ -5,6 +5,11 @@ export interface VaultListing {
   readonly folders: readonly string[];
 }
 
+export interface VaultStat {
+  readonly mtimeMs: number;
+  readonly size: number;
+}
+
 export interface VaultAdapter {
   exists(path: string): Promise<boolean>;
   mkdir(path: string): Promise<void>;
@@ -13,6 +18,7 @@ export interface VaultAdapter {
   rename(from: string, to: string): Promise<void>;
   remove(path: string): Promise<void>;
   list(path: string): Promise<VaultListing>;
+  stat(path: string): Promise<VaultStat | null>;
 }
 
 export function createObsidianVaultAdapter(adapter: DataAdapter): VaultAdapter {
@@ -40,6 +46,17 @@ export function createObsidianVaultAdapter(adapter: DataAdapter): VaultAdapter {
     async list(path) {
       const result = await adapter.list(path);
       return { files: result.files ?? [], folders: result.folders ?? [] };
+    },
+    async stat(path) {
+      try {
+        const raw = await adapter.stat(path);
+        if (raw === null || raw === undefined) return null;
+        const mtimeMs = typeof raw.mtime === 'number' ? raw.mtime : 0;
+        const size = typeof raw.size === 'number' ? raw.size : 0;
+        return { mtimeMs, size };
+      } catch {
+        return null;
+      }
     },
   };
 }

@@ -26,8 +26,8 @@ function fakeSearch(): SearchVaultEngine {
 describe('toolRegistry.toOpenAITools — built-in tool snapshot', () => {
   const registry = new ToolRegistry();
   registry.register(createReadNoteTool());
-  registry.register(createCreateNoteTool());
-  registry.register(createAppendToNoteTool());
+  registry.register(createCreateNoteTool({ acceptReject: fakeAcceptReject() }));
+  registry.register(createAppendToNoteTool({ acceptReject: fakeAcceptReject() }));
   registry.register(createCreateFolderTool());
   registry.register(createListNotesTool());
   registry.register(createEditNoteTool({ acceptReject: fakeAcceptReject() }));

@@ -173,6 +173,9 @@ class TreeVault implements VaultAdapter {
   async list(p: string): Promise<{ files: string[]; folders: string[] }> {
     return this.tree[p] ?? { files: [], folders: [] };
   }
+  async stat(): Promise<null> {
+    return null;
+  }
 }
 
 describe('filenameMatch helper', () => {

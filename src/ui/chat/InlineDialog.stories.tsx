@@ -10,6 +10,7 @@ import type {
 
 const EDITOR_PROPOSAL: EditNoteProposal = {
   toolId: 'edit_note',
+  intent: 'edit',
   path: 'Hello.md',
   lineStart: 4,
   lineEnd: 4,
@@ -18,6 +19,7 @@ const EDITOR_PROPOSAL: EditNoteProposal = {
 
 const VAULT_PROPOSAL: EditNoteProposal = {
   toolId: 'edit_note',
+  intent: 'edit',
   path: 'docs/runbook.md',
   lineStart: 12,
   lineEnd: 38,

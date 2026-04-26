@@ -1,11 +1,21 @@
 import { z } from 'zod';
+import { roughTokenCountEstimation } from '@/agent/tokenEstimator';
 import type { ToolSpec } from '../types';
 import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
 import { isSafeVaultPath } from './readNote';
+import {
+  addLineNumbers,
+  byteLength,
+  findSimilarPaths,
+  looksBinary,
+  readFileInRange,
+} from './readFileShared';
 
 export interface ReadFileArgs {
   readonly path: string;
   readonly maxBytes?: number;
+  readonly offset?: number;
+  readonly limit?: number;
 }
 
 export interface ReadFileResult {
@@ -13,10 +23,15 @@ export interface ReadFileResult {
   readonly content: string;
   readonly bytes: number;
   readonly truncated: boolean;
+  readonly totalLines?: number;
+  readonly startLine?: number;
+  readonly numLines?: number;
+  readonly unchanged?: boolean;
 }
 
 const DEFAULT_MAX_BYTES = 200 * 1024;
 const HARD_MAX_BYTES = 2 * 1024 * 1024;
+const MAX_TOKENS_DEFAULT = 25_000;
 
 const ReadFileSchema: z.ZodType<ReadFileArgs> = z
   .object({
@@ -34,6 +49,20 @@ const ReadFileSchema: z.ZodType<ReadFileArgs> = z
       .max(HARD_MAX_BYTES)
       .optional()
       .describe(`Optional cap on returned content size in bytes. Default ${DEFAULT_MAX_BYTES}.`),
+    offset: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe('Optional 1-indexed line number to start reading from.'),
+    limit: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'Optional max number of lines to read. When set, the byte cap is disabled to allow slicing large files.',
+      ),
   })
   .strict();
 
@@ -41,17 +70,39 @@ export function createReadFileTool(): ToolSpec<ReadFileArgs, ReadFileResult> {
   return {
     id: 'read_file',
     description:
-      'Read the contents of any text file from the vault by its vault-relative path. Use this for non-markdown files (configs, source code, JSON, etc.). Returns an error for binary files — attach those instead of reading.',
+      'Read the contents of any text file from the vault by its vault-relative path. Use offset/limit to slice large files. Returns line-numbered content (`<n>\\t<line>`). Errors on binaries — attach those instead.',
     schema: ReadFileSchema,
     parameters: jsonSchemaFromZod(ReadFileSchema),
     requiresConfirmation: false,
+    isReadOnly: true,
     source: 'builtin',
     validate: validateFromZod(ReadFileSchema),
     async invoke(args, ctx) {
       if (ctx.signal.aborted) return { ok: false, error: 'aborted' };
       try {
         if (!(await ctx.vault.exists(args.path))) {
-          return { ok: false, error: `file not found: ${args.path}` };
+          const suggestions = await findSimilarPaths(ctx.vault, args.path, 3, ctx.signal);
+          const suffix = suggestions.length > 0 ? ` Did you mean: ${suggestions.join(', ')}?` : '';
+          return { ok: false, error: `file not found: ${args.path}.${suffix}` };
+        }
+        const stat = await ctx.vault.stat(args.path);
+        const mtimeMs = Math.floor(stat?.mtimeMs ?? 0);
+        const startLine = args.offset ?? 1;
+        if (ctx.readState !== undefined && stat !== null) {
+          const cached = ctx.readState.matches(args.path, mtimeMs, args.offset, args.limit);
+          if (cached !== undefined) {
+            return {
+              ok: true,
+              data: {
+                path: args.path,
+                content:
+                  '<system-reminder>File unchanged since last read. The content from the earlier read_file tool result in this conversation is still current — refer to that instead of re-reading.</system-reminder>',
+                bytes: 0,
+                truncated: false,
+                unchanged: true,
+              },
+            };
+          }
         }
         const raw = await ctx.vault.read(args.path);
         if (looksBinary(raw)) {
@@ -60,17 +111,84 @@ export function createReadFileTool(): ToolSpec<ReadFileArgs, ReadFileResult> {
             error: `file appears to be binary: ${args.path}. Attach it instead of reading.`,
           };
         }
+        const limitProvided = args.limit !== undefined;
         const cap = Math.min(args.maxBytes ?? DEFAULT_MAX_BYTES, HARD_MAX_BYTES);
         const totalBytes = byteLength(raw);
-        let content = raw;
-        let truncated = false;
-        if (totalBytes > cap) {
-          content = sliceToBytes(raw, cap);
-          truncated = true;
+        let truncatedByBytes = false;
+        let working = raw;
+        if (!limitProvided && totalBytes > cap) {
+          working = sliceToBytes(raw, cap);
+          truncatedByBytes = true;
+        }
+        const range = readFileInRange(working, Math.max(0, startLine - 1), args.limit);
+        const tokens = roughTokenCountEstimation(range.content);
+        if (tokens > MAX_TOKENS_DEFAULT) {
+          return {
+            ok: false,
+            error: `file content (~${tokens} tokens) exceeds maximum allowed tokens (${MAX_TOKENS_DEFAULT}). Use offset and limit parameters to read specific portions of the file.`,
+          };
+        }
+        if (range.totalLines === 0) {
+          if (ctx.readState !== undefined) {
+            ctx.readState.set(args.path, {
+              content: '',
+              mtimeMs,
+              offset: args.offset,
+              limit: args.limit,
+              isPartialView: limitProvided,
+            });
+          }
+          return {
+            ok: true,
+            data: {
+              path: args.path,
+              content:
+                '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>',
+              bytes: 0,
+              truncated: false,
+              totalLines: 0,
+              startLine,
+              numLines: 0,
+            },
+          };
+        }
+        if (startLine > range.totalLines) {
+          return {
+            ok: true,
+            data: {
+              path: args.path,
+              content: `<system-reminder>Warning: the file exists but is shorter than the provided offset (${startLine}). The file has ${range.totalLines} lines.</system-reminder>`,
+              bytes: 0,
+              truncated: false,
+              totalLines: range.totalLines,
+              startLine,
+              numLines: 0,
+            },
+          };
+        }
+        const numbered = addLineNumbers(range.content, startLine);
+        if (ctx.readState !== undefined) {
+          ctx.readState.set(args.path, {
+            content: range.content,
+            mtimeMs,
+            offset: args.offset,
+            limit: args.limit,
+            isPartialView: limitProvided || truncatedByBytes,
+          });
         }
         return {
           ok: true,
-          data: { path: args.path, content, bytes: byteLength(content), truncated },
+          data: {
+            path: args.path,
+            content: numbered,
+            bytes: byteLength(range.content),
+            truncated:
+              truncatedByBytes ||
+              (limitProvided && range.numLines < range.totalLines - (startLine - 1)),
+            totalLines: range.totalLines,
+            startLine,
+            numLines: range.numLines,
+          },
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -78,32 +196,6 @@ export function createReadFileTool(): ToolSpec<ReadFileArgs, ReadFileResult> {
       }
     },
   };
-}
-
-function byteLength(text: string): number {
-  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(text).length;
-  let b = 0;
-  for (const ch of text) {
-    const c = ch.charCodeAt(0);
-    if (c < 0x80) b += 1;
-    else if (c < 0x800) b += 2;
-    else b += 3;
-  }
-  return b;
-}
-
-function looksBinary(text: string): boolean {
-  const sample = text.length > 8_192 ? text.slice(0, 8_192) : text;
-  if (sample.length === 0) return false;
-  let nul = 0;
-  let ctrl = 0;
-  for (let i = 0; i < sample.length; i += 1) {
-    const code = sample.charCodeAt(i);
-    if (code === 0) nul += 1;
-    else if (code < 32 && code !== 9 && code !== 10 && code !== 13) ctrl += 1;
-  }
-  if (nul > 0) return true;
-  return ctrl / sample.length > 0.05;
 }
 
 function sliceToBytes(text: string, cap: number): string {

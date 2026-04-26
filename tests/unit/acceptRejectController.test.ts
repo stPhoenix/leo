@@ -4,6 +4,7 @@ import { AcceptRejectController, type EditNoteProposal } from '@/agent/acceptRej
 function proposal(extra: Partial<EditNoteProposal> = {}): EditNoteProposal {
   return {
     toolId: 'edit_note',
+    intent: 'edit',
     path: 'n.md',
     lineStart: 0,
     lineEnd: 1,

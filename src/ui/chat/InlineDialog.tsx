@@ -63,9 +63,13 @@ export function InlineDialog(props: InlineDialogProps): JSX.Element {
       <header className="leo-accept-reject-header" data-slot="accept-reject-header">
         <strong>{proposal.toolId}</strong>
         <span>{proposal.path}</span>
-        <span>
-          L{proposal.lineStart}–L{proposal.lineEnd}
-        </span>
+        {proposal.intent === 'edit' ? (
+          <span>
+            L{proposal.lineStart}–L{proposal.lineEnd}
+          </span>
+        ) : (
+          <span>{proposal.intent}</span>
+        )}
       </header>
       <div className="leo-accept-reject-actions" data-slot="accept-reject-actions">
         <button

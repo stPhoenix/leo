@@ -45,6 +45,9 @@ class FakeVault implements VaultAdapter {
       .filter((seg, idx, arr) => arr.indexOf(seg) === idx && this.folders.has(`${prefix}${seg}`));
     return { files, folders: folders.map((f) => `${prefix}${f}`) };
   }
+  async stat(): Promise<null> {
+    return null;
+  }
 }
 
 const validSkill = `---\nname: team-custom\ndescription: Team helper\n---\nBody for team skill.\n`;

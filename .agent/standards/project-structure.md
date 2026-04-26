@@ -163,13 +163,18 @@ leo/
 │   │   │   ├── createFolder.ts
 │   │   │   ├── createNote.ts
 │   │   │   ├── editNote.ts
+│   │   │   ├── globVault.ts             # glob_vault tool — minimatch-based vault file enumeration with cap + truncation
+│   │   │   ├── grepVault.ts             # grep_vault tool — regex search across vault with content/files/count modes + context lines
 │   │   │   ├── listNotes.ts
 │   │   │   ├── openNote.ts              # open_note tool — open or reveal a note in an Obsidian leaf
-│   │   │   ├── readFile.ts              # Generic any-file reader with binary detection + maxBytes cap
+│   │   │   ├── readFile.ts              # Generic any-file reader with binary detection + offset/limit + maxBytes cap
+│   │   │   ├── readFileShared.ts        # Shared helpers — byteLength, looksBinary, range-read primitives
+│   │   │   ├── readFileState.ts         # ReadFileStateStore — tracks last-read mtime/range per path for write freshness guard
 │   │   │   ├── readNote.ts
 │   │   │   ├── revealInNote.ts          # reveal_in_note tool — open + cursor/select + flash highlight
 │   │   │   ├── searchVault.ts
-│   │   │   └── skillTool.ts
+│   │   │   ├── skillTool.ts
+│   │   │   └── writeGuard.ts            # ensureFreshRead — blocks write tools until target was read and mtime matches
 │   │   ├── user/
 │   │   │   ├── userToolsLoader.ts
 │   │   │   └── wireUserTools.ts

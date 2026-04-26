@@ -38,6 +38,9 @@ class FakeVault implements VaultAdapter {
   async list(): Promise<VaultListing> {
     return { files: [], folders: [] };
   }
+  async stat(): Promise<null> {
+    return null;
+  }
 }
 
 class FakeFiles implements VaultFileSource {

@@ -4,6 +4,7 @@ import type { Logger } from '@/platform/Logger';
 import type { EditNoteBridge, ToolSpec } from '../types';
 import { isSafeVaultPath } from './readNote';
 import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
+import { ensureFreshRead } from './writeGuard';
 
 export type { EditNoteBridge };
 
@@ -101,10 +102,10 @@ export function createEditNoteTool(
         | { ok: true; bytesWritten: number; revert: () => void | Promise<void> }
         | { ok: false; error: string };
       if (routedVia === 'editor') {
+        const guard = await ensureFreshRead(ctx, args.path);
+        if (!guard.ok) return { ok: false, error: guard.error };
         try {
-          if (await ctx.vault.exists(args.path)) {
-            beforeText = await ctx.vault.read(args.path);
-          }
+          beforeText = await ctx.vault.read(args.path);
         } catch {
           // best-effort snapshot; falls through to empty before
         }
@@ -132,9 +133,8 @@ export function createEditNoteTool(
         };
       } else {
         try {
-          if (!(await ctx.vault.exists(args.path))) {
-            return { ok: false, error: 'not found' };
-          }
+          const guard = await ensureFreshRead(ctx, args.path);
+          if (!guard.ok) return { ok: false, error: guard.error };
           const before = await ctx.vault.read(args.path);
           beforeText = before;
           const spliced = spliceLines(before, args.line_start, args.line_end, args.new_content);
@@ -155,6 +155,7 @@ export function createEditNoteTool(
       let reverted = false;
       const proposal: EditNoteProposal = {
         toolId: 'edit_note',
+        intent: 'edit',
         path: args.path,
         lineStart: args.line_start,
         lineEnd: args.line_end,
@@ -186,6 +187,20 @@ export function createEditNoteTool(
           routedVia,
           durationMs: Math.round(now() - start),
         });
+      }
+      if (ctx.readState !== undefined) {
+        if (reverted) {
+          ctx.readState.invalidate(args.path);
+        } else {
+          const stat = await ctx.vault.stat(args.path);
+          ctx.readState.set(args.path, {
+            content: afterText,
+            mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
+            offset: undefined,
+            limit: undefined,
+            isPartialView: false,
+          });
+        }
       }
       return {
         ok: true,

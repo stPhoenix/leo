@@ -1,7 +1,10 @@
 export type AcceptRejectDecision = 'accept' | 'reject';
 
+export type MutationIntent = 'create' | 'edit' | 'append';
+
 export interface EditNoteProposal {
   readonly toolId: string;
+  readonly intent: MutationIntent;
   readonly path: string;
   readonly lineStart: number;
   readonly lineEnd: number;

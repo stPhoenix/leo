@@ -51,6 +51,9 @@ class FakeAdapter implements VaultAdapter {
     }
     return { files, folders: [...new Set(folders)] };
   }
+  async stat(): Promise<null> {
+    return null;
+  }
 }
 
 function mkLogger(): { logger: Logger; records: LogRecord[] } {

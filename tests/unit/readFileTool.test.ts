@@ -28,6 +28,9 @@ class FakeVault implements VaultAdapter {
   async list(): Promise<VaultListing> {
     return { files: [], folders: [] };
   }
+  async stat(): Promise<null> {
+    return null;
+  }
 }
 
 const ctx = (vault: VaultAdapter): ReturnType<typeof makeToolCtx> =>
@@ -69,16 +72,19 @@ describe('read_file tool — validation', () => {
 });
 
 describe('read_file tool — invocation', () => {
-  it('reads a text file end-to-end', async () => {
+  it('reads a text file end-to-end with cat -n style line numbering', async () => {
     const vault = new FakeVault({ 'config.json': '{"a":1}' });
     const tool = createReadFileTool();
     const res = await tool.invoke({ path: 'config.json' }, ctx(vault));
     expect(res.ok).toBe(true);
     if (res.ok) {
       expect(res.data.path).toBe('config.json');
-      expect(res.data.content).toBe('{"a":1}');
+      expect(res.data.content).toBe('1\t{"a":1}');
       expect(res.data.bytes).toBe(7);
       expect(res.data.truncated).toBe(false);
+      expect(res.data.totalLines).toBe(1);
+      expect(res.data.startLine).toBe(1);
+      expect(res.data.numLines).toBe(1);
     }
   });
 
@@ -108,7 +114,7 @@ describe('read_file tool — invocation', () => {
     if (res.ok) {
       expect(res.data.bytes).toBe(32);
       expect(res.data.truncated).toBe(true);
-      expect(res.data.content).toBe('A'.repeat(32));
+      expect(res.data.content).toBe(`1\t${'A'.repeat(32)}`);
     }
   });
 

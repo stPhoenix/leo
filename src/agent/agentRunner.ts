@@ -8,6 +8,7 @@ import type { EditNoteBridge } from '@/tools/types';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
 import type { PlanModeController } from './planModeController';
+import type { ReadFileStateStore } from '@/tools/builtin/readFileState';
 import type { RagMode } from '@/settings/settingsStore';
 import { BUILTIN_COMPACTABLE_TOOLS } from './microcompact';
 import {
@@ -93,6 +94,8 @@ export interface AgentRunnerOptions {
   readonly vault?: VaultAdapter;
   readonly editor?: EditNoteBridge;
   readonly navigator?: WorkspaceNavigator;
+  readonly readState?: ReadFileStateStore;
+  readonly excludeMatcher?: (path: string) => boolean;
   readonly maxToolRoundTrips?: number;
   readonly allowedToolsForThread?: (thread: ThreadId) => ReadonlySet<string>;
   readonly markThreadAllowed?: (thread: ThreadId, toolId: string) => void;
@@ -141,6 +144,8 @@ export class AgentRunner {
   private readonly vault: VaultAdapter | null;
   private readonly editor: EditNoteBridge | null;
   private readonly navigator: WorkspaceNavigator | null;
+  private readonly readStateStore: AgentRunnerOptions['readState'];
+  private readonly excludeMatcher: AgentRunnerOptions['excludeMatcher'];
   private readonly maxToolRoundTrips: number;
   private readonly allowedToolsForThread: AgentRunnerOptions['allowedToolsForThread'];
   private readonly markThreadAllowed: AgentRunnerOptions['markThreadAllowed'];
@@ -173,6 +178,8 @@ export class AgentRunner {
     this.vault = opts.vault ?? null;
     this.editor = opts.editor ?? null;
     this.navigator = opts.navigator ?? null;
+    this.readStateStore = opts.readState;
+    this.excludeMatcher = opts.excludeMatcher;
     this.maxToolRoundTrips = opts.maxToolRoundTrips ?? DEFAULT_MAX_TOOL_ROUND_TRIPS;
     this.allowedToolsForThread = opts.allowedToolsForThread;
     this.markThreadAllowed = opts.markThreadAllowed;
@@ -296,6 +303,8 @@ export class AgentRunner {
       vault: this.vault ?? noopVault,
       editor: this.editor ?? noopEditor,
       ...(this.navigator !== null ? { navigator: this.navigator } : {}),
+      ...(this.readStateStore !== undefined ? { readState: this.readStateStore } : {}),
+      ...(this.excludeMatcher !== undefined ? { excludeMatcher: this.excludeMatcher } : {}),
       maxToolRoundTrips: this.maxToolRoundTrips,
       ...(this.allowedToolsForThread !== undefined
         ? { allowedToolsForThread: this.allowedToolsForThread }
@@ -443,6 +452,9 @@ const noopVault: VaultAdapter = {
   },
   async rename(): Promise<void> {
     throw new Error('AgentRunner: no vault wired');
+  },
+  async stat(): Promise<null> {
+    return null;
   },
 } as unknown as VaultAdapter;
 

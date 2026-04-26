@@ -30,7 +30,11 @@ export const DEFAULT_PLAN_MODE_ALLOWLIST: ReadonlySet<string> = new Set<string>(
   'EnterPlanMode',
   'ExitPlanMode',
   'read_note',
+  'read_file',
   'search_vault',
+  'list_notes',
+  'glob_vault',
+  'grep_vault',
 ]);
 
 export const DEFAULT_STALE_TODO_THRESHOLD = 10;

@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import type { AcceptRejectController, EditNoteProposal } from '@/agent/acceptRejectController';
+import type { Logger } from '@/platform/Logger';
 import type { ToolSpec } from '../types';
 import { isSafeVaultPath } from './readNote';
 import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
@@ -11,8 +13,14 @@ export interface CreateNoteArgs {
 export interface CreateNoteResult {
   readonly path: string;
   readonly bytesWritten: number;
+  readonly decision: 'accept' | 'reject';
   readonly before: string;
   readonly after: string;
+}
+
+export interface CreateNoteToolOptions {
+  readonly acceptReject: AcceptRejectController;
+  readonly logger?: Logger;
 }
 
 const CreateNoteSchema: z.ZodType<CreateNoteArgs> = z
@@ -40,7 +48,9 @@ function byteLength(text: string): number {
   return b;
 }
 
-export function createCreateNoteTool(): ToolSpec<CreateNoteArgs, CreateNoteResult> {
+export function createCreateNoteTool(
+  opts: CreateNoteToolOptions,
+): ToolSpec<CreateNoteArgs, CreateNoteResult> {
   return {
     id: 'create_note',
     description:
@@ -57,13 +67,63 @@ export function createCreateNoteTool(): ToolSpec<CreateNoteArgs, CreateNoteResul
           return { ok: false, error: 'file exists' };
         }
         await ctx.vault.write(args.path, args.content);
+
+        const proposal: EditNoteProposal = {
+          toolId: 'create_note',
+          intent: 'create',
+          path: args.path,
+          lineStart: 0,
+          lineEnd: 0,
+          routedVia: 'vault',
+        };
+        const decision = await opts.acceptReject.present(proposal);
+        let reverted = false;
+        if (decision === 'reject') {
+          try {
+            await ctx.vault.remove(args.path);
+            reverted = true;
+            opts.logger?.info('create_note.reject', {
+              toolId: 'create_note',
+              thread: ctx.thread,
+              path: args.path,
+            });
+          } catch (err) {
+            opts.logger?.error('create_note.reject.failed', {
+              path: args.path,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        } else {
+          opts.logger?.info('create_note.accept', {
+            toolId: 'create_note',
+            thread: ctx.thread,
+            path: args.path,
+          });
+        }
+
+        if (ctx.readState !== undefined) {
+          if (reverted) {
+            ctx.readState.invalidate(args.path);
+          } else {
+            const stat = await ctx.vault.stat(args.path);
+            ctx.readState.set(args.path, {
+              content: args.content,
+              mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
+              offset: undefined,
+              limit: undefined,
+              isPartialView: false,
+            });
+          }
+        }
+
         return {
           ok: true,
           data: {
             path: args.path,
             bytesWritten: byteLength(args.content),
+            decision: reverted ? 'reject' : 'accept',
             before: '',
-            after: args.content,
+            after: reverted ? '' : args.content,
           },
         };
       } catch (err) {

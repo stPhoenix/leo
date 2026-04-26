@@ -55,6 +55,10 @@ import { ToolRegistry } from '@/tools/toolRegistry';
 import { createReadNoteTool } from '@/tools/builtin/readNote';
 import { createListNotesTool } from '@/tools/builtin/listNotes';
 import { createReadFileTool } from '@/tools/builtin/readFile';
+import { createGlobVaultTool } from '@/tools/builtin/globVault';
+import { createGrepVaultTool } from '@/tools/builtin/grepVault';
+import { ReadFileStateStore } from '@/tools/builtin/readFileState';
+import { compileMatcher, normalizePatterns } from '@/rag/excludeMatcher';
 import { createCreateNoteTool } from '@/tools/builtin/createNote';
 import { createAppendToNoteTool } from '@/tools/builtin/appendToNote';
 import { createCreateFolderTool } from '@/tools/builtin/createFolder';
@@ -349,14 +353,37 @@ export default class LeoPlugin extends Plugin {
     this.editorBridge.start();
 
     const vaultAdapter = createObsidianVaultAdapter(this.app.vault.adapter);
-    this.toolRegistry = new ToolRegistry({ logger: this.logger });
+    this.toolRegistry = new ToolRegistry({
+      logger: this.logger,
+      isToolAllowedInPlan: (toolId, thread) => {
+        const controller = this.planModeController;
+        if (controller === undefined) return true;
+        if (controller.getMode(thread) !== 'plan') return true;
+        return controller.isToolAllowedInPlan(toolId);
+      },
+      recordToolBlocked: (thread, toolId) => {
+        this.planModeController?.recordToolBlocked(thread, toolId);
+      },
+    });
+    this.acceptRejectController = new AcceptRejectController();
     this.toolRegistry.register(createReadNoteTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createListNotesTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createReadFileTool() as unknown as ToolSpec<unknown, unknown>);
-    this.toolRegistry.register(createCreateNoteTool() as unknown as ToolSpec<unknown, unknown>);
-    this.toolRegistry.register(createAppendToNoteTool() as unknown as ToolSpec<unknown, unknown>);
+    this.toolRegistry.register(createGlobVaultTool() as unknown as ToolSpec<unknown, unknown>);
+    this.toolRegistry.register(createGrepVaultTool() as unknown as ToolSpec<unknown, unknown>);
+    this.toolRegistry.register(
+      createCreateNoteTool({
+        acceptReject: this.acceptRejectController,
+        logger: this.logger,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createAppendToNoteTool({
+        acceptReject: this.acceptRejectController,
+        logger: this.logger,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
     this.toolRegistry.register(createCreateFolderTool() as unknown as ToolSpec<unknown, unknown>);
-    this.acceptRejectController = new AcceptRejectController();
     this.editLock = new EditLockController({
       logger: this.logger,
       onBlockedKeystroke: () => new Notice('Leo: range is locked — wait for edit to finish.'),
@@ -785,12 +812,26 @@ export default class LeoPlugin extends Plugin {
       },
     };
 
+    const readFileState = new ReadFileStateStore();
+    let cachedExcludePatterns: readonly string[] | null = null;
+    let cachedExcludeFn: (p: string) => boolean = (): boolean => false;
+    const excludeMatcher = (path: string): boolean => {
+      const patterns = this.store.get().indexing.excludePatterns ?? [];
+      if (cachedExcludePatterns !== patterns) {
+        cachedExcludePatterns = patterns;
+        cachedExcludeFn = compileMatcher(normalizePatterns(patterns));
+      }
+      return cachedExcludeFn(path);
+    };
+
     this.agentRunner = new AgentRunner({
       provider: this.providerManager,
       focusedContext: this.focusedContext,
       logger: this.logger,
       model: () => this.store.get().provider.chatModel,
       historyByThread: agentHistory,
+      readState: readFileState,
+      excludeMatcher,
       autocompact: {
         enabled: true,
         provider: this.providerManager,

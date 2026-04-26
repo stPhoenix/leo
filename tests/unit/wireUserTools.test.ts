@@ -57,6 +57,9 @@ function mkVault(
       for (const k of files.keys()) if (k.startsWith(prefix)) out.push(k);
       return { files: out, folders: [] };
     },
+    async stat() {
+      return null;
+    },
   };
 }
 

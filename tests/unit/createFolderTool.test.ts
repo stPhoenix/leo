@@ -37,6 +37,9 @@ class FakeVault implements VaultAdapter {
   async list(_p: string): Promise<{ files: string[]; folders: string[] }> {
     return { files: [...this.files.keys()], folders: [...this.folders] };
   }
+  async stat(): Promise<null> {
+    return null;
+  }
 }
 
 const ctx = (vault: VaultAdapter): ReturnType<typeof makeToolCtx> =>

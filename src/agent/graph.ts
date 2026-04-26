@@ -9,6 +9,7 @@ import type {
 import { chatContentText } from '@/providers/types';
 import type { ToolRegistry } from '@/tools/toolRegistry';
 import type { EditNoteBridge } from '@/tools/types';
+import type { ReadFileStateStore } from '@/tools/builtin/readFileState';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
 import type { FocusedContext } from '@/editor/types';
@@ -171,6 +172,8 @@ export interface GraphDeps {
   readonly vault: VaultAdapter;
   readonly editor: EditNoteBridge;
   readonly navigator?: WorkspaceNavigator;
+  readonly readState?: ReadFileStateStore;
+  readonly excludeMatcher?: (path: string) => boolean;
   readonly maxToolRoundTrips: number;
   readonly allowedToolsForThread?: (thread: ThreadId) => ReadonlySet<string>;
   readonly markThreadAllowed?: (thread: ThreadId, toolId: string) => void;
@@ -473,8 +476,15 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
         baseMessages.push({ role: 'system', content: staleReminder });
       }
     }
+    const planModeForList = deps.planMode !== null ? deps.planMode.getMode(thread) : undefined;
+    const allowedToolsForList =
+      deps.allowedToolsForThread !== undefined ? deps.allowedToolsForThread(thread) : undefined;
+    const toolListOpts = {
+      ...(planModeForList !== undefined ? { planMode: planModeForList } : {}),
+      ...(allowedToolsForList !== undefined ? { allowedTools: allowedToolsForList } : {}),
+    };
     const allToolSpecs: readonly OpenAITool[] =
-      deps.toolRegistry !== null ? deps.toolRegistry.toOpenAITools(thread) : [];
+      deps.toolRegistry !== null ? deps.toolRegistry.toOpenAITools(thread, toolListOpts) : [];
     const effectiveModel = deps.model();
     deps.logger.info('agent.turn.start', {
       thread,
@@ -793,6 +803,8 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
           ...(deps.navigator !== undefined ? { navigator: deps.navigator } : {}),
           logger: deps.logger,
           agentId,
+          ...(deps.readState !== undefined ? { readState: deps.readState } : {}),
+          ...(deps.excludeMatcher !== undefined ? { excludeMatcher: deps.excludeMatcher } : {}),
         });
       }
       const skillEnvelope =
