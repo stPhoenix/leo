@@ -121,6 +121,7 @@ import {
 } from '@/agent/externalAgent/runPhase';
 import { ExternalAgentOrchestrator } from '@/agent/externalAgent/orchestrator';
 import { createRefineSubAgent } from '@/agent/externalAgent/refineSubAgent';
+import { createPiiDetectAgent } from '@/agent/externalAgent/piiDetectAgent';
 import { getRefineSystemPrompt } from '@/agent/externalAgent/refinePrompt';
 import { createDelegateExternalTool } from '@/tools/builtin/delegateExternal';
 import {
@@ -138,6 +139,31 @@ import {
   unregisterLiveController,
 } from '@/agent/externalAgent/liveControllerRegistry';
 import { ExternalAgentWidgetController } from '@/agent/externalAgent/widgetController';
+import {
+  InlineAgentAdapter,
+  type ProviderFactory as InlineAgentProviderFactory,
+  type ManualChatModelAdapter as InlineAgentManualChatModelAdapter,
+  type AssistantStep as InlineAgentAssistantStep,
+  type RewriteMessage as InlineAgentRewriteMessage,
+  type InlineAgentConfig,
+} from '@/agent/externalAgent/adapters/inlineAgent';
+import { ChatOpenAI } from '@langchain/openai';
+import { ChatAnthropic } from '@langchain/anthropic';
+import { AIMessage, HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import type { z } from 'zod';
+import {
+  fetchUrlInputSchema,
+  searchWebInputSchema,
+  readFileInputSchema,
+  writeFileInputSchema,
+  listDirInputSchema,
+  deleteFileInputSchema,
+  publishArtifactInputSchema,
+  extractNoteInputSchema,
+} from '@/agent/externalAgent/adapters/inlineAgent/tools/schemas';
+import { defaultEndpointFor } from '@/providers/registry';
+import { SAFE_STORAGE_PREFIX } from '@/settings/externalAgentResolver';
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'heic']);
 
@@ -406,6 +432,38 @@ export default class LeoPlugin extends Plugin {
         return map;
       },
     });
+    const inlineProviderKeys: Record<string, string> = {};
+    const inlineTavilyKey = { value: '' };
+    const refreshInlineSecrets = async (): Promise<void> => {
+      for (const kind of INLINE_KNOWN_PROVIDER_KINDS) {
+        inlineProviderKeys[kind] = (await this.safeStorage.get(`provider.${kind}.apiKey`)) ?? '';
+      }
+      inlineTavilyKey.value =
+        (await this.safeStorage.get('externalAgents.inline-agent.tavilyApiKey')) ?? '';
+    };
+    await refreshInlineSecrets();
+    this.register(
+      this.store.on(() => {
+        void refreshInlineSecrets();
+      }),
+    );
+    const inlineAgentProviderFactory: InlineAgentProviderFactory = (providerId, model, opts) =>
+      buildInlineChatModel({
+        providerId,
+        model,
+        ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+        endpoint: resolveInlineEndpoint(providerId, this.store),
+        apiKey: inlineProviderKeys[providerId] ?? '',
+      });
+    this.adapterRegistry.register(
+      new InlineAgentAdapter({
+        providerFactory: inlineAgentProviderFactory,
+        logger: this.logger,
+        chatModelAdapter: bindInlineChatModelAdapter,
+        resolveSearchWebApiKey: (config) =>
+          resolveInlineSearchWebKey(config, inlineTavilyKey.value),
+      }),
+    );
     this.toolRegistry.register(createReadNoteTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createListNotesTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createReadFileTool() as unknown as ToolSpec<unknown, unknown>);
@@ -1127,6 +1185,12 @@ export default class LeoPlugin extends Plugin {
                 readVaultFile: (path) => this.readVaultFileBytes(path),
               }
             : {}),
+          piiDetector: createPiiDetectAgent({
+            provider: this.providerManager,
+            model: () => this.store.get().provider.chatModel,
+            temperature: () => this.store.get().provider.temperature,
+            logger: this.logger,
+          }),
         }),
     );
     this.addRibbonIcon('bot', 'Leo: Open chat', () => {
@@ -1559,4 +1623,181 @@ function resolveElectronSafeStorage(): SafeStorageLike | null {
   } catch {
     return null;
   }
+}
+
+const INLINE_KNOWN_PROVIDER_KINDS: readonly string[] = [
+  'lmstudio',
+  'openai',
+  'anthropic',
+  'ollama',
+  'custom',
+];
+
+const INLINE_TOOL_DEFS: ReadonlyArray<{
+  readonly name: string;
+  readonly description: string;
+  readonly schema: z.ZodType;
+}> = [
+  {
+    name: 'fetch_url',
+    description:
+      'Fetch a web URL via HTTP/HTTPS. Returns body text or parsed JSON, with redirect safety + size cap.',
+    schema: fetchUrlInputSchema,
+  },
+  {
+    name: 'search_web',
+    description: 'Search the web (Tavily). Returns ranked results with titles, URLs, and snippets.',
+    schema: searchWebInputSchema,
+  },
+  {
+    name: 'read_file',
+    description: 'Read a file from the per-run sandbox. Path is relative to sandbox root.',
+    schema: readFileInputSchema,
+  },
+  {
+    name: 'write_file',
+    description: 'Write a file to the per-run sandbox (utf-8 or base64).',
+    schema: writeFileInputSchema,
+  },
+  {
+    name: 'list_dir',
+    description: 'List entries in the per-run sandbox.',
+    schema: listDirInputSchema,
+  },
+  {
+    name: 'delete_file',
+    description: 'Delete a file from the per-run sandbox.',
+    schema: deleteFileInputSchema,
+  },
+  {
+    name: 'publish_artifact',
+    description: 'Nominate a sandbox file as a final output artifact (with optional summary).',
+    schema: publishArtifactInputSchema,
+  },
+  {
+    name: 'extract_note',
+    description:
+      'Save a research note (title, summary, source URL, relevance) for later synthesis. Multistep route only.',
+    schema: extractNoteInputSchema,
+  },
+];
+
+const INLINE_TOOL_DEF_BY_NAME = new Map(INLINE_TOOL_DEFS.map((def) => [def.name, def]));
+
+interface BuildInlineChatModelInput {
+  readonly providerId: string;
+  readonly model: string;
+  readonly endpoint: string;
+  readonly apiKey: string;
+  readonly temperature?: number;
+}
+
+function buildInlineChatModel(input: BuildInlineChatModelInput): BaseChatModel {
+  const { providerId, model, endpoint, apiKey, temperature } = input;
+  if (providerId === 'anthropic') {
+    return new ChatAnthropic({
+      model,
+      apiKey,
+      ...(temperature !== undefined ? { temperature } : {}),
+      streaming: false,
+      streamUsage: true,
+      clientOptions: {
+        dangerouslyAllowBrowser: true,
+        ...(endpoint.length > 0 ? { baseURL: endpoint } : {}),
+      },
+    }) as unknown as BaseChatModel;
+  }
+  // OpenAI-compatible: openai, lmstudio, ollama, custom
+  const baseURL = `${endpoint.replace(/\/+$/, '')}/v1`;
+  return new ChatOpenAI({
+    model,
+    apiKey: apiKey.length > 0 ? apiKey : 'placeholder',
+    ...(temperature !== undefined ? { temperature } : {}),
+    streaming: false,
+    streamUsage: true,
+    configuration: {
+      baseURL,
+      dangerouslyAllowBrowser: true,
+    },
+  }) as unknown as BaseChatModel;
+}
+
+function resolveInlineEndpoint(providerId: string, store: SettingsStore): string {
+  const settings = store.get();
+  if (settings.provider.kind === providerId && settings.provider.endpoint.length > 0) {
+    return settings.provider.endpoint;
+  }
+  return defaultEndpointFor(
+    providerId as 'lmstudio' | 'openai' | 'anthropic' | 'ollama' | 'custom',
+  );
+}
+
+function resolveInlineSearchWebKey(config: InlineAgentConfig, tavilyCached: string): string {
+  const ref = config.tools.searchWeb.apiKeyRef;
+  if (ref.startsWith(SAFE_STORAGE_PREFIX)) return tavilyCached;
+  return ref;
+}
+
+function bindInlineChatModelAdapter(model: BaseChatModel): InlineAgentManualChatModelAdapter {
+  return {
+    async invokeTurn({ messages, toolNames, signal }): Promise<InlineAgentAssistantStep> {
+      const lcMessages = inlineRewriteToLangchain(messages);
+      const tools = toolNames
+        .map((name) => INLINE_TOOL_DEF_BY_NAME.get(name))
+        .filter((def): def is (typeof INLINE_TOOL_DEFS)[number] => def !== undefined);
+      const callable =
+        tools.length > 0
+          ? (model as unknown as { bindTools: (defs: unknown[]) => BaseChatModel }).bindTools(
+              tools.map((t) => ({ name: t.name, description: t.description, schema: t.schema })),
+            )
+          : model;
+      const result = (await callable.invoke(lcMessages, { signal })) as AIMessage;
+      const text =
+        typeof result.content === 'string'
+          ? result.content
+          : Array.isArray(result.content)
+            ? result.content
+                .map((c) => (typeof c === 'string' ? c : 'text' in c ? c.text : ''))
+                .join('')
+            : '';
+      const rawCalls =
+        (
+          result as unknown as {
+            tool_calls?: ReadonlyArray<{ id?: string; name?: string; args?: unknown }>;
+          }
+        ).tool_calls ?? [];
+      const toolCalls = rawCalls
+        .filter((tc) => typeof tc.name === 'string' && tc.name.length > 0)
+        .map((tc) => ({
+          id: tc.id ?? '',
+          name: tc.name as string,
+          args: tc.args ?? {},
+        }));
+      const usageMeta = (result as unknown as { usage_metadata?: { total_tokens?: number } })
+        .usage_metadata;
+      const usage = typeof usageMeta?.total_tokens === 'number' ? usageMeta.total_tokens : 0;
+      return { text, toolCalls, usage };
+    },
+  };
+}
+
+function inlineRewriteToLangchain(messages: readonly InlineAgentRewriteMessage[]): BaseMessage[] {
+  // Tool messages reference toolCallIds, but the in-memory assistant message
+  // does not carry tool_calls (see runManualLoop in branches/simpleBranch.ts).
+  // Re-emitting tool results as user-prefix text avoids OpenAI/Anthropic's
+  // strict tool_call_id pairing requirement while preserving model context.
+  const out: BaseMessage[] = [];
+  for (const m of messages) {
+    if (m.role === 'system') {
+      out.push(new SystemMessage(m.content));
+    } else if (m.role === 'human' || m.role === 'user') {
+      out.push(new HumanMessage(m.content));
+    } else if (m.role === 'assistant' || m.role === 'ai') {
+      if (m.content.length > 0) out.push(new AIMessage(m.content));
+    } else if (m.role === 'tool') {
+      const toolName = m.name ?? 'tool';
+      out.push(new HumanMessage(`Result from ${toolName}: ${m.content}`));
+    }
+  }
+  return out;
 }

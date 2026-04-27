@@ -3269,3 +3269,181 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* PII review banner — gated dispatch of refined prompt to external adapter. */
+.leo-pii-review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--color-yellow, var(--text-warning, var(--interactive-accent)));
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-pii-review[data-status='error'] {
+  border-left-color: var(--color-red, var(--text-error));
+  background: var(--background-modifier-error, var(--background-secondary));
+}
+
+.leo-pii-status {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.leo-pii-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--background-modifier-border);
+  border-top-color: var(--interactive-accent);
+  animation: leo-pii-spin 0.8s linear infinite;
+}
+
+@keyframes leo-pii-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.leo-pii-error {
+  flex-wrap: wrap;
+  color: var(--text-error, var(--text-normal));
+}
+
+.leo-pii-error-msg {
+  flex: 1 1 auto;
+}
+
+.leo-pii-icon {
+  display: inline-block;
+  font-weight: 600;
+  color: var(--color-yellow, var(--text-warning, var(--interactive-accent)));
+}
+
+.leo-pii-review[data-status='error'] .leo-pii-icon {
+  color: var(--color-red, var(--text-error));
+}
+
+.leo-pii-header {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+}
+
+.leo-pii-title {
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.leo-pii-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+}
+
+.leo-pii-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-4-2);
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  flex-wrap: wrap;
+}
+
+.leo-pii-row[data-decision='ignore'] {
+  opacity: 0.6;
+}
+
+.leo-pii-row[data-decision='mask'],
+.leo-pii-row[data-decision='remove'] {
+  border-color: var(--interactive-accent);
+}
+
+.leo-pii-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.leo-pii-kind {
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.leo-pii-sample {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.leo-pii-note {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.leo-pii-row-actions {
+  display: flex;
+  gap: var(--size-4-1);
+  flex-wrap: wrap;
+}
+
+.leo-pii-footer {
+  display: flex;
+  gap: var(--size-4-2);
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.leo-pii-btn {
+  appearance: none;
+  font: inherit;
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  padding: 2px var(--size-4-2);
+  border-radius: var(--radius-s);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+}
+
+.leo-pii-btn:hover {
+  background: var(--interactive-hover);
+}
+
+.leo-pii-btn:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.leo-pii-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.leo-pii-btn[aria-pressed='true'] {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+.leo-pii-btn-retry {
+  border-color: var(--color-red, var(--text-error));
+  color: var(--color-red, var(--text-error));
+}

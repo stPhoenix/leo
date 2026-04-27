@@ -221,6 +221,7 @@ export class SettingsTab extends PluginSettingTab {
     const mountHost = body.createDiv({ cls: 'leo-eas-host' });
     const root = createRoot(mountHost);
     let current = settings.externalAgents;
+    const providerOptions = PROVIDER_KINDS.map((k) => ({ id: k, label: PROVIDER_KIND_LABELS[k] }));
     const render = (next: LeoSettings['externalAgents']): void => {
       current = next;
       root.render(
@@ -231,6 +232,8 @@ export class SettingsTab extends PluginSettingTab {
             void this.deps.store.update((prev) => ({ ...prev, externalAgents: n }));
             render(n);
           },
+          providerOptions,
+          discoveredModels: this.discoveredModels.map((m) => ({ id: m.id })),
           ...(safeStorage !== undefined
             ? {
                 readSecret: (key) => safeStorage.get(key).then((v) => v ?? ''),
@@ -287,7 +290,6 @@ export class SettingsTab extends PluginSettingTab {
   private renderProviderBody(body: HTMLElement, settings: LeoSettings): void {
     if (!settings.ui.firstRunComplete) {
       this.renderWelcomePanel(body, settings);
-      return;
     }
     this.renderProviderFields(body, settings);
   }

@@ -31,7 +31,11 @@ leo/
 │   ├── agent/                           # Agent loop, compaction, plan mode, todo, context assembly, graph + streaming events
 │   │   ├── externalAgent/                # External-agent delegation subgraph (F01–F13 slice): adapter contract, refine sub-agent, FSM driver, slot-per-thread, result writer, widget controller, terminal snapshot, logging
 │   │   │   ├── adapters/
-│   │   │   │   └── base.ts               # ExternalAgentAdapter abstract class + ExternalEvent discriminated union (log/text/file/done/error) + AdapterCapabilities — adapter-only ESLint isolation enforced
+│   │   │   │   ├── base.ts               # ExternalAgentAdapter abstract class + ExternalEvent discriminated union (log/text/file/done/error) + AdapterCapabilities — adapter-only ESLint isolation enforced
+│   │   │   │   └── inlineAgent/tools/    # Inline-Agent network/sanitize helpers (`fetch_url` + `search_web` hardening — SSRF/DNS-rebind + prompt-injection envelope)
+│   │   │   │       ├── ipGuard.ts        # parseIp (v4/v6 incl. IPv4-mapped + brackets), cidrContains (v4 + v6, prefix>64), isPrivateOrLoopbackIp (RFC1918/CGNAT/link-local/IPv6 ULA/loopback/64:ff9b::/96), resolveAndCheck (dynamic node:dns/promises lookup, fail-closed)
+│   │   │   │       ├── sanitize.ts       # stripInvisible (zero-width + bidi controls), stripHtmlScriptStyleComments, sanitizeBody(body, contentType?) — html-strip only when text/html
+│   │   │   │       └── untrustedWrap.ts  # wrapUntrusted(text, origin) → `<untrusted-content origin="…">…</untrusted-content>` (escapes nested close, scrubs origin); wrapToolResultForLLM(name, result) maps fetch_url body + search_web answer/per-row content
 │   │   │   ├── adapterRegistry.ts        # AdapterRegistry — register/freeze/list (alphabetical)/get/defaultId/isEnabled
 │   │   │   ├── liveControllerRegistry.ts # In-memory map<runId, ExternalAgentWidgetController> bridging serialized widget block props ↔ live controller; EXTERNAL_AGENT_LIVE_KIND
 │   │   │   ├── loggingNamespaces.ts      # EXTERNAL_AGENT_LOG namespace tree + SENSITIVE_FIELD_KEYS — adapter/maintainer reference + lint policy declaration

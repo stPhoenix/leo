@@ -133,3 +133,4 @@ dist
 .gitnexus
 /imgs/
 storybook-static/
+/data.json

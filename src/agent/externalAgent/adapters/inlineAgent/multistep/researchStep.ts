@@ -1,0 +1,274 @@
+import type { Sandbox } from '../sandbox';
+import type { InlineAgentLogger, ProviderFactory } from '../index';
+import type { InlineAgentConfig } from '../configSchema';
+import type { AssistantStep, ManualChatModelAdapter } from '../manualChatModel';
+export type { AssistantStep, ManualChatModelAdapter } from '../manualChatModel';
+import {
+  addTokens,
+  incrementIterations,
+  type InlineAgentRunState,
+  type NoteRecord,
+} from '../runState';
+import { bridgeStream, type BridgeChunk } from '../eventBridge';
+import { tokenTick } from '../budgets';
+import type { ExternalEvent } from '../../base';
+import { createFetchUrlTool, type FetchUrlConfig } from '../tools/fetchUrl';
+import { createSearchWebTool, type SearchWebConfig } from '../tools/searchWeb';
+import {
+  createReadFileTool,
+  createWriteFileTool,
+  createListDirTool,
+  createDeleteFileTool,
+} from '../tools/fileOps';
+import { createExtractNoteTool } from '../tools/extractNote';
+import { wrapToolResultForLLM } from '../tools/untrustedWrap';
+import { rewriteConsumedToolResults, type RewriteMessage } from './messageRewriter';
+import type { InlineToolHandle } from '../branches/simpleBranch';
+
+export interface ResearchStepCtx {
+  readonly providerFactory: ProviderFactory;
+  readonly config: InlineAgentConfig;
+  readonly sandbox: Sandbox;
+  readonly runState: InlineAgentRunState;
+  readonly signal: AbortSignal;
+  readonly logger: InlineAgentLogger;
+  readonly planStep: string;
+  readonly stepIndex: number;
+  readonly perStepIterations: number;
+  readonly searchWebApiKey: string;
+  readonly tokenLimit: number;
+  readonly initialMessages?: readonly RewriteMessage[];
+  readonly runReactLoop?: (input: ResearchLoopInput) => AsyncIterable<BridgeChunk>;
+  readonly now?: () => number;
+}
+
+export interface ResearchLoopInput {
+  readonly tools: readonly InlineToolHandle[];
+  readonly maxIterations: number;
+  readonly signal: AbortSignal;
+  readonly runState: InlineAgentRunState;
+  readonly logger: InlineAgentLogger;
+  readonly planStep: string;
+  readonly stepIndex: number;
+  readonly tokenLimit: number;
+  readonly messages: readonly RewriteMessage[];
+}
+
+export interface ResearchStepResult {
+  readonly notes: readonly NoteRecord[];
+  readonly nextMessages: readonly RewriteMessage[];
+  readonly status: 'completed' | 'iteration_limit' | 'token_limit' | 'aborted' | 'error';
+  readonly errorCode?: string;
+}
+
+export function buildResearchStepTools(input: {
+  readonly config: InlineAgentConfig;
+  readonly sandbox: Sandbox;
+  readonly runState: InlineAgentRunState;
+  readonly logger: InlineAgentLogger;
+  readonly signal: AbortSignal;
+  readonly searchWebApiKey: string;
+}): readonly InlineToolHandle[] {
+  const { config, sandbox, runState, logger, signal } = input;
+  const tools: InlineToolHandle[] = [];
+  if (config.tools.fetchUrl.enabled) {
+    const fetchCfg: FetchUrlConfig = {
+      enabled: config.tools.fetchUrl.enabled,
+      allowlist: config.tools.fetchUrl.allowlist,
+      blocklist: config.tools.fetchUrl.blocklist,
+      timeoutMs: config.tools.fetchUrl.timeoutMs,
+      maxBytes: config.tools.fetchUrl.maxBytes,
+    };
+    tools.push(createFetchUrlTool({ config: fetchCfg, signal, logger }));
+  }
+  if (config.tools.searchWeb.enabled) {
+    const searchCfg: SearchWebConfig = {
+      enabled: config.tools.searchWeb.enabled,
+      apiKey: input.searchWebApiKey,
+      defaultMaxResults: config.tools.searchWeb.defaultMaxResults,
+      defaultSearchDepth: config.tools.searchWeb.defaultSearchDepth,
+      defaultTopic: config.tools.searchWeb.defaultTopic,
+      includeAnswer: config.tools.searchWeb.includeAnswer,
+      timeoutMs: config.tools.searchWeb.timeoutMs,
+      maxBytes: config.tools.searchWeb.maxBytes,
+    };
+    tools.push(createSearchWebTool({ config: searchCfg, signal, logger }));
+  }
+  if (config.tools.fileOps.enabled) {
+    tools.push(createReadFileTool({ sandbox, signal, logger }));
+    tools.push(createWriteFileTool({ sandbox, signal, logger }));
+    tools.push(createListDirTool({ sandbox, signal, logger }));
+    tools.push(createDeleteFileTool({ sandbox, signal, logger }));
+  }
+  // FR-IA-38: extract_note mandatory; publish_artifact excluded.
+  tools.push(createExtractNoteTool({ runState, logger }));
+  return tools;
+}
+
+export async function* runManualResearchLoop(
+  ctx: ResearchLoopInput,
+  adapter: ManualChatModelAdapter,
+): AsyncIterable<BridgeChunk> {
+  const messages: RewriteMessage[] = [...ctx.messages];
+  if (!messages.some((m) => m.role === 'user' || m.role === 'human')) {
+    messages.push({ role: 'user', content: `Step ${ctx.stepIndex + 1}: ${ctx.planStep}` });
+  }
+  const consumedRefs = new Map<string, string>();
+  const lastToolCallByName = new Map<string, string>();
+  let iteration = 0;
+
+  while (iteration < ctx.maxIterations) {
+    if (ctx.signal.aborted) return;
+    const visible = rewriteConsumedToolResults(messages, consumedRefs);
+    iteration += 1;
+    incrementIterations(ctx.runState, 1);
+    let step: AssistantStep;
+    try {
+      step = await adapter.invokeTurn({
+        messages: visible,
+        toolNames: ctx.tools.map((t) => t.name),
+        signal: ctx.signal,
+      });
+    } catch (err) {
+      yield { kind: 'error', error: err };
+      return;
+    }
+    const tokenStat = tokenTick({
+      cumulativeTokens: ctx.runState.cumulativeTokens,
+      addedInputEstimate: 0,
+      observedUsage: step.usage,
+      maxTokens: ctx.tokenLimit,
+    });
+    addTokens(ctx.runState, step.usage);
+    if (tokenStat.over) {
+      yield { kind: 'error', error: { code: 'token_limit', message: 'maxTokens exceeded' } };
+      return;
+    }
+    if (step.text.length > 0) yield { kind: 'text', chunk: step.text };
+    if (step.toolCalls.length === 0) {
+      messages.push({ role: 'assistant', content: step.text });
+      yield {
+        kind: 'node_complete',
+        node: 'researchStep',
+        durationMs: 0,
+        stepIndex: ctx.stepIndex,
+      };
+      yield { kind: 'done' };
+      return;
+    }
+    messages.push({ role: 'assistant', content: step.text });
+    for (const call of step.toolCalls) {
+      const tool = ctx.tools.find((t) => t.name === call.name);
+      if (tool === undefined) {
+        messages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          name: call.name,
+          content: JSON.stringify({ ok: false, error: 'unknown_tool' }),
+        });
+        continue;
+      }
+      yield { kind: 'tool_start', tool: call.name, args: call.args };
+      const startedAt = Date.now();
+      let result: unknown;
+      let ok = true;
+      let errorCode: string | undefined;
+      try {
+        result = await tool.invoke(call.args);
+        if (typeof result === 'object' && result !== null && 'ok' in result) {
+          const r = result as { ok: boolean; error?: string };
+          ok = r.ok;
+          if (!r.ok && typeof r.error === 'string') errorCode = r.error;
+        }
+      } catch (err) {
+        ok = false;
+        errorCode = err instanceof Error ? err.message : 'tool_throw';
+        result = { ok: false, error: errorCode };
+      }
+      yield {
+        kind: 'tool_end',
+        tool: call.name,
+        ok,
+        durationMs: Date.now() - startedAt,
+        ...(errorCode !== undefined ? { error: errorCode } : {}),
+      };
+      messages.push({
+        role: 'tool',
+        toolCallId: call.id,
+        name: call.name,
+        content: JSON.stringify(wrapToolResultForLLM(call.name, result)),
+      });
+      // FR-IA-39: when extract_note succeeds, mark the most-recent fetch_url /
+      // search_web tool result as consumed.
+      if (call.name === 'extract_note' && ok) {
+        const noteId =
+          typeof result === 'object' && result !== null && 'data' in result
+            ? ((result as { data?: { id?: string } }).data?.id ?? null)
+            : null;
+        if (typeof noteId === 'string') {
+          for (const consumedTool of ['fetch_url', 'search_web']) {
+            const consumedId = lastToolCallByName.get(consumedTool);
+            if (consumedId !== undefined && !consumedRefs.has(consumedId)) {
+              consumedRefs.set(consumedId, noteId);
+              break;
+            }
+          }
+        }
+      } else if (call.name === 'fetch_url' || call.name === 'search_web') {
+        lastToolCallByName.set(call.name, call.id);
+      }
+    }
+  }
+  yield {
+    kind: 'node_complete',
+    node: 'researchStep',
+    durationMs: 0,
+    stepIndex: ctx.stepIndex,
+  };
+  yield {
+    kind: 'error',
+    error: {
+      code: 'iteration_limit',
+      message: `researchStep ${ctx.stepIndex} exceeded ${ctx.maxIterations} iterations`,
+    },
+  };
+}
+
+export async function* runResearchStep(ctx: ResearchStepCtx): AsyncIterable<ExternalEvent> {
+  const tools = buildResearchStepTools({
+    config: ctx.config,
+    sandbox: ctx.sandbox,
+    runState: ctx.runState,
+    logger: ctx.logger,
+    signal: ctx.signal,
+    searchWebApiKey: ctx.searchWebApiKey,
+  });
+  const loopCtx: ResearchLoopInput = {
+    tools,
+    maxIterations: ctx.perStepIterations,
+    signal: ctx.signal,
+    runState: ctx.runState,
+    logger: ctx.logger,
+    planStep: ctx.planStep,
+    stepIndex: ctx.stepIndex,
+    tokenLimit: ctx.tokenLimit,
+    messages: ctx.initialMessages ?? [],
+  };
+  if (ctx.runReactLoop !== undefined) {
+    yield* bridgeStream(ctx.runReactLoop(loopCtx), { logger: ctx.logger });
+    return;
+  }
+  // F16/F18 wires the LangChain `BaseChatModel` → `ManualChatModelAdapter`.
+  yield* bridgeStream(
+    (async function* (): AsyncIterable<BridgeChunk> {
+      yield {
+        kind: 'error',
+        error: {
+          code: 'not_implemented',
+          message: 'researchStep default loop requires F16 manualAdapter wiring',
+        },
+      };
+    })(),
+    { logger: ctx.logger },
+  );
+}

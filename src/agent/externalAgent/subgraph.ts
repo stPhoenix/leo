@@ -32,6 +32,7 @@ export interface AdapterCallDeps {
     readonly signal: AbortSignal;
     readonly timeoutMs: number;
     readonly config: unknown;
+    readonly runId: string;
   }): AsyncIterable<ExternalEvent>;
 }
 
@@ -333,6 +334,7 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
         signal: adapterAbort.signal,
         timeoutMs,
         config: pickConfig(adapter),
+        runId: state.runId,
       });
       iterator = stream[Symbol.asyncIterator]();
       const graceMs = deps.abortGraceMs ?? 2_000;

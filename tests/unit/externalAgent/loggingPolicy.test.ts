@@ -35,6 +35,13 @@ describe('NFR-EXT-05 — logger field keys', () => {
     expect(sourceFiles.length).toBeGreaterThan(0);
   });
 
+  it('SENSITIVE_FIELD_KEYS covers PII detection field names', () => {
+    expect(SENSITIVE_FIELD_KEYS).toContain('piiSamples');
+    expect(SENSITIVE_FIELD_KEYS).toContain('piiDetails');
+    expect(SENSITIVE_FIELD_KEYS).toContain('piiText');
+    expect(SENSITIVE_FIELD_KEYS).toContain('effectivePrompt');
+  });
+
   for (const file of sourceFiles) {
     it(`${file.replace(PROJECT_ROOT + '/', '')} — no sensitive field keys at info|warn|error`, () => {
       const text = readFileSync(file, 'utf8');

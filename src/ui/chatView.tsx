@@ -42,6 +42,8 @@ import { makeAcceptRejectSource } from './chat/InlineDialog';
 import { makePlanApprovalSource } from './chat/PlanApprovalDialog';
 import type { ThreadsSnapshot } from '@/storage/threadsStore';
 import { ChatRoot } from './chat/ChatRoot';
+import { PiiDetectorContext } from './chat/blocks/piiDetectorContext';
+import type { PiiDetectAgent } from '@/agent/externalAgent/piiDetectAgent';
 import type { CodeBlockClipboard } from './chat/codeBlockEnhancer';
 import { TurnDispatcher } from './chat/turnDispatcher';
 import type { AttachmentsWiring } from '@/chat/wireAttachments';
@@ -107,6 +109,7 @@ export interface ChatViewDeps {
   readonly pickFiles?: () => Promise<readonly CaptureFileInput[]>;
   readonly vaultFiles?: () => readonly VaultFileEntry[];
   readonly readVaultFile?: (path: string) => Promise<CaptureFileInput | null>;
+  readonly piiDetector?: PiiDetectAgent;
 }
 
 export interface CompactRunnerAdapter {
@@ -358,7 +361,7 @@ export class ChatView extends ItemView {
     });
     this.buildChatRootProps = buildProps;
     this.root = createRoot(host);
-    this.root.render(createElement(ChatRoot, buildProps()));
+    this.root.render(this.renderTree(buildProps()));
 
     this.resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0];
@@ -476,7 +479,13 @@ export class ChatView extends ItemView {
 
   private requestRender(): void {
     if (this.root === null || this.buildChatRootProps === null) return;
-    this.root.render(createElement(ChatRoot, this.buildChatRootProps()));
+    this.root.render(this.renderTree(this.buildChatRootProps()));
+  }
+
+  private renderTree(props: Parameters<typeof ChatRoot>[0]): ReturnType<typeof createElement> {
+    const tree = createElement(ChatRoot, props);
+    if (this.deps.piiDetector === undefined) return tree;
+    return createElement(PiiDetectorContext.Provider, { value: this.deps.piiDetector }, tree);
   }
 
   private buildSlashRegistry(): SlashRegistry {

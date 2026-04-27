@@ -1,8 +1,12 @@
-import { memo, useEffect, useState, useSyncExternalStore } from 'react';
+import { memo, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type {
   ExternalAgentWidgetController,
   WidgetViewModel,
 } from '@/agent/externalAgent/widgetController';
+import { applyPiiDecisions, type PiiDecision } from '@/agent/externalAgent/applyPiiDecisions';
+import type { PiiFinding } from '@/agent/externalAgent/piiDetectAgent';
+import { PiiReviewBanner, type PiiReviewStatus } from './PiiReviewBanner';
+import { usePiiDetector } from './piiDetectorContext';
 
 export interface ExternalAgentWidgetProps {
   readonly controller: ExternalAgentWidgetController;
@@ -128,12 +132,113 @@ function AwaitingClarifyView({ vm, controller }: SubProps): JSX.Element {
   );
 }
 
+interface ScanState {
+  readonly status: PiiReviewStatus;
+  readonly findings: readonly PiiFinding[];
+  readonly error: string | null;
+}
+
+const INITIAL_SCAN_STATE: ScanState = { status: 'idle', findings: [], error: null };
+
 function ReadyView({ vm, controller }: SubProps): JSX.Element {
+  const detector = usePiiDetector();
   const [draft, setDraft] = useState(vm.refinedPrompt ?? '');
   useEffect(() => {
     setDraft(vm.refinedPrompt ?? '');
   }, [vm.refinedPrompt]);
   const isEdited = draft !== (vm.refinedPrompt ?? '');
+  const [scan, setScan] = useState<ScanState>(INITIAL_SCAN_STATE);
+  const [decisions, setDecisions] = useState<Map<string, PiiDecision>>(() => new Map());
+  const [scanNonce, setScanNonce] = useState(0);
+
+  useEffect(() => {
+    if (draft.trim().length === 0) {
+      setScan({ status: 'ready', findings: [], error: null });
+      return;
+    }
+    const ac = new AbortController();
+    const timer = window.setTimeout(() => {
+      setScan((prev) => ({ ...prev, status: 'scanning', error: null }));
+      detector
+        .detect(draft, ac.signal)
+        .then((findings) => {
+          if (ac.signal.aborted) return;
+          setScan({ status: 'ready', findings, error: null });
+        })
+        .catch((err: unknown) => {
+          if (ac.signal.aborted) return;
+          const message = err instanceof Error ? err.message : String(err);
+          setScan({ status: 'error', findings: [], error: message });
+        });
+    }, 400);
+    return (): void => {
+      window.clearTimeout(timer);
+      ac.abort();
+    };
+  }, [draft, detector, scanNonce]);
+
+  useEffect(() => {
+    setDecisions((prev) => {
+      if (prev.size === 0) return prev;
+      const valid = new Set(scan.findings.map((f) => f.id));
+      let changed = false;
+      const next = new Map<string, PiiDecision>();
+      for (const [id, d] of prev) {
+        if (valid.has(id)) next.set(id, d);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [scan.findings]);
+
+  const pendingCount = scan.findings.reduce(
+    (n, f) => (decisions.get(f.id) === 'ignore' ? n : n + 1),
+    0,
+  );
+  const scanBusy = scan.status === 'scanning' || scan.status === 'error';
+  const sendBlocked = vm.draftAdapterId === null || scanBusy || pendingCount > 0;
+  const sendBlockedReason = useMemo<string | undefined>(() => {
+    if (vm.draftAdapterId === null) return 'Select an adapter first';
+    if (scan.status === 'scanning') return 'Scanning prompt for sensitive content…';
+    if (scan.status === 'error') return 'Detection failed — retry to enable Send';
+    if (pendingCount > 0) return 'Resolve PII findings before sending';
+    return undefined;
+  }, [vm.draftAdapterId, scan.status, pendingCount]);
+
+  const handleDecide = (id: string, decision: PiiDecision): void => {
+    const finding = scan.findings.find((f) => f.id === id);
+    if (finding === undefined) return;
+    if (decision === 'mask' || decision === 'remove') {
+      setDraft(applyPiiDecisions(draft, [finding], new Map([[id, decision]])));
+    } else {
+      setDecisions((prev) => {
+        const next = new Map(prev);
+        next.set(id, 'ignore');
+        return next;
+      });
+    }
+  };
+
+  const handleApplyAll = (): void => {
+    const undecided = scan.findings.filter((f) => decisions.get(f.id) === undefined);
+    if (undecided.length === 0) return;
+    const map = new Map<string, PiiDecision>();
+    for (const f of undecided) map.set(f.id, f.suggestion);
+    setDraft(applyPiiDecisions(draft, undecided, map));
+  };
+
+  const handleIgnoreAll = (): void => {
+    setDecisions((prev) => {
+      const next = new Map(prev);
+      for (const f of scan.findings) {
+        if (next.get(f.id) === undefined) next.set(f.id, 'ignore');
+      }
+      return next;
+    });
+  };
+
+  const handleRetry = (): void => setScanNonce((n) => n + 1);
+
   return (
     <section
       className="leo-root leo-external-agent leo-ea-ready"
@@ -187,6 +292,16 @@ function ReadyView({ vm, controller }: SubProps): JSX.Element {
             />
           </label>
         </div>
+        <PiiReviewBanner
+          status={scan.status}
+          findings={scan.findings}
+          decisions={decisions}
+          {...(scan.error !== null ? { errorMessage: scan.error } : {})}
+          onDecide={handleDecide}
+          onApplyAll={handleApplyAll}
+          onIgnoreAll={handleIgnoreAll}
+          onRetry={handleRetry}
+        />
         <label className="leo-ea-field leo-ea-field-prompt">
           <span>Refined prompt (editable)</span>
           <textarea
@@ -222,7 +337,8 @@ function ReadyView({ vm, controller }: SubProps): JSX.Element {
           className="leo-ea-btn leo-ea-btn-primary"
           aria-label="Send refined prompt to external agent"
           onClick={() => controller.onSend(isEdited ? draft : undefined)}
-          disabled={vm.draftAdapterId === null}
+          disabled={sendBlocked}
+          {...(sendBlockedReason !== undefined ? { title: sendBlockedReason } : {})}
         >
           Send
         </button>

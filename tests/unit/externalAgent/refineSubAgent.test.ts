@@ -158,6 +158,53 @@ describe('createRefineSubAgent', () => {
     expect(decision.assistantMessage?.content).toBe('thinking out loud...');
   });
 
+  it('parses block_start/block_delta/block_stop tool_use into final_prompt', async () => {
+    const sub = createRefineSubAgent({
+      provider: provider([
+        {
+          type: 'block_start',
+          index: 0,
+          block: { type: 'tool_use', id: 'tc-1', name: 'emit_final_prompt' },
+        },
+        {
+          type: 'block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"prompt":"streamed body"}' },
+        },
+        { type: 'block_stop', index: 0 },
+        { type: 'done' },
+      ]),
+      model: () => 'm-1',
+    });
+    const decision = await sub.refine({
+      state: baseState(),
+      userInput: null,
+      signal: new AbortController().signal,
+    });
+    expect(decision.type).toBe('final_prompt');
+    expect(decision.refinedPrompt).toBe('streamed body');
+  });
+
+  it('parses block-style text_delta into fallback final_prompt', async () => {
+    const sub = createRefineSubAgent({
+      provider: provider([
+        { type: 'block_start', index: 0, block: { type: 'text' } },
+        { type: 'block_delta', index: 0, delta: { type: 'text_delta', text: 'free-form ' } },
+        { type: 'block_delta', index: 0, delta: { type: 'text_delta', text: 'streamed' } },
+        { type: 'block_stop', index: 0 },
+        { type: 'done' },
+      ]),
+      model: () => 'm-1',
+    });
+    const decision = await sub.refine({
+      state: baseState(),
+      userInput: null,
+      signal: new AbortController().signal,
+    });
+    expect(decision.type).toBe('final_prompt');
+    expect(decision.refinedPrompt).toContain('free-form streamed');
+  });
+
   it('throws refine_empty_response when provider yields nothing useful', async () => {
     const sub = createRefineSubAgent({
       provider: provider([{ type: 'done' }]),

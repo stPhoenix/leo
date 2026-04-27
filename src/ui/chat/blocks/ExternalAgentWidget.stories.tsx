@@ -1,9 +1,73 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { createElement } from 'react';
 import { ExternalAgentWidget } from './ExternalAgentWidget';
 import type {
   ExternalAgentWidgetController,
   WidgetViewModel,
 } from '@/agent/externalAgent/widgetController';
+import type { PiiDetectAgent, PiiFinding } from '@/agent/externalAgent/piiDetectAgent';
+import { PiiDetectorContext } from './piiDetectorContext';
+
+interface FakeDetectorScenario {
+  readonly findings?: readonly PiiFinding[];
+  readonly delayMs?: number;
+  readonly throw?: string;
+  readonly never?: boolean;
+}
+
+function fakeDetector(scenario: FakeDetectorScenario): PiiDetectAgent {
+  return {
+    detect(_text: string, signal: AbortSignal): Promise<readonly PiiFinding[]> {
+      if (scenario.never === true) {
+        return new Promise(() => undefined);
+      }
+      const delay = scenario.delayMs ?? 0;
+      return new Promise((resolve, reject) => {
+        const t = window.setTimeout(() => {
+          if (signal.aborted) return;
+          if (scenario.throw !== undefined) reject(new Error(scenario.throw));
+          else resolve(scenario.findings ?? []);
+        }, delay);
+        signal.addEventListener('abort', () => window.clearTimeout(t));
+      });
+    },
+  };
+}
+
+function withDetector(detector: PiiDetectAgent): (Story: () => JSX.Element) => JSX.Element {
+  return (Story) =>
+    createElement(PiiDetectorContext.Provider, { value: detector }, createElement(Story));
+}
+
+const piiFindings: readonly PiiFinding[] = [
+  {
+    id: 'email-1',
+    kind: 'email',
+    start: 24,
+    end: 44,
+    sample: 'j*****e@e*****e.com',
+    suggestion: 'mask',
+  },
+  {
+    id: 'apikey-1',
+    kind: 'apiKey',
+    start: 60,
+    end: 80,
+    sample: 'A******************E',
+    suggestion: 'remove',
+  },
+  {
+    id: 'phone-1',
+    kind: 'phone',
+    start: 91,
+    end: 103,
+    sample: '+*********67',
+    suggestion: 'mask',
+  },
+];
+
+const PROMPT_WITH_PII =
+  'Send the quarterly report to jane.doe@example.com. My AWS key is AKIAIOSFODNN7EXAMPLE. Call +14155551234 if anything is unclear.';
 
 function fakeController(vm: WidgetViewModel): ExternalAgentWidgetController {
   const stub: Partial<ExternalAgentWidgetController> = {
@@ -194,6 +258,216 @@ export const TerminalReload: Story = {
       baseVm({
         phase: 'error',
         error: { code: 'reload', message: 'Plugin reloaded during run' },
+      }),
+    ),
+  },
+};
+
+// Inline-agent fixtures (F18).
+const inlineBaseVm = (overrides: Partial<WidgetViewModel> = {}): WidgetViewModel => ({
+  ...baseVm(),
+  adapters: [
+    { id: 'inline-agent', label: 'Inline Agent', defaultTimeoutMs: 300_000 },
+    { id: 'claude-code', label: 'claude-code', defaultTimeoutMs: 1_800_000 },
+  ],
+  draftAdapterId: 'inline-agent',
+  ...overrides,
+});
+
+export const InlineAgentSimple: Story = {
+  args: {
+    controller: fakeController(
+      inlineBaseVm({
+        phase: 'running',
+        refinedPrompt: 'Summarise the SRS for inline-agent in three bullets.',
+        textBuffer:
+          'The Inline Agent runs as a LangGraph subgraph in the renderer with its own provider and model.\n' +
+          'Its toolset (fetch_url, search_web, sandbox file ops, publish_artifact, extract_note) is isolated from the main agent.',
+        startedAt: Date.now() - 7_400,
+        logEvents: [
+          {
+            level: 'info',
+            msg: 'node.complete {"node":"classify_task","route":"simple"}',
+            ts: Date.now() - 7_000,
+          },
+          {
+            level: 'info',
+            msg: 'tool.start {"tool":"search_web","args":{"query":{"length":42,"elided":true}}}',
+            ts: Date.now() - 6_500,
+          },
+          {
+            level: 'info',
+            msg: 'tool.start {"tool":"publish_artifact","args":{"relPath":"summary.md"}}',
+            ts: Date.now() - 1_200,
+          },
+        ],
+      }),
+    ),
+  },
+};
+
+export const InlineAgentMultistep: Story = {
+  args: {
+    controller: fakeController(
+      inlineBaseVm({
+        phase: 'running',
+        refinedPrompt:
+          'Compare evolutionary game theory and replicator dynamics across three sources.',
+        textBuffer: 'Synthesis: …',
+        startedAt: Date.now() - 95_000,
+        logEvents: [
+          {
+            level: 'info',
+            msg: 'node.complete {"node":"classify_task","route":"multistep","planLength":3}',
+            ts: Date.now() - 94_000,
+          },
+          {
+            level: 'info',
+            msg: 'node.complete {"node":"planner","planLength":3}',
+            ts: Date.now() - 92_000,
+          },
+          {
+            level: 'info',
+            msg: 'node.complete {"node":"researchStep","stepIndex":0,"durationMs":12000}',
+            ts: Date.now() - 80_000,
+          },
+          {
+            level: 'info',
+            msg: 'node.complete {"node":"researchStep","stepIndex":1,"durationMs":15000}',
+            ts: Date.now() - 65_000,
+          },
+          {
+            level: 'info',
+            msg: 'node.complete {"node":"researchStep","stepIndex":2,"durationMs":10000}',
+            ts: Date.now() - 55_000,
+          },
+          {
+            level: 'info',
+            msg: 'tool.start {"tool":"publish_artifact","args":{"relPath":"summary.md"}}',
+            ts: Date.now() - 1_500,
+          },
+          {
+            level: 'info',
+            msg: 'tool.start {"tool":"publish_artifact","args":{"relPath":"sources.md"}}',
+            ts: Date.now() - 800,
+          },
+        ],
+      }),
+    ),
+  },
+};
+
+export const InlineAgentClassifierFallback: Story = {
+  args: {
+    controller: fakeController(
+      inlineBaseVm({
+        phase: 'running',
+        refinedPrompt: 'Convert these notes to a markdown summary.',
+        textBuffer: 'Markdown summary draft …',
+        startedAt: Date.now() - 12_000,
+        logEvents: [
+          {
+            level: 'warn',
+            msg: 'router.classify-fallback {"reason":"schema parse failed"}',
+            ts: Date.now() - 11_500,
+          },
+          {
+            level: 'info',
+            msg: 'node.complete {"node":"classify_task","route":"simple"}',
+            ts: Date.now() - 11_000,
+          },
+          {
+            level: 'info',
+            msg: 'tool.start {"tool":"write_file","args":{"relPath":"summary.md","content":{"length":420,"elided":true}}}',
+            ts: Date.now() - 4_000,
+          },
+        ],
+      }),
+    ),
+  },
+};
+
+// PII review fixtures.
+
+export const ReadyNoPii: Story = {
+  decorators: [withDetector(fakeDetector({ findings: [] }))],
+  args: {
+    controller: fakeController(
+      baseVm({
+        phase: 'ready',
+        refinedPrompt: 'Summarise the quarterly sales numbers in three bullets.',
+      }),
+    ),
+  },
+};
+
+export const ReadyScanningPii: Story = {
+  decorators: [withDetector(fakeDetector({ never: true }))],
+  args: {
+    controller: fakeController(
+      baseVm({
+        phase: 'ready',
+        refinedPrompt: PROMPT_WITH_PII,
+      }),
+    ),
+  },
+};
+
+export const ReadyWithPiiPending: Story = {
+  decorators: [withDetector(fakeDetector({ findings: piiFindings, delayMs: 200 }))],
+  args: {
+    controller: fakeController(
+      baseVm({
+        phase: 'ready',
+        refinedPrompt: PROMPT_WITH_PII,
+      }),
+    ),
+  },
+};
+
+export const ReadyDetectorError: Story = {
+  decorators: [withDetector(fakeDetector({ throw: 'provider unavailable', delayMs: 200 }))],
+  args: {
+    controller: fakeController(
+      baseVm({
+        phase: 'ready',
+        refinedPrompt: PROMPT_WITH_PII,
+      }),
+    ),
+  },
+};
+
+export const InlineAgentIterationLimit: Story = {
+  args: {
+    controller: fakeController(
+      inlineBaseVm({
+        phase: 'error',
+        refinedPrompt: 'Audit a long codebase and produce N-paged report.',
+        error: {
+          code: 'iteration_limit',
+          message: 'simple branch exceeded 12 iterations',
+        },
+        resultFolder: 'externalAgentResults/20260427-141503-a1b2c3',
+        writtenFiles: ['summary.md'],
+        startedAt: Date.now() - 92_000,
+        endedAt: Date.now(),
+        logEvents: [
+          {
+            level: 'info',
+            msg: 'node.complete {"node":"classify_task","route":"simple"}',
+            ts: Date.now() - 90_000,
+          },
+          {
+            level: 'info',
+            msg: 'tool.start {"tool":"publish_artifact","args":{"relPath":"summary.md"}}',
+            ts: Date.now() - 12_000,
+          },
+          {
+            level: 'warn',
+            msg: 'iteration-limit reached; partial artifacts flushed',
+            ts: Date.now() - 1_000,
+          },
+        ],
       }),
     ),
   },

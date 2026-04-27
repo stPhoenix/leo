@@ -159,6 +159,7 @@ describe('createPassthroughAdapterCallDeps', () => {
       signal: ac.signal,
       timeoutMs: 1000,
       config: {},
+      runId: 'rt-passthru',
     });
     const collected: string[] = [];
     for await (const e of stream) {

@@ -98,6 +98,7 @@ export interface ZodFieldDescriptor {
   readonly description?: string;
   readonly optional: boolean;
   readonly children?: readonly ZodFieldDescriptor[];
+  readonly options?: readonly string[];
 }
 
 export function describeConfigSchema(schema: z.ZodType): readonly ZodFieldDescriptor[] {
@@ -111,6 +112,8 @@ interface ZodInternal {
     readonly element?: ZodInternal;
     readonly innerType?: ZodInternal;
     readonly shape?: Record<string, ZodInternal>;
+    readonly entries?: Record<string, string>;
+    readonly values?: readonly string[];
   };
   readonly description?: string;
   readonly shape?: Record<string, ZodInternal>;
@@ -136,15 +139,26 @@ function walkObjectShape(node: unknown, path: readonly string[]): ZodFieldDescri
         children: walkObjectShape(unwrapped, childPath),
       });
     } else {
+      const options = readEnumOptions(unwrapped);
       out.push({
         path: childPath,
         kind,
         optional,
         ...(description !== undefined ? { description } : {}),
+        ...(options !== undefined ? { options } : {}),
       });
     }
   }
   return out;
+}
+
+function readEnumOptions(node: unknown): readonly string[] | undefined {
+  const def = (node as ZodInternal)._def;
+  if (def === undefined) return undefined;
+  if (def.type !== 'enum') return undefined;
+  if (def.entries !== undefined) return Object.keys(def.entries);
+  if (Array.isArray(def.values)) return [...def.values];
+  return undefined;
 }
 
 function unwrapOptional(z: unknown): unknown {
@@ -176,6 +190,7 @@ function classifyKind(node: unknown, description: string | undefined): ZodFieldK
   if (type === 'string') {
     return description === 'secret' ? 'secret' : 'string';
   }
+  if (type === 'enum') return 'string';
   if (type === 'number') return 'number';
   if (type === 'boolean') return 'boolean';
   if (type === 'array') {

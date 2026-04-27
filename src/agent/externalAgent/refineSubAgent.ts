@@ -87,6 +87,7 @@ export function createRefineSubAgent(opts: RefineSubAgentOptions): RefineDeps {
 
       let textBuffer = '';
       const toolCalls: Array<{ name: string; argsJson: string }> = [];
+      const toolBufs = new Map<number, { id: string; name: string; args: string }>();
 
       try {
         for await (const event of opts.provider.stream(req, signal)) {
@@ -95,6 +96,30 @@ export function createRefineSubAgent(opts: RefineSubAgentOptions): RefineDeps {
             textBuffer += event.text;
           } else if (event.type === 'tool_call') {
             toolCalls.push({ name: event.call.name, argsJson: event.call.argsJson });
+          } else if (event.type === 'block_start') {
+            if (event.block.type === 'tool_use') {
+              toolBufs.set(event.index, {
+                id: event.block.id,
+                name: event.block.name,
+                args: '',
+              });
+            }
+          } else if (event.type === 'block_delta') {
+            if (event.delta.type === 'text_delta') {
+              textBuffer += event.delta.text;
+            } else if (event.delta.type === 'input_json_delta') {
+              const buf = toolBufs.get(event.index);
+              if (buf !== undefined) buf.args += event.delta.partial_json;
+            }
+          } else if (event.type === 'block_stop') {
+            const buf = toolBufs.get(event.index);
+            if (buf !== undefined) {
+              toolCalls.push({
+                name: buf.name,
+                argsJson: buf.args.length === 0 ? '{}' : buf.args,
+              });
+              toolBufs.delete(event.index);
+            }
           } else if (event.type === 'error') {
             throw event.error;
           } else if (event.type === 'done') {

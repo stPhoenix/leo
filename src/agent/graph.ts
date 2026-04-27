@@ -477,12 +477,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       }
     }
     const planModeForList = deps.planMode !== null ? deps.planMode.getMode(thread) : undefined;
-    const allowedToolsForList =
-      deps.allowedToolsForThread !== undefined ? deps.allowedToolsForThread(thread) : undefined;
-    const toolListOpts = {
-      ...(planModeForList !== undefined ? { planMode: planModeForList } : {}),
-      ...(allowedToolsForList !== undefined ? { allowedTools: allowedToolsForList } : {}),
-    };
+    const toolListOpts = planModeForList !== undefined ? { planMode: planModeForList } : {};
     const allToolSpecs: readonly OpenAITool[] =
       deps.toolRegistry !== null ? deps.toolRegistry.toOpenAITools(thread, toolListOpts) : [];
     const effectiveModel = deps.model();

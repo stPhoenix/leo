@@ -98,8 +98,8 @@ export function createResultWriterDeps(writer: ResultWriter): WriterDeps {
  */
 export function createPassthroughAdapterCallDeps(): AdapterCallDeps {
   return {
-    start({ adapter, refinedAsk, systemPrompt, signal, timeoutMs, config }) {
-      return adapter.start({ refinedAsk, systemPrompt, signal, timeoutMs, config });
+    start({ adapter, refinedAsk, systemPrompt, signal, timeoutMs, config, runId }) {
+      return adapter.start({ refinedAsk, systemPrompt, signal, timeoutMs, config, runId });
     },
   };
 }

@@ -6,6 +6,7 @@ export interface ExternalAgentInput {
   readonly signal: AbortSignal;
   readonly timeoutMs: number;
   readonly config: unknown;
+  readonly runId?: string;
 }
 
 export type ExternalEvent =

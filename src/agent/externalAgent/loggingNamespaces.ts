@@ -17,6 +17,23 @@ export const EXTERNAL_AGENT_LOG = {
   adapter: {
     eventReceived: 'externalAgent.adapter.event-received',
     eventsAfterDone: 'externalAgent.run.events-after-done',
+    inlineAgent: {
+      configInvalid: 'externalAgent.adapter.inlineAgent.config-invalid',
+      sandboxInitFailed: 'externalAgent.adapter.inlineAgent.sandbox.init-failed',
+      sandboxCleanupFailed: 'externalAgent.adapter.inlineAgent.sandbox.cleanup-failed',
+      sandboxSweepReaddirFailed: 'externalAgent.adapter.inlineAgent.sandbox.sweep-readdir-failed',
+      sandboxSweepRmFailed: 'externalAgent.adapter.inlineAgent.sandbox.sweep-rm-failed',
+      sandboxSweepFailed: 'externalAgent.adapter.inlineAgent.sandbox.sweep-failed',
+      toolStart: 'externalAgent.adapter.inlineAgent.tool.start',
+      toolEnd: 'externalAgent.adapter.inlineAgent.tool.end',
+      nodeComplete: 'externalAgent.adapter.inlineAgent.node.complete',
+      classifierFallback: 'externalAgent.adapter.inlineAgent.router.classify-fallback',
+      plannerFallback: 'externalAgent.adapter.inlineAgent.multistep.planner-fallback',
+      iterationLimit: 'externalAgent.adapter.inlineAgent.iteration-limit',
+      tokenLimit: 'externalAgent.adapter.inlineAgent.token-limit',
+      providerInvalid: 'externalAgent.adapter.inlineAgent.provider-invalid',
+      apiKeyMissing: 'externalAgent.adapter.inlineAgent.api-key-missing',
+    },
   },
   writer: {
     fileFailed: 'externalAgent.write.file-failed',
@@ -39,6 +56,13 @@ export const EXTERNAL_AGENT_LOG = {
     failed: 'externalAgent.persist.failed',
     appendFailed: 'externalAgent.persist.append-failed',
   },
+  piiCheck: {
+    scanned: 'externalAgent.piiCheck.scanned',
+    applied: 'externalAgent.piiCheck.applied',
+    hallucinated: 'externalAgent.piiCheck.hallucinated',
+    error: 'externalAgent.piiCheck.error',
+    skipped: 'externalAgent.piiCheck.skipped',
+  },
 } as const;
 
 /**
@@ -54,4 +78,8 @@ export const SENSITIVE_FIELD_KEYS: readonly string[] = [
   'textBuffer',
   'originalAsk',
   'clarifyingQuestion',
+  'piiSamples',
+  'piiDetails',
+  'piiText',
+  'effectivePrompt',
 ];
