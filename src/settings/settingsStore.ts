@@ -8,6 +8,7 @@ export type SectionId =
   | 'skills'
   | 'mcp'
   | 'plan'
+  | 'externalAgents'
   | 'langfuse'
   | 'appearance'
   | 'advanced';
@@ -49,6 +50,16 @@ export interface LangfuseSettings {
   host: string;
 }
 
+export interface ExternalAgentInstanceSettings {
+  enabled: boolean;
+  config: Record<string, unknown>;
+}
+
+export interface ExternalAgentsSettings {
+  defaultAdapterId: string | null;
+  adapters: Record<string, ExternalAgentInstanceSettings>;
+}
+
 export interface LeoSettings {
   schemaVersion: 1;
   logLevel: LogLevel;
@@ -58,6 +69,7 @@ export interface LeoSettings {
   providerTimeouts: ProviderTimeoutSettings;
   langfuse: LangfuseSettings;
   ragMode: RagMode;
+  externalAgents: ExternalAgentsSettings;
   contextWindowOverride?: number;
 }
 
@@ -73,6 +85,11 @@ export const DEFAULT_LANGFUSE: LangfuseSettings = {
 
 export const DEFAULT_INDEXING: IndexingSettings = {
   excludePatterns: [],
+};
+
+export const DEFAULT_EXTERNAL_AGENTS: ExternalAgentsSettings = {
+  defaultAdapterId: null,
+  adapters: {},
 };
 
 export const DEFAULT_PROVIDER: ProviderSettings = {
@@ -98,6 +115,7 @@ export const DEFAULT_EXPANDED: Record<SectionId, boolean> = {
   skills: false,
   mcp: false,
   plan: false,
+  externalAgents: false,
   langfuse: false,
   appearance: false,
   advanced: false,
@@ -116,6 +134,7 @@ export const DEFAULT_SETTINGS: LeoSettings = {
   providerTimeouts: { ...DEFAULT_PROVIDER_TIMEOUTS },
   langfuse: { ...DEFAULT_LANGFUSE },
   ragMode: DEFAULT_RAG_MODE,
+  externalAgents: { ...DEFAULT_EXTERNAL_AGENTS, adapters: {} },
 };
 
 export function migrate(raw: unknown): LeoSettings {
@@ -131,6 +150,7 @@ export function migrate(raw: unknown): LeoSettings {
   const providerTimeouts = mergeProviderTimeouts(obj.providerTimeouts);
   const langfuse = mergeLangfuse(obj.langfuse);
   const ragMode = parseRagMode(obj.ragMode);
+  const externalAgents = mergeExternalAgents(obj.externalAgents);
   const contextWindowOverride = parseContextWindowOverride(obj.contextWindowOverride);
 
   return {
@@ -142,8 +162,33 @@ export function migrate(raw: unknown): LeoSettings {
     providerTimeouts,
     langfuse,
     ragMode,
+    externalAgents,
     ...(contextWindowOverride !== undefined ? { contextWindowOverride } : {}),
   };
+}
+
+function mergeExternalAgents(raw: unknown): ExternalAgentsSettings {
+  if (raw === null || typeof raw !== 'object') {
+    return { ...DEFAULT_EXTERNAL_AGENTS, adapters: {} };
+  }
+  const o = raw as Record<string, unknown>;
+  const defaultId = typeof o.defaultAdapterId === 'string' ? o.defaultAdapterId : null;
+  const adapters: Record<string, ExternalAgentInstanceSettings> = {};
+  const adaptersRaw = o.adapters;
+  if (adaptersRaw !== null && typeof adaptersRaw === 'object') {
+    for (const [key, val] of Object.entries(adaptersRaw as Record<string, unknown>)) {
+      if (val === null || typeof val !== 'object') continue;
+      const v = val as Record<string, unknown>;
+      adapters[key] = {
+        enabled: typeof v.enabled === 'boolean' ? v.enabled : true,
+        config:
+          v.config !== null && typeof v.config === 'object'
+            ? (v.config as Record<string, unknown>)
+            : {},
+      };
+    }
+  }
+  return { defaultAdapterId: defaultId, adapters };
 }
 
 function parseRagMode(raw: unknown): RagMode {
@@ -265,6 +310,7 @@ function cloneDefaults(): LeoSettings {
     providerTimeouts: { ...DEFAULT_PROVIDER_TIMEOUTS },
     langfuse: { ...DEFAULT_LANGFUSE },
     ragMode: DEFAULT_RAG_MODE,
+    externalAgents: { ...DEFAULT_EXTERNAL_AGENTS, adapters: {} },
   };
 }
 
@@ -307,6 +353,7 @@ export const SECTION_ORDER: readonly SectionId[] = [
   'skills',
   'mcp',
   'plan',
+  'externalAgents',
   'langfuse',
   'appearance',
   'advanced',
@@ -318,6 +365,7 @@ export const SECTION_LABELS: Record<SectionId, string> = {
   skills: 'Skills',
   mcp: 'MCP Servers',
   plan: 'Plan / Todos',
+  externalAgents: 'External Agents',
   langfuse: 'Tracing (Langfuse)',
   appearance: 'Appearance',
   advanced: 'Advanced',

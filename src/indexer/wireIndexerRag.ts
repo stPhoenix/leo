@@ -20,6 +20,7 @@ import {
   type PluginLike as GraphPluginLike,
 } from '@/graph/GraphCache';
 import { ExcludeListStore } from '@/settings/excludeListStore';
+import { EXTERNAL_AGENT_RESULTS_PREFIX } from '@/agent/externalAgent/resultWriter';
 import { RAGEngine } from '@/rag/ragEngine';
 import type { GraphAdjacency } from '@/rag/GraphTraversal';
 import { IndexerStatusBar } from './indexerStatusBar';
@@ -178,6 +179,7 @@ export async function wireIndexerRag(opts: IndexerRagWiringOptions): Promise<Ind
     initial: opts.excludePatterns(),
     logger: opts.logger,
   });
+  excludeStore.ensureDefaultPrefix(EXTERNAL_AGENT_RESULTS_PREFIX);
 
   const ragEngine = new RAGEngine({
     embedder: opts.embeddingClient,

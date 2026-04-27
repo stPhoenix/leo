@@ -1,11 +1,27 @@
 export type ConfirmationDecision = 'allow-once' | 'allow-thread' | 'deny';
 
+export interface ToolConfirmationActionLabels {
+  readonly allow: string;
+  readonly deny: string;
+}
+
 export interface ToolConfirmationRequest {
   readonly toolId: string;
   readonly thread: string;
   readonly argsJson: string;
   readonly argsPretty: string;
   readonly category: 'read' | 'write';
+  /**
+   * Override the default Allow / Deny button labels. When present, the
+   * "Allow for thread" affordance is hidden by default — call sites that
+   * supply custom labels are usually per-call confirmations.
+   */
+  readonly actionLabels?: ToolConfirmationActionLabels;
+  /**
+   * When true, the UI MUST NOT expose an "Allow for thread" option — every
+   * invocation re-prompts. Defaults to false to preserve existing tools' UX.
+   */
+  readonly disableAllowForThread?: boolean;
 }
 
 export interface PendingConfirmation {

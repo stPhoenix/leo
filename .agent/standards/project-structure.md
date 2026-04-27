@@ -5,8 +5,11 @@ leo/
 ├── .agent/
 │   ├── architecture/
 │   │   └── architecture.md              # Module map, contracts, data flows
+│   ├── budgets/
+│   │   └── bundle-baseline.json         # main.js size baseline + maxDeltaBytes for `pnpm check:bundle`
 │   ├── features/
 │   │   ├── arch-alignment_plan_20260424-005915/
+│   │   ├── external-agent_slice_20260427-022536/  # Sliced feature planning workspace for external-agent delegation (F01–F13)
 │   │   ├── leo_slice_20260419-190449/   # Sliced feature planning workspace (per-feature docs)
 │   │   └── livestatus_plan_20260425-185758/
 │   ├── scripts/
@@ -14,6 +17,7 @@ leo/
 │   ├── srs/
 │   │   ├── compact.md
 │   │   ├── context.md
+│   │   ├── external-agent.md            # External-agent delegation SRS (subgraph + adapters + widget)
 │   │   ├── livestatus.md
 │   │   ├── plan.md
 │   │   ├── skill-doc.md
@@ -25,6 +29,23 @@ leo/
 │       └── tech-stack.md
 ├── src/
 │   ├── agent/                           # Agent loop, compaction, plan mode, todo, context assembly, graph + streaming events
+│   │   ├── externalAgent/                # External-agent delegation subgraph (F01–F13 slice): adapter contract, refine sub-agent, FSM driver, slot-per-thread, result writer, widget controller, terminal snapshot, logging
+│   │   │   ├── adapters/
+│   │   │   │   └── base.ts               # ExternalAgentAdapter abstract class + ExternalEvent discriminated union (log/text/file/done/error) + AdapterCapabilities — adapter-only ESLint isolation enforced
+│   │   │   ├── adapterRegistry.ts        # AdapterRegistry — register/freeze/list (alphabetical)/get/defaultId/isEnabled
+│   │   │   ├── liveControllerRegistry.ts # In-memory map<runId, ExternalAgentWidgetController> bridging serialized widget block props ↔ live controller; EXTERNAL_AGENT_LIVE_KIND
+│   │   │   ├── loggingNamespaces.ts      # EXTERNAL_AGENT_LOG namespace tree + SENSITIVE_FIELD_KEYS — adapter/maintainer reference + lint policy declaration
+│   │   │   ├── orchestrator.ts           # ExternalAgentOrchestrator — start({threadId,…}) → {ok,handle,terminal} | {ok:false,busy}, liveHandles map, persistSnapshot callback wiring
+│   │   │   ├── refinePrompt.ts           # Pure getRefineSystemPrompt() snapshot
+│   │   │   ├── refineSubAgent.ts         # createRefineSubAgent({provider,model,…}) — REFINE_TOOLS (emit_final_prompt / ask_clarifying_question), parses tool calls, throws refine_invalid_tool / refine_prompt_too_large
+│   │   │   ├── resultWriter.ts           # ResultWriter.write({runId,threadId,adapterId,…}) — sanitizeRelPath, buildRequestMarkdown, EXTERNAL_AGENT_RESULTS_PREFIX
+│   │   │   ├── runId.ts                  # generateRunId({now,tail}) → YYYYMMDD-HHmmss-<6-char>
+│   │   │   ├── runPhase.ts               # buildToolResult(state,…) terminal→DelegateExternalToolResult; createResultWriterDeps; SUMMARY_MAX_CHARS
+│   │   │   ├── slotManager.ts            # Per-thread one-slot concurrency: acquire/release/active
+│   │   │   ├── state.ts                  # ExternalAgentState, ExternalPhase, applyExternalEvent, isTerminal, TERMINAL_PHASES
+│   │   │   ├── subgraph.ts               # startExternalAgentRun(deps,input)→RunHandle — hand-rolled FSM driver, abort/timeout race, refine→ready→running→writing→terminal
+│   │   │   ├── terminalSnapshot.ts       # TerminalSnapshotSchema (Zod, schemaVersion:1) + buildTerminalSnapshot + filterSecretFields + tryParseTerminalSnapshot + EXTERNAL_AGENT_WIDGET_KIND
+│   │   │   └── widgetController.ts       # ExternalAgentWidgetController({runId,threadId,…}) — viewModel(), onSelectAdapter/SetTimeout/SetBudget/AnswerClarification/Send/Edit/Cancel; reload rehydration to error.code='reload'
 │   │   ├── acceptRejectController.ts
 │   │   ├── agentRunner.ts
 │   │   ├── autocompact.ts
@@ -123,9 +144,11 @@ leo/
 │   │   ├── ragSnapshot.ts               # Pure abortable RagSnapshot collector (vector store + indexer + graph + exclude) for /rag widget
 │   │   ├── scorer.ts
 │   │   └── tagMatcher.ts
-│   ├── settings/                        # Settings tab, wizard, commands, exclude store
+│   ├── settings/                        # Settings tab, wizard, commands, exclude store, external-agents section
 │   │   ├── commands.ts
 │   │   ├── excludeListStore.ts
+│   │   ├── externalAgentResolver.ts      # effectiveDefaultAdapterId + resolveAdapterConfig (walks `safeStorage:` indirection) + describeConfigSchema (Zod 4 introspection: string/secret/number/boolean/array/object)
+│   │   ├── ExternalAgentsSection.tsx     # Settings UI: header + global-default dropdown (enabled-only) + per-adapter blocks with enable toggle + auto-generated form (SecretField writes via SafeStorage)
 │   │   ├── settingsStore.ts
 │   │   ├── SettingsTab.ts
 │   │   ├── WizardApp.tsx
@@ -162,6 +185,7 @@ leo/
 │   │   │   ├── appendToNote.ts
 │   │   │   ├── createFolder.ts
 │   │   │   ├── createNote.ts
+│   │   │   ├── delegateExternal.ts       # delegate_external tool — schema enforces 1–16384 char ask, owns own confirmation (requiresConfirmation:false), wraps DelegateExternalToolResult in {ok:true,data:…} so structured payload survives serializer
 │   │   │   ├── editNote.ts
 │   │   │   ├── globVault.ts             # glob_vault tool — minimatch-based vault file enumeration with cap + truncation
 │   │   │   ├── grepVault.ts             # grep_vault tool — regex search across vault with content/files/count modes + context lines
@@ -194,6 +218,10 @@ leo/
 │   │   │   │   ├── AssistantBlocks.tsx
 │   │   │   │   ├── DiffView.stories.tsx
 │   │   │   │   ├── DiffView.tsx
+│   │   │   │   ├── ExternalAgentLiveBlock.tsx     # Renderer registered under EXTERNAL_AGENT_LIVE_KIND — looks up live ExternalAgentWidgetController by runId from liveControllerRegistry and renders <ExternalAgentWidget controller=…>
+│   │   │   │   ├── ExternalAgentTerminalBlock.tsx # Renderer for persisted ExternalAgentTerminalSnapshot (post-reload / post-terminal); collapsed summary + expand reveals refine transcript + response + error + files + log count
+│   │   │   │   ├── ExternalAgentWidget.stories.tsx
+│   │   │   │   ├── ExternalAgentWidget.tsx        # Live widget — phase-dispatched (preparing/awaiting_clarify/ready/running/writing/terminal); useSyncExternalStore + 1Hz elapsed; collapsed terminal summary expandable
 │   │   │   │   ├── GroupedToolUses.stories.tsx
 │   │   │   │   ├── GroupedToolUses.tsx
 │   │   │   │   ├── index.ts
@@ -320,6 +348,8 @@ leo/
 ├── manifest.json                        # Obsidian plugin manifest
 ├── package.json
 ├── pnpm-lock.yaml
+├── scripts/
+│   └── checkBundle.mjs                  # Bundle-size guard — reads main.js size, compares against .agent/budgets/bundle-baseline.json, fails when delta > maxDeltaBytes (invoked via `pnpm check:bundle`)
 ├── styles.css                           # Plugin styles
 ├── tsconfig.json
 ├── vitest.config.ts                     # Default vitest config
@@ -336,4 +366,5 @@ leo/
 - `pnpm format` / `pnpm format:check` — prettier write / check.
 - `pnpm typecheck` — `tsc --noEmit`.
 - `pnpm dev` / `pnpm build` — esbuild (dev watch / prod bundle).
+- `pnpm check:bundle` — `node scripts/checkBundle.mjs` — asserts `main.js` size delta vs `.agent/budgets/bundle-baseline.json` is within cap (run after `build`).
 - `pnpm storybook` / `pnpm build-storybook` — Storybook dev server / static build.

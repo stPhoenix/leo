@@ -11,6 +11,7 @@ export interface ExcludeListStoreOptions {
 export class ExcludeListStore {
   private patterns: ExcludeList;
   private matcherFn: (path: string) => boolean;
+  private readonly defaults = new Set<string>();
   private readonly listeners = new Set<ExcludeChangeListener>();
   private readonly logger: Logger | undefined;
 
@@ -31,7 +32,8 @@ export class ExcludeListStore {
 
   async set(patterns: readonly string[]): Promise<void> {
     const previous = this.patterns;
-    const next = normalizePatterns(patterns);
+    const merged = [...patterns, ...this.defaults];
+    const next = normalizePatterns(merged);
     if (samePatterns(previous, next)) return;
     this.patterns = next;
     this.matcherFn = compileMatcher(next);
@@ -48,6 +50,25 @@ export class ExcludeListStore {
         });
       }
     }
+  }
+
+  /**
+   * Idempotently add `prefix` (and its `**` glob form) to the matcher set so
+   * everything beneath it is excluded from RAG. Persistence to settings is the
+   * caller's responsibility — this method only mutates the in-memory matcher.
+   */
+  ensureDefaultPrefix(prefix: string): boolean {
+    const trimmed = prefix.trim();
+    if (trimmed.length === 0) return false;
+    const want = trimmed.endsWith('/') ? `${trimmed}**` : `${trimmed}/**`;
+    const wasNew = !this.defaults.has(want);
+    this.defaults.add(want);
+    if (this.patterns.includes(want)) return false;
+    const next = normalizePatterns([...this.patterns, want]);
+    if (samePatterns(this.patterns, next)) return wasNew;
+    this.patterns = next;
+    this.matcherFn = compileMatcher(next);
+    return true;
   }
 
   subscribe(listener: ExcludeChangeListener): () => void {

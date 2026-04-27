@@ -20,7 +20,8 @@
       "indexing": true,
       "skills": true,
       "mcp": true,
-      "plan": true,
+      "plan": false,
+      "externalAgents": true,
       "langfuse": true,
       "appearance": false,
       "advanced": false
@@ -33,5 +34,10 @@
   "langfuse": {
     "enabled": true,
     "host": "http://localhost:3100"
+  },
+  "ragMode": "no-focus",
+  "externalAgents": {
+    "defaultAdapterId": null,
+    "adapters": {}
   }
 }

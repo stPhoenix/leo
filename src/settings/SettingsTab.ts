@@ -30,6 +30,14 @@ import type { McpSettingsStore } from '@/mcp/settingsStore';
 import type { MCPClient, ServerStatus } from '@/mcp/mcpClient';
 import type { McpServerConfig, McpTransportKind } from '@/mcp/config';
 import type { TracerService } from '@/platform/tracer';
+import { createRoot } from 'react-dom/client';
+import { createElement } from 'react';
+import { ExternalAgentsSection as ExternalAgentsSectionComponent } from './ExternalAgentsSection';
+import type { AdapterRegistry } from '@/agent/externalAgent/adapterRegistry';
+
+const ExternalAgentsSection = (
+  props: Parameters<typeof ExternalAgentsSectionComponent>[0],
+): ReturnType<typeof createElement> => createElement(ExternalAgentsSectionComponent, props);
 
 export interface SettingsTabDeps {
   readonly store: SettingsStore;
@@ -41,6 +49,7 @@ export interface SettingsTabDeps {
   readonly mcpSettingsStore?: McpSettingsStore;
   readonly mcpClient?: MCPClient;
   readonly tracer?: TracerService;
+  readonly adapterRegistry?: AdapterRegistry;
 }
 
 interface McpDraft {
@@ -189,10 +198,50 @@ export class SettingsTab extends PluginSettingTab {
       this.renderAdvancedBody(body, settings);
       return;
     }
+    if (id === 'externalAgents' && this.deps.adapterRegistry !== undefined) {
+      this.renderExternalAgentsBody(body, settings);
+      return;
+    }
     const placeholder = SECTION_PLACEHOLDERS[id];
     if (placeholder !== undefined) {
       body.createEl('p', { text: placeholder, cls: 'leo-section-placeholder' });
     }
+  }
+
+  private renderExternalAgentsBody(body: HTMLElement, settings: LeoSettings): void {
+    const registry = this.deps.adapterRegistry;
+    if (registry === undefined) {
+      body.createEl('p', {
+        text: 'External agents registry not wired.',
+        cls: 'leo-section-placeholder',
+      });
+      return;
+    }
+    const safeStorage = this.deps.safeStorage;
+    const mountHost = body.createDiv({ cls: 'leo-eas-host' });
+    const root = createRoot(mountHost);
+    let current = settings.externalAgents;
+    const render = (next: LeoSettings['externalAgents']): void => {
+      current = next;
+      root.render(
+        ExternalAgentsSection({
+          registry,
+          settings: current,
+          onChange: (n) => {
+            void this.deps.store.update((prev) => ({ ...prev, externalAgents: n }));
+            render(n);
+          },
+          ...(safeStorage !== undefined
+            ? {
+                readSecret: (key) => safeStorage.get(key).then((v) => v ?? ''),
+                writeSecret: (key, value) => safeStorage.set(key, value),
+              }
+            : {}),
+        }),
+      );
+    };
+    render(current);
+    this.renderDisposers.push(() => root.unmount());
   }
 
   private renderIndexingBody(body: HTMLElement, settings: LeoSettings): void {

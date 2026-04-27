@@ -24,5 +24,43 @@ module.exports = {
     'no-console': ['error', { allow: ['debug', 'info', 'warn', 'error'] }],
     '@typescript-eslint/consistent-type-imports': ['warn', { prefer: 'type-imports' }],
   },
+  overrides: [
+    {
+      // External-agent adapter implementations must not import from the
+      // plugin's runtime layers (NFR-EXT-02 / Constraint C-05). The base
+      // contract file itself is exempt — it only declares the abstract class
+      // and types that adapters subclass.
+      files: ['src/agent/externalAgent/adapters/**/*.ts'],
+      excludedFiles: ['src/agent/externalAgent/adapters/base.ts'],
+      rules: {
+        'no-restricted-imports': [
+          'error',
+          {
+            patterns: [
+              {
+                group: [
+                  '@/agent/*',
+                  '@/chat/*',
+                  '@/ui/*',
+                  '@/storage/*',
+                  '@/editor/*',
+                  '@/providers/*',
+                  '@/skills/*',
+                  '@/tools/*',
+                  '@/settings/*',
+                  '@/indexer/*',
+                  '@/rag/*',
+                  '@/mcp/*',
+                  '@/platform/*',
+                ],
+                message:
+                  'External-agent adapters must not import from runtime plugin layers (NFR-EXT-02). Allowed: zod, node:* built-ins, fetch, adapter-local helpers.',
+              },
+            ],
+          },
+        ],
+      },
+    },
+  ],
   ignorePatterns: ['main.js', 'node_modules/', 'dist/'],
 };

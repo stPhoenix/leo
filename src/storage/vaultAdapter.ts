@@ -15,6 +15,7 @@ export interface VaultAdapter {
   mkdir(path: string): Promise<void>;
   read(path: string): Promise<string>;
   write(path: string, data: string): Promise<void>;
+  writeBinary?(path: string, data: Uint8Array): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   remove(path: string): Promise<void>;
   list(path: string): Promise<VaultListing>;
@@ -36,6 +37,11 @@ export function createObsidianVaultAdapter(adapter: DataAdapter): VaultAdapter {
     },
     async write(path, data) {
       await adapter.write(path, data);
+    },
+    async writeBinary(path, data) {
+      const view = new Uint8Array(data);
+      const buf = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+      await adapter.writeBinary(path, buf as ArrayBuffer);
     },
     async rename(from, to) {
       await adapter.rename(from, to);

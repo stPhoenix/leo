@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
+    "check:bundle": "node scripts/checkBundle.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:llm": "vitest run --config vitest.llm.config.ts",

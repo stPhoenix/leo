@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "comment": "Bundle baseline for NFR-EXT-06. main.js (production) byte size at the v1 external-agent slice landing point. Future commits must keep delta ≤ maxDeltaBytes; raise baseline (and explain) when crossing.",
+  "baselineBytes": 2035984,
+  "maxDeltaBytes": 30720,
+  "lastUpdated": "2026-04-27"
+}

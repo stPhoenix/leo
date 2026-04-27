@@ -16,6 +16,8 @@
 
   --interactive-accent: #7f6df2;
   --interactive-accent-hover: #6a57e6;
+  --interactive-normal: #ebecef;
+  --interactive-hover: #dcdee3;
 
   --color-red: #c23f3f;
   --color-orange: #d87a2a;
@@ -30,6 +32,8 @@
   --font-text: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-monospace: ui-monospace, SFMono-Regular, Menlo, monospace;
   --font-ui-smaller: 12px;
+  --font-ui-medium: 14px;
+  --font-semibold: 600;
 
   --line-height-tight: 1.25;
 
@@ -68,6 +72,8 @@ html[data-theme='dark'],
 
   --interactive-accent: #7f6df2;
   --interactive-accent-hover: #9483ff;
+  --interactive-normal: #2a2a2a;
+  --interactive-hover: #3a3a3a;
 
   --color-red: #e56b6b;
   --color-orange: #e08e3a;

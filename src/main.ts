@@ -112,6 +112,32 @@ import {
 } from '@/tools/user/wireUserTools';
 import { wireAttachments, type AttachmentsWiring } from '@/chat/wireAttachments';
 import type { CaptureFileInput } from '@/chat/attachments';
+import { AdapterRegistry } from '@/agent/externalAgent/adapterRegistry';
+import { SlotManager } from '@/agent/externalAgent/slotManager';
+import { ResultWriter } from '@/agent/externalAgent/resultWriter';
+import {
+  createPassthroughAdapterCallDeps,
+  createResultWriterDeps,
+} from '@/agent/externalAgent/runPhase';
+import { ExternalAgentOrchestrator } from '@/agent/externalAgent/orchestrator';
+import { createRefineSubAgent } from '@/agent/externalAgent/refineSubAgent';
+import { getRefineSystemPrompt } from '@/agent/externalAgent/refinePrompt';
+import { createDelegateExternalTool } from '@/tools/builtin/delegateExternal';
+import {
+  EXTERNAL_AGENT_WIDGET_KIND,
+  type ExternalAgentTerminalSnapshot,
+  buildTerminalSnapshot,
+} from '@/agent/externalAgent/terminalSnapshot';
+import { ExternalAgentTerminalBlock } from '@/ui/chat/blocks/ExternalAgentTerminalBlock';
+import { ExternalAgentLiveBlock } from '@/ui/chat/blocks/ExternalAgentLiveBlock';
+import { registerWidget } from '@/ui/chat/widgets/registry';
+import { resolveAdapterConfig } from '@/settings/externalAgentResolver';
+import {
+  EXTERNAL_AGENT_LIVE_KIND,
+  registerLiveController,
+  unregisterLiveController,
+} from '@/agent/externalAgent/liveControllerRegistry';
+import { ExternalAgentWidgetController } from '@/agent/externalAgent/widgetController';
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'heic']);
 
@@ -226,6 +252,9 @@ export default class LeoPlugin extends Plugin {
   contextStatusLine: ContextStatusLineWiring | null = null;
   skillRegistry!: SkillRegistry;
   invokedSkills!: InvokedSkillsStore;
+  adapterRegistry!: AdapterRegistry;
+  externalAgentSlots!: SlotManager;
+  externalAgentOrchestrator!: ExternalAgentOrchestrator;
   private editorBridge!: EditorBridge;
   private indexStatus: {
     hasIndex: () => boolean;
@@ -366,6 +395,17 @@ export default class LeoPlugin extends Plugin {
       },
     });
     this.acceptRejectController = new AcceptRejectController();
+    this.externalAgentSlots = new SlotManager();
+    this.adapterRegistry = new AdapterRegistry({
+      defaultIdSource: () => this.store.get().externalAgents.defaultAdapterId,
+      enabledSource: () => {
+        const map: Record<string, boolean> = {};
+        for (const [id, cfg] of Object.entries(this.store.get().externalAgents.adapters)) {
+          map[id] = cfg.enabled;
+        }
+        return map;
+      },
+    });
     this.toolRegistry.register(createReadNoteTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createListNotesTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createReadFileTool() as unknown as ToolSpec<unknown, unknown>);
@@ -502,6 +542,94 @@ export default class LeoPlugin extends Plugin {
     });
     this.planStore = new PlanStore({ vault: vaultAdapter, logger: this.logger });
     this.planApprovalController = new PlanApprovalController();
+
+    const externalResultWriter = new ResultWriter({
+      vault: vaultAdapter,
+      logger: this.logger,
+    });
+    registerWidget(EXTERNAL_AGENT_WIDGET_KIND, ExternalAgentTerminalBlock);
+    registerWidget(EXTERNAL_AGENT_LIVE_KIND, ExternalAgentLiveBlock);
+    const persistExternalAgentSnapshot = (snapshot: ExternalAgentTerminalSnapshot): void => {
+      try {
+        const id = `ea-${snapshot.runId}`;
+        const existing = this.chatMessageStore.getSnapshot().find((m) => m.id === id);
+        if (existing !== undefined) {
+          this.chatMessageStore.update(id, (prev) => ({
+            ...prev,
+            widget: { kind: EXTERNAL_AGENT_WIDGET_KIND, props: snapshot },
+          }));
+        } else {
+          this.chatMessageStore.append({
+            id,
+            role: 'widget',
+            content: '',
+            createdAt: new Date().toISOString(),
+            widget: { kind: EXTERNAL_AGENT_WIDGET_KIND, props: snapshot },
+          });
+        }
+        unregisterLiveController(snapshot.runId);
+      } catch (err) {
+        this.logger.warn('externalAgent.persist.append-failed', {
+          runId: snapshot.runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+    this.externalAgentOrchestrator = new ExternalAgentOrchestrator({
+      registry: this.adapterRegistry,
+      slots: this.externalAgentSlots,
+      refine: createRefineSubAgent({
+        provider: this.providerManager,
+        model: () => this.store.get().provider.chatModel,
+        temperature: () => this.store.get().provider.temperature,
+        logger: this.logger,
+      }),
+      adapterCall: createPassthroughAdapterCallDeps(),
+      writer: createResultWriterDeps(externalResultWriter),
+      systemPrompt: getRefineSystemPrompt(),
+      logger: this.logger,
+      resolveConfig: async (adapterId) =>
+        resolveAdapterConfig({
+          storedConfig: this.store.get().externalAgents.adapters[adapterId]?.config ?? {},
+          safeStorage: this.safeStorage,
+          adapterId,
+        }),
+      persistSnapshot: persistExternalAgentSnapshot,
+    });
+    this.toolRegistry.register(
+      createDelegateExternalTool({
+        orchestrator: this.externalAgentOrchestrator,
+        confirmation: this.confirmationController,
+        onHandle: (handle) => {
+          const controller = new ExternalAgentWidgetController({
+            runId: handle.runId,
+            threadId: handle.threadId,
+            slots: this.externalAgentSlots,
+            registry: this.adapterRegistry,
+            findHandle: (id) => this.externalAgentOrchestrator.findHandle(id),
+          });
+          registerLiveController(handle.runId, controller);
+          try {
+            this.chatMessageStore.append({
+              id: `ea-${handle.runId}`,
+              role: 'widget',
+              content: '',
+              createdAt: new Date().toISOString(),
+              widget: {
+                kind: EXTERNAL_AGENT_LIVE_KIND,
+                props: { runId: handle.runId, threadId: handle.threadId },
+              },
+            });
+          } catch (err) {
+            this.logger.warn('externalAgent.live.append-failed', {
+              runId: handle.runId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        },
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+
     this.toolRegistry.register(
       createTodoWriteTool({
         store: this.todoStore,
@@ -583,6 +711,7 @@ export default class LeoPlugin extends Plugin {
       mcpSettingsStore: this.mcp?.settingsStore,
       mcpClient: this.mcp?.client,
       tracer: this.tracer,
+      adapterRegistry: this.adapterRegistry,
     });
     this.addSettingTab(settingsTab);
 
@@ -1070,6 +1199,40 @@ export default class LeoPlugin extends Plugin {
 
   override async onunload(): Promise<void> {
     this.logger?.info('plugin.unload', {});
+    // Reload-flush: write a final snapshot per non-terminal in-flight subgraph
+    // so the widget rehydrates as ERROR{code:'reload'} on next thread open.
+    try {
+      const live = this.externalAgentOrchestrator?.liveHandlesSnapshot() ?? [];
+      for (const handle of live) {
+        const state = handle.state();
+        const stateForSnapshot = {
+          ...state,
+          phase: 'error' as const,
+          error: { code: 'reload', message: 'Plugin reloaded during run' },
+          endedAt: state.endedAt ?? Date.now(),
+          startedAt: state.startedAt ?? Date.now(),
+        };
+        const snapshot = buildTerminalSnapshot({
+          state: stateForSnapshot,
+          registry: this.adapterRegistry,
+          resolvedConfig: {},
+        });
+        try {
+          this.chatMessageStore?.append({
+            id: `ea-${snapshot.runId}`,
+            role: 'widget',
+            content: '',
+            createdAt: new Date().toISOString(),
+            widget: { kind: EXTERNAL_AGENT_WIDGET_KIND, props: snapshot },
+          });
+        } catch {
+          /* persistence failure on reload-flush is non-fatal */
+        }
+        handle.cancel();
+      }
+    } catch {
+      /* */
+    }
     this.threadsSubUnsub?.();
     this.threadsSubUnsub = null;
     this.chatStoreUnsub?.();
