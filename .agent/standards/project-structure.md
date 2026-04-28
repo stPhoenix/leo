@@ -134,7 +134,7 @@ leo/
 │   │   ├── contentNormalize.ts          # OpenAI-compatible normalizer: inline document blocks as text (images pass through; provider/server is vision authority)
 │   │   ├── embeddingClient.ts
 │   │   ├── langchainMessages.ts
-│   │   ├── langchainStream.ts
+│   │   ├── langchainStream.ts            # AIMessageChunk → StreamEvent bridge — emits text/tool_use plus thinking blocks (content[].type 'thinking'/'reasoning'/'redacted_thinking' + additional_kwargs.reasoning_content), drains all open blocks on error
 │   │   ├── lmStudioProvider.ts
 │   │   ├── openAICompatibleProvider.ts
 │   │   ├── providerManager.ts
