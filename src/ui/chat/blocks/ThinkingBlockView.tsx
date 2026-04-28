@@ -50,11 +50,11 @@ export function ThinkingBlockView(props: ThinkingBlockViewProps): JSX.Element {
           </button>
         ) : null}
       </header>
-      {expanded ? (
-        <div className="leo-thinking-body" data-slot="thinking-body">
+      <div className="leo-thinking-body-wrap">
+        <div className="leo-thinking-body" data-slot="thinking-body" aria-hidden={!expanded}>
           {block.thinking}
         </div>
-      ) : null}
+      </div>
     </section>
   );
 }

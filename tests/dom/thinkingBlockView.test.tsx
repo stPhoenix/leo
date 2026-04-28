@@ -22,7 +22,10 @@ describe('ThinkingBlockView (F07 AC1, AC2)', () => {
       />,
     );
     expect(container.querySelector('[data-expanded="false"]')).not.toBeNull();
-    expect(container.querySelector('[data-slot="thinking-body"]')).toBeNull();
+    expect(container.querySelector('.leo-thinking-block.is-collapsed')).not.toBeNull();
+    expect(
+      container.querySelector('[data-slot="thinking-body"]')?.getAttribute('aria-hidden'),
+    ).toBe('true');
     const toggle = container.querySelector('[data-slot="thinking-toggle"]') as HTMLButtonElement;
     expect(toggle?.getAttribute('aria-expanded')).toBe('false');
     act(() => fireEvent.click(toggle));

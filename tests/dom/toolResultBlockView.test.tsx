@@ -78,11 +78,17 @@ describe('ToolResultBlockView — truncation toggle (F05 AC3)', () => {
     const { container } = render(
       <ToolResultBlockView block={tr({ content: long })} associatedToolUse={tu()} />,
     );
-    expect(container.querySelector('[data-slot="tool-result-body"]')).toBeNull();
+    expect(container.querySelector('.leo-tool-result.is-collapsed')).not.toBeNull();
+    expect(
+      container.querySelector('[data-slot="tool-result-body"]')?.getAttribute('aria-hidden'),
+    ).toBe('true');
     const btn = container.querySelector('[data-slot="tool-result-toggle"]') as HTMLButtonElement;
     expect(btn.textContent).toContain('show more');
     act(() => fireEvent.click(btn));
-    expect(container.querySelector('[data-slot="tool-result-body"]')).not.toBeNull();
+    expect(container.querySelector('.leo-tool-result.is-collapsed')).toBeNull();
+    expect(
+      container.querySelector('[data-slot="tool-result-body"]')?.getAttribute('aria-hidden'),
+    ).toBe('false');
   });
 
   it('errored ignores long-content collapse threshold', () => {

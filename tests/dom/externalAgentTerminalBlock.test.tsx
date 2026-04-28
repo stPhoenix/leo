@@ -47,9 +47,15 @@ describe('ExternalAgentTerminalBlock', () => {
     const { container, getByLabelText } = render(
       <ExternalAgentTerminalBlock props={baseSnapshot()} />,
     );
-    expect(container.querySelector('[data-slot="external-agent-expanded"]')).toBeNull();
+    expect(container.querySelector('.leo-ea-terminal.is-collapsed')).not.toBeNull();
+    expect(
+      container.querySelector('[data-slot="external-agent-expanded"]')?.getAttribute('aria-hidden'),
+    ).toBe('true');
     act(() => fireEvent.click(getByLabelText('External agent run done — toggle details')));
-    expect(container.querySelector('[data-slot="external-agent-expanded"]')).not.toBeNull();
+    expect(container.querySelector('.leo-ea-terminal.is-collapsed')).toBeNull();
+    expect(
+      container.querySelector('[data-slot="external-agent-expanded"]')?.getAttribute('aria-hidden'),
+    ).toBe('false');
     expect(container.textContent).toContain('response body');
     expect(container.textContent).toContain('asked');
   });

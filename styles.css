@@ -477,14 +477,19 @@
 }
 
 .leo-message-actions {
-  display: none;
+  display: flex;
   gap: var(--size-4-1);
   margin-top: var(--size-4-1);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
 }
 
 .leo-bubble:hover .leo-message-actions,
-.leo-bubble:focus-within .leo-message-actions {
-  display: flex;
+.leo-bubble:focus-within .leo-message-actions,
+.leo-message-actions:focus-within {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .leo-message-action {
@@ -495,6 +500,15 @@
   padding: var(--size-4-1) var(--size-4-2);
   font-size: var(--font-ui-smaller);
   cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease;
+}
+
+.leo-message-action:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
 }
 
 .leo-message-action:focus-visible {
@@ -510,7 +524,7 @@
 
 .leo-inline-editor-textarea {
   width: 100%;
-  min-height: 80px;
+  min-height: auto;
   background: var(--background-primary);
   color: var(--text-normal);
   border: 1px solid var(--background-modifier-border);
@@ -844,6 +858,10 @@
   color: var(--text-muted);
   cursor: pointer;
   padding: 0 var(--size-4-2);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease;
 }
 
 .leo-composer-attach:hover {
@@ -875,6 +893,7 @@
   padding: var(--size-4-1) var(--size-4-2);
   border-radius: var(--radius-s);
   cursor: pointer;
+  transition: background-color 120ms ease;
 }
 
 .leo-slash-item.is-active {
@@ -1044,6 +1063,9 @@
   color: var(--text-muted);
   cursor: pointer;
   flex-shrink: 0;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
 .leo-attachment-remove:hover {
@@ -1118,6 +1140,7 @@
   padding: var(--size-4-1) var(--size-4-2);
   border-radius: var(--radius-s);
   cursor: pointer;
+  transition: background-color 120ms ease;
 }
 
 .leo-mention-item.is-active {
@@ -1376,6 +1399,10 @@
   background: transparent;
   color: var(--text-normal);
   border-color: var(--background-modifier-border);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease;
 }
 
 .leo-info-block-button-secondary:hover {
@@ -2191,8 +2218,13 @@
   font: inherit;
   line-height: 1;
   margin-left: auto;
+  border-radius: var(--radius-s);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
 .leo-tool-use-toggle:hover {
+  background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
 
@@ -2239,10 +2271,15 @@
   border: 0;
   color: var(--text-accent);
   cursor: pointer;
-  padding: 0;
+  padding: 2px var(--size-4-1);
   font-size: inherit;
+  border-radius: var(--radius-s);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
 .leo-tool-result-toggle:hover {
+  background: var(--background-modifier-hover);
   text-decoration: underline;
 }
 
@@ -2304,6 +2341,15 @@
   cursor: pointer;
   margin-left: auto;
   font-size: inherit;
+  padding: 2px var(--size-4-1);
+  border-radius: var(--radius-s);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.leo-thinking-toggle:hover {
+  background: var(--background-modifier-hover);
 }
 
 .leo-thinking-body {
@@ -2459,11 +2505,16 @@
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
   color: var(--text-normal);
-  padding: 0;
+  padding: var(--size-4-1) var(--size-4-2);
   width: 100%;
+  border-radius: var(--radius-s);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
 .leo-grouped-summary:hover {
+  background: var(--background-modifier-hover);
   color: var(--text-accent);
 }
 
@@ -2572,11 +2623,16 @@
   border: 0;
   color: var(--text-accent);
   cursor: pointer;
-  padding: 0;
+  padding: 2px var(--size-4-1);
   font-size: inherit;
+  border-radius: var(--radius-s);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
 .leo-diff-toggle:hover {
+  background: var(--background-modifier-hover);
   text-decoration: underline;
 }
 
@@ -2991,6 +3047,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: color 120ms ease;
 }
 
 .leo-ea-expanded {
@@ -3669,11 +3726,7 @@
   padding: 0 var(--size-4-2);
   height: 20px;
   border-radius: 999px;
-  background: color-mix(
-    in srgb,
-    var(--color-green, var(--interactive-accent)) 18%,
-    transparent
-  );
+  background: color-mix(in srgb, var(--color-green, var(--interactive-accent)) 18%, transparent);
   color: var(--color-green, var(--interactive-accent));
   font-size: var(--font-ui-smaller);
   font-weight: 600;
@@ -3695,4 +3748,65 @@
   .leo-chat-root.is-plan-mode [data-region='composer'] {
     transition: none;
   }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Block expand/collapse animation + mount fade-in.
+ *
+ * The collapse trick: animate `grid-template-rows` between `1fr` and `0fr` on
+ * a 1-row grid wrapper whose only child has `overflow: hidden; min-height: 0`.
+ * Body must be persistently mounted in the DOM for the transition to run.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+.leo-thinking-body-wrap,
+.leo-tool-use-body-wrap,
+.leo-tool-result-body-wrap,
+.leo-diff-body-wrap,
+.leo-grouped-tool-uses-body-wrap,
+.leo-ea-terminal-body-wrap {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 180ms ease;
+}
+
+.leo-thinking-block.is-collapsed .leo-thinking-body-wrap,
+.leo-tool-use.is-collapsed .leo-tool-use-body-wrap,
+.leo-tool-result.is-collapsed .leo-tool-result-body-wrap,
+.leo-diff.is-collapsed .leo-diff-body-wrap,
+.leo-grouped-tool-uses.is-collapsed .leo-grouped-tool-uses-body-wrap,
+.leo-ea-terminal.is-collapsed .leo-ea-terminal-body-wrap {
+  grid-template-rows: 0fr;
+}
+
+.leo-thinking-body-wrap > *,
+.leo-tool-use-body-wrap > *,
+.leo-tool-result-body-wrap > *,
+.leo-diff-body-wrap > *,
+.leo-grouped-tool-uses-body-wrap > *,
+.leo-ea-terminal-body-wrap > * {
+  overflow: hidden;
+  min-height: 0;
+}
+
+@keyframes leo-block-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.leo-thinking-block,
+.leo-tool-use,
+.leo-tool-result,
+.leo-diff,
+.leo-grouped-tool-uses,
+.leo-ea-terminal,
+.leo-progress-lines,
+.leo-agent-tree,
+.leo-external-agent {
+  animation: leo-block-in 160ms ease both;
 }

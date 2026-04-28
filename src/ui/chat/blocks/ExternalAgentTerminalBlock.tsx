@@ -31,7 +31,7 @@ function TerminalView(props: TerminalViewProps): JSX.Element {
   const isReload = snapshot.terminalPhase === 'error' && snapshot.error?.code === 'reload';
   return (
     <section
-      className="leo-root leo-external-agent leo-ea-terminal leo-ea-persisted"
+      className={`leo-root leo-external-agent leo-ea-terminal leo-ea-persisted${expanded ? '' : ' is-collapsed'}`}
       data-slot="external-agent"
       data-phase={snapshot.terminalPhase}
       data-persisted="true"
@@ -57,8 +57,12 @@ function TerminalView(props: TerminalViewProps): JSX.Element {
           Plugin reloaded during this run — request was lost.
         </p>
       ) : null}
-      {expanded ? (
-        <div className="leo-ea-expanded" data-slot="external-agent-expanded">
+      <div className="leo-ea-terminal-body-wrap">
+        <div
+          className="leo-ea-expanded"
+          data-slot="external-agent-expanded"
+          aria-hidden={!expanded}
+        >
           <div className="leo-ea-section">
             <span className="leo-ea-label">Refined prompt:</span>
             <pre className="leo-ea-mono">{snapshot.refinedPrompt}</pre>
@@ -105,7 +109,7 @@ function TerminalView(props: TerminalViewProps): JSX.Element {
             </p>
           ) : null}
         </div>
-      ) : null}
+      </div>
     </section>
   );
 }

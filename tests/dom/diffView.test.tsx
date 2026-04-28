@@ -26,11 +26,17 @@ describe('DiffView (F12 AC2, AC3)', () => {
     const before = '';
     const after = Array.from({ length: 50 }, (_, i) => `l${i}`).join('\n');
     const { container } = render(<DiffView before={before} after={after} />);
-    expect(container.querySelector('[data-slot="diff-body"]')).toBeNull();
+    expect(container.querySelector('.leo-diff.is-collapsed')).not.toBeNull();
+    expect(container.querySelector('[data-slot="diff-body"]')?.getAttribute('aria-hidden')).toBe(
+      'true',
+    );
     const btn = container.querySelector('[data-slot="diff-toggle"]') as HTMLButtonElement;
     expect(btn.textContent).toContain('Show diff');
     act(() => fireEvent.click(btn));
-    expect(container.querySelector('[data-slot="diff-body"]')).not.toBeNull();
+    expect(container.querySelector('.leo-diff.is-expanded')).not.toBeNull();
+    expect(container.querySelector('[data-slot="diff-body"]')?.getAttribute('aria-hidden')).toBe(
+      'false',
+    );
   });
 
   it('renders gutter line numbers per side', () => {

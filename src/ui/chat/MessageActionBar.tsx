@@ -127,6 +127,7 @@ export function InlineEditor(props: InlineEditorProps): JSX.Element {
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={handleKey}
+        rows={3}
         autoFocus
         aria-label="Edit message"
       />

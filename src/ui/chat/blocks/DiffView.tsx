@@ -50,8 +50,8 @@ function DiffViewImpl(props: DiffViewProps): JSX.Element {
           </button>
         ) : null}
       </header>
-      {expanded ? (
-        <pre className="leo-diff-body" data-slot="diff-body">
+      <div className="leo-diff-body-wrap">
+        <pre className="leo-diff-body" data-slot="diff-body" aria-hidden={!expanded}>
           {lines.map((l, i) => (
             <div key={i} className={`leo-diff-line leo-diff-${l.kind}`} data-kind={l.kind}>
               <span className="leo-diff-gutter-before" data-slot="diff-gutter-before">
@@ -69,7 +69,7 @@ function DiffViewImpl(props: DiffViewProps): JSX.Element {
             </div>
           ))}
         </pre>
-      ) : null}
+      </div>
     </div>
   );
 }

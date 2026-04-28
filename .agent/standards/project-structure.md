@@ -360,7 +360,7 @@ leo/
 ├── pnpm-lock.yaml
 ├── scripts/
 │   └── checkBundle.mjs                  # Bundle-size guard — reads main.js size, compares against .agent/budgets/bundle-baseline.json, fails when delta > maxDeltaBytes (invoked via `pnpm check:bundle`)
-├── styles.css                           # Plugin styles
+├── styles.css                           # Plugin styles — chat block collapse uses `.leo-*-body-wrap` grid-template-rows 1fr↔0fr trick (180ms); blocks fade in via `@keyframes leo-block-in` (160ms); message actions reveal via opacity + pointer-events on `.leo-bubble:hover` (140ms)
 ├── tsconfig.json
 ├── vitest.config.ts                     # Default vitest config
 └── vitest.llm.config.ts                 # Live-LLM vitest config

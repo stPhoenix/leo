@@ -33,8 +33,8 @@ function GroupedToolUsesImpl(props: GroupedToolUsesProps): JSX.Element {
         </strong>{' '}
         <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
       </button>
-      {expanded ? (
-        <ul className="leo-grouped-list" data-slot="grouped-list">
+      <div className="leo-grouped-tool-uses-body-wrap">
+        <ul className="leo-grouped-list" data-slot="grouped-list" aria-hidden={!expanded}>
           {props.blocks.map((b) => (
             <li key={b.id} className="leo-grouped-item">
               <ToolUseBlockView
@@ -44,7 +44,7 @@ function GroupedToolUsesImpl(props: GroupedToolUsesProps): JSX.Element {
             </li>
           ))}
         </ul>
-      ) : null}
+      </div>
     </section>
   );
 }

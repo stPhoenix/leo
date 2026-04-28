@@ -53,9 +53,6 @@ function PreparingView({ vm, controller }: SubProps): JSX.Element {
     >
       <header className="leo-ea-header">
         <span className="leo-ea-title">External Agent — preparing</span>
-        <span className="leo-ea-meta">
-          adapter: {vm.draftAdapterId ?? '(none)'} · budget: {vm.draftRefineBudget}
-        </span>
       </header>
       <div className="leo-ea-body">
         <div className="leo-ea-section">

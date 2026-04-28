@@ -32,6 +32,14 @@ const meta: Meta<typeof MessageActionBar> = {
     },
     onStartEdit: fn(),
   },
+  decorators: [
+    (Story) => (
+      <div className="leo-bubble" data-storybook-force-actions style={{ padding: 12 }}>
+        <style>{`[data-storybook-force-actions] .leo-message-actions { opacity: 1; pointer-events: auto; }`}</style>
+        <Story />
+      </div>
+    ),
+  ],
 };
 export default meta;
 

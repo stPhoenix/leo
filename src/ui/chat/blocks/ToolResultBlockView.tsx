@@ -45,9 +45,11 @@ function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
         ? 'canceled'
         : 'success';
 
+  const collapsible = status === 'success' && long && props.renderBody === undefined;
+  const isCollapsed = collapsible && !expanded;
   return (
     <section
-      className={`leo-tool-result leo-tool-result-${status}`}
+      className={`leo-tool-result leo-tool-result-${status}${isCollapsed ? ' is-collapsed' : ''}`}
       data-slot="tool-result"
       data-status={status}
       data-tool-use-id={block.tool_use_id}
@@ -68,7 +70,7 @@ function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
           </button>
         ) : null}
       </header>
-      {renderBody(props, status, expanded, associatedToolUse)}
+      {renderBody(props, status, isCollapsed, associatedToolUse)}
     </section>
   );
 }
@@ -91,25 +93,33 @@ function renderHeader(
 function renderBody(
   props: ToolResultBlockViewProps,
   status: 'success' | 'errored' | 'rejected' | 'canceled',
-  expanded: boolean,
+  isCollapsed: boolean,
   associated: ToolUseBlock,
 ): ReactNode {
   if (status === 'rejected' || status === 'canceled') return null;
   if (status === 'errored') {
     return (
-      <pre className="leo-tool-result-body" data-slot="tool-result-body" data-status="errored">
-        {props.block.content}
-      </pre>
+      <div className="leo-tool-result-body-wrap">
+        <pre className="leo-tool-result-body" data-slot="tool-result-body" data-status="errored">
+          {props.block.content}
+        </pre>
+      </div>
     );
   }
   if (props.renderBody !== undefined) {
     return props.renderBody(props.block, associated);
   }
-  if (!expanded) return null;
   return (
-    <pre className="leo-tool-result-body" data-slot="tool-result-body" data-status="success">
-      {props.block.content}
-    </pre>
+    <div className="leo-tool-result-body-wrap">
+      <pre
+        className="leo-tool-result-body"
+        data-slot="tool-result-body"
+        data-status="success"
+        aria-hidden={isCollapsed}
+      >
+        {props.block.content}
+      </pre>
+    </div>
   );
 }
 

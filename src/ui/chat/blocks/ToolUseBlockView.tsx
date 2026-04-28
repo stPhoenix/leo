@@ -82,14 +82,20 @@ function ToolUseBlockViewImpl(props: ToolUseBlockViewProps): JSX.Element {
           </button>
         ) : null}
       </header>
-      {!collapsed && slots?.renderProgress !== undefined ? (
-        <div className="leo-tool-use-progress" data-slot="tool-use-progress">
-          {slots.renderProgress(block, status)}
-        </div>
-      ) : null}
-      {!collapsed && slots?.renderResult !== undefined ? (
-        <div className="leo-tool-use-result" data-slot="tool-use-result">
-          {slots.renderResult(block, status)}
+      {hasBody ? (
+        <div className="leo-tool-use-body-wrap">
+          <div className="leo-tool-use-body" aria-hidden={collapsed}>
+            {slots?.renderProgress !== undefined ? (
+              <div className="leo-tool-use-progress" data-slot="tool-use-progress">
+                {slots.renderProgress(block, status)}
+              </div>
+            ) : null}
+            {slots?.renderResult !== undefined ? (
+              <div className="leo-tool-use-result" data-slot="tool-use-result">
+                {slots.renderResult(block, status)}
+              </div>
+            ) : null}
+          </div>
         </div>
       ) : null}
     </section>
