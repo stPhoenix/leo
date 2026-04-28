@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "comment": "Bundle baseline. Updated 2026-04-27 after F16 (inline-agent adapter wiring): inline-agent F01–F16 add ~68 KB minified to main.js — over the 25 KB target in NFR-IA-03. Documented as a known deviation; F17 follow-up planned to trim the per-tool factory boilerplate and consolidate shared helpers. maxDeltaBytes raised once to absorb the one-time landing.",
-  "baselineBytes": 2105352,
+  "comment": "Bundle baseline. Updated 2026-04-28 after plan-mode rewrite for note-authoring + .agent/srs/plan.md gap closure: the long model-facing prompts (TodoWrite, EnterPlanMode, ExitPlanMode, AskUserQuestion) and the new ClarifyingQuestionDialog + ClarifyingQuestionController + askUserQuestion tool add ~46 KB minified to main.js. The bulk is intentional prompt content (rewritten for note-authoring) plus the new in-plan-mode clarification UI (mirrors PlanApprovalDialog). Documented as a known deviation; cap remains 30 KB for incremental additions on top of this baseline.",
+  "baselineBytes": 2151107,
   "maxDeltaBytes": 30720,
-  "lastUpdated": "2026-04-27"
+  "lastUpdated": "2026-04-28"
 }

@@ -11,6 +11,12 @@ import {
   type PlanApprovalSource,
   type PlanMarkdownRenderFn,
 } from './PlanApprovalDialog';
+import {
+  ClarifyingQuestionDialog,
+  type ClarifyingQuestionSource,
+} from './ClarifyingQuestionDialog';
+import type { PlanModeSource } from './planModeSource';
+import type { PlanMode } from '@/agent/planModeController';
 import { ThreadSwitcher, type ThreadsUiSource } from './ThreadSwitcher';
 import { IndexStatusBlock, type IndexStatusSource } from './IndexStatusBlock';
 import type { DrainListener } from '@/indexer/vaultIndexer';
@@ -52,6 +58,8 @@ export interface ChatRootProps {
   readonly acceptRejectSource?: AcceptRejectSource;
   readonly planApprovalSource?: PlanApprovalSource;
   readonly renderPlanMarkdown?: PlanMarkdownRenderFn;
+  readonly clarifyingQuestionSource?: ClarifyingQuestionSource;
+  readonly planModeSource?: PlanModeSource;
   readonly headerStats?: ReactNode;
   readonly threadsSource?: ThreadsUiSource;
   readonly indexStatusSource?: IndexStatusSource;
@@ -74,6 +82,11 @@ const STATIC_EMPTY_QUEUE: QueueSource = {
   getLength: () => 0,
   subscribe: () => () => undefined,
 };
+const STATIC_NORMAL_PLAN_MODE: PlanMode = 'normal';
+const STATIC_NORMAL_PLAN_SOURCE: PlanModeSource = {
+  getMode: () => STATIC_NORMAL_PLAN_MODE,
+  subscribe: () => () => undefined,
+};
 
 export function ChatRoot(props: ChatRootProps): JSX.Element {
   const [collapsed, setCollapsed] = useState<boolean>(isCollapsed(props.initialWidth ?? 0));
@@ -90,6 +103,13 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
     queueSource.getLength,
     queueSource.getLength,
   );
+  const planModeSource = props.planModeSource ?? STATIC_NORMAL_PLAN_SOURCE;
+  const planMode = useSyncExternalStore<PlanMode>(
+    planModeSource.subscribe,
+    planModeSource.getMode,
+    planModeSource.getMode,
+  );
+  const planModeActive = planMode === 'plan';
   const isSubmitting = phase === 'streaming' || phase === 'cancelling';
 
   useEffect(() => {
@@ -102,12 +122,14 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
   return (
     <div
       ref={rootRef}
-      className={`leo-chat-root${collapsed ? ' is-collapsed' : ''}`}
+      className={`leo-chat-root${collapsed ? ' is-collapsed' : ''}${planModeActive ? ' is-plan-mode' : ''}`}
       data-region="root"
+      {...(planModeActive ? { 'data-plan-mode': 'true' } : {})}
     >
       <HeaderBar
         collapsed={collapsed}
         onOverflowMenu={props.onOverflowMenu}
+        planModeActive={planModeActive}
         {...(props.headerStats !== undefined ? { stats: props.headerStats } : {})}
         {...(props.threadsSource !== undefined
           ? { threadSwitcher: <ThreadSwitcher source={props.threadsSource} /> }
@@ -150,6 +172,11 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
         {...(props.planApprovalSource !== undefined ? { source: props.planApprovalSource } : {})}
         {...(props.renderPlanMarkdown !== undefined
           ? { renderMarkdown: props.renderPlanMarkdown }
+          : {})}
+      />
+      <ClarifyingQuestionDialog
+        {...(props.clarifyingQuestionSource !== undefined
+          ? { source: props.clarifyingQuestionSource }
           : {})}
       />
       <BottomLiveIndicator

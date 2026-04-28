@@ -1,5 +1,5 @@
 import type { Logger } from '@/platform/Logger';
-import type { TodoStore } from './todoStore';
+import type { Todo, TodoStore } from './todoStore';
 import type { ThreadId } from './types';
 
 export type PlanMode = 'normal' | 'plan';
@@ -13,14 +13,33 @@ export interface PendingReminder {
 
 export type StaleTodoSuppressReason = 'empty' | 'rate-limit' | 'todowrite-called';
 
-export const PLAN_ENTER_REMINDER =
-  '<system-reminder>\nPlan mode is now active. Only read-only tools and ExitPlanMode may be used. Present the final plan via ExitPlanMode when ready.\n</system-reminder>';
+export function buildPlanEnterReminder(planFilePath: string): string {
+  return [
+    '<system-reminder>',
+    'Plan mode is now active. Available tools: read_note, read_file, search_vault, list_notes, glob_vault, grep_vault, open_note, reveal_in_note, TodoWrite, AskUserQuestion, ExitPlanMode. Write-capable tools (create_note, edit_note, append_to_note, create_folder, delegate_external) are blocked.',
+    '',
+    'Explore the vault, design the note structure (which notes to create or edit, how they link, headings, frontmatter), and present your plan via ExitPlanMode when ready. Use AskUserQuestion if a structural choice depends on user preference.',
+    '',
+    `When approved, your plan will be saved to: ${planFilePath}`,
+    '</system-reminder>',
+  ].join('\n');
+}
 
 export const PLAN_EXIT_REMINDER =
   '<system-reminder>\nPlan mode is now inactive. Write-capable tools are available again.\n</system-reminder>';
 
-export const STALE_TODO_REMINDER =
-  '<system-reminder>\nYou have pending todos from an earlier plan. Update them via TodoWrite if your current work affects them.\n</system-reminder>';
+export function buildStaleTodoReminder(todos: readonly Todo[]): string {
+  const formatted = todos.map((t, i) => `${i + 1}. [${t.status}] ${t.content}`).join('\n');
+  return [
+    '<system-reminder>',
+    "The TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Also consider cleaning up the todo list if it has become stale and no longer matches what you are working on. Only use it if it's relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user",
+    '',
+    'Here are the existing contents of your todo list:',
+    '',
+    `[${formatted}]`,
+    '</system-reminder>',
+  ].join('\n');
+}
 
 export const DEFAULT_PLAN_MODE_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   'Read',
@@ -29,12 +48,16 @@ export const DEFAULT_PLAN_MODE_ALLOWLIST: ReadonlySet<string> = new Set<string>(
   'WebFetch',
   'EnterPlanMode',
   'ExitPlanMode',
+  'TodoWrite',
+  'AskUserQuestion',
   'read_note',
   'read_file',
   'search_vault',
   'list_notes',
   'glob_vault',
   'grep_vault',
+  'open_note',
+  'reveal_in_note',
 ]);
 
 export const DEFAULT_STALE_TODO_THRESHOLD = 10;
@@ -77,6 +100,7 @@ export class PlanModeController {
   private readonly threshold: () => number;
   private readonly todoKeyFor: (thread: ThreadId, agentId: string | null) => string;
   private readonly byThread = new Map<ThreadId, ThreadState>();
+  private readonly listeners = new Set<() => void>();
 
   constructor(opts: PlanModeControllerOptions) {
     this.logger = opts.logger;
@@ -94,11 +118,15 @@ export class PlanModeController {
     return this.allowlist.has(toolId);
   }
 
-  enterPlan(thread: ThreadId): void {
+  enterPlan(thread: ThreadId, planFilePath: string): void {
     const state = this.ensure(thread);
     state.mode = 'plan';
-    this.logger?.info('plan.mode.enter', { threadId: thread });
-    this.enqueueReminder(thread, { kind: 'plan-enter', body: PLAN_ENTER_REMINDER });
+    this.logger?.info('plan.mode.enter', { threadId: thread, planFilePath });
+    this.enqueueReminder(thread, {
+      kind: 'plan-enter',
+      body: buildPlanEnterReminder(planFilePath),
+    });
+    this.notify();
   }
 
   exitPlan(thread: ThreadId): void {
@@ -106,6 +134,14 @@ export class PlanModeController {
     state.mode = 'normal';
     this.logger?.info('plan.mode.exit', { threadId: thread });
     this.enqueueReminder(thread, { kind: 'plan-exit', body: PLAN_EXIT_REMINDER });
+    this.notify();
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return (): void => {
+      this.listeners.delete(listener);
+    };
   }
 
   drainAttachments(thread: ThreadId): readonly PendingReminder[] {
@@ -183,15 +219,21 @@ export class PlanModeController {
     }
     state.messageCountSinceLastReminder = 0;
     this.logger?.info('plan.stale-todo.reminder', { threadId: thread });
-    return STALE_TODO_REMINDER;
+    return buildStaleTodoReminder(todos);
   }
 
   reset(thread: ThreadId): void {
-    this.byThread.delete(thread);
+    const had = this.byThread.delete(thread);
+    if (had) this.notify();
   }
 
   dispose(): void {
     this.byThread.clear();
+    this.listeners.clear();
+  }
+
+  private notify(): void {
+    for (const l of this.listeners) l();
   }
 
   private ensure(thread: ThreadId): ThreadState {

@@ -55,10 +55,26 @@ describe('assembleContext', () => {
     const msgs = renderPrompt(prompt);
     expect(msgs[0]?.role).toBe('system');
     expect(msgs[0]?.content).toContain('You are Leo');
+    expect(msgs[0]?.content).toContain('## Plan mode');
+    expect(msgs[0]?.content).toContain('EnterPlanMode FIRST');
     expect(msgs[0]?.content).toContain('Active note: Daily/2026-04-21.md');
     expect(msgs[0]?.content).toContain('Relevant notes:');
     expect(msgs[1]?.role).toBe('system');
     expect(msgs[1]?.content).toContain('<system-reminder>');
     expect(msgs.slice(2).map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+
+  it('always includes the plan-mode rule in the first system message', () => {
+    const prompt = assembleContext({
+      focus: NULL_FOCUSED_CONTEXT,
+      ragHits: [],
+      history: [{ role: 'user', content: 'q' }],
+    });
+    const msgs = renderPrompt(prompt);
+    expect(msgs[0]?.role).toBe('system');
+    expect(msgs[0]?.content).toContain('## Plan mode');
+    expect(msgs[0]?.content).toContain('EnterPlanMode FIRST');
+    expect(msgs[0]?.content).toContain('AskUserQuestion');
+    expect(msgs[0]?.content).toContain('ExitPlanMode');
   });
 });

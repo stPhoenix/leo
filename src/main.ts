@@ -49,7 +49,7 @@ import type { TokenMessage } from '@/agent/tokenEstimator';
 import { breakdownMessages } from '@/agent/messageBreakdown';
 import { countToolDescriptorTokens, type ToolDescriptor } from '@/agent/toolTokenCount';
 import { countSkillFrontmatterTokens } from '@/agent/skillTokenCount';
-import { LEO_PREAMBLE } from '@/agent/types';
+import { LEO_PREAMBLE, PLAN_MODE_RULE } from '@/agent/types';
 import type { ChatMessage } from '@/providers/types';
 import { ToolRegistry } from '@/tools/toolRegistry';
 import { createReadNoteTool } from '@/tools/builtin/readNote';
@@ -102,9 +102,11 @@ import {
 import { MarkdownView } from 'obsidian';
 import { PlanStore } from '@/storage/planStore';
 import { PlanApprovalController } from '@/agent/planApprovalController';
+import { ClarifyingQuestionController } from '@/agent/clarifyingQuestionController';
 import { PlanSessionResume } from '@/agent/planSessionResume';
 import { createTodoWriteTool } from '@/tools/todoWriteTool';
 import { createEnterPlanModeTool, createExitPlanModeTool } from '@/tools/planModeTools';
+import { createAskUserQuestionTool } from '@/tools/builtin/askUserQuestion';
 import {
   wireUserTools,
   type UserToolsFileEvents,
@@ -267,6 +269,7 @@ export default class LeoPlugin extends Plugin {
   workspaceNavigator!: ReturnType<typeof createObsidianWorkspaceNavigator>;
   planStore!: PlanStore;
   planApprovalController!: PlanApprovalController;
+  clarifyingQuestionController!: ClarifyingQuestionController;
   safeStorage!: SafeStorage;
   tracer!: TracerService;
   mcp: McpWiring | null = null;
@@ -600,6 +603,7 @@ export default class LeoPlugin extends Plugin {
     });
     this.planStore = new PlanStore({ vault: vaultAdapter, logger: this.logger });
     this.planApprovalController = new PlanApprovalController();
+    this.clarifyingQuestionController = new ClarifyingQuestionController();
 
     const externalResultWriter = new ResultWriter({
       vault: vaultAdapter,
@@ -707,6 +711,12 @@ export default class LeoPlugin extends Plugin {
         controller: this.planModeController,
         planStore: this.planStore,
         approval: this.planApprovalController,
+        logger: this.logger,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createAskUserQuestionTool({
+        controller: this.clarifyingQuestionController,
         logger: this.logger,
       }) as unknown as ToolSpec<unknown, unknown>,
     );
@@ -1134,8 +1144,32 @@ export default class LeoPlugin extends Plugin {
             },
           },
           planMode: {
-            enter: () => this.planModeController.enterPlan(this.getActiveThreadId()),
+            enter: () => {
+              void (async (): Promise<void> => {
+                const threadId = this.getActiveThreadId();
+                if (this.planModeController.getMode(threadId) === 'plan') {
+                  this.planModeController.exitPlan(threadId);
+                  return;
+                }
+                const slug = await this.planStore.currentSlug(threadId);
+                this.planModeController.enterPlan(threadId, this.planStore.planPath(slug));
+              })();
+            },
             exit: () => this.planModeController.exitPlan(this.getActiveThreadId()),
+          },
+          planModeSource: {
+            getMode: () => this.planModeController.getMode(this.getActiveThreadId()),
+            subscribe: (cb) => {
+              const off1 = this.planModeController.subscribe(cb);
+              const off2 =
+                this.threadsStore !== null
+                  ? this.threadsStore.subscribe(() => cb())
+                  : (): void => undefined;
+              return (): void => {
+                off1();
+                off2();
+              };
+            },
           },
           analyzeContext: async (signal) => {
             const snap = this.contextSnapshot;
@@ -1172,6 +1206,7 @@ export default class LeoPlugin extends Plugin {
             })();
           },
           planApprovalController: this.planApprovalController,
+          clarifyingQuestionController: this.clarifyingQuestionController,
           ...(this.attachments !== null
             ? {
                 attachments: this.attachments,
@@ -1409,11 +1444,10 @@ export default class LeoPlugin extends Plugin {
       })),
     ).total;
 
-    // System prompt: LEO_PREAMBLE is the only always-on segment we can count
-    // statically here. Per-turn injections (active note, RAG hits, skill listing)
-    // vary per request and would inflate the static breakdown — they end up
-    // counted on the API tier from `usage.input_tokens`.
-    const systemTotal = roughTokenCountEstimation(LEO_PREAMBLE);
+    // System prompt: LEO_PREAMBLE + PLAN_MODE_RULE are the always-on segments
+    // we can count statically here. Per-turn injections (active note, RAG hits,
+    // skill listing) vary per request and end up counted via `usage.input_tokens`.
+    const systemTotal = roughTokenCountEstimation(`${LEO_PREAMBLE}\n\n${PLAN_MODE_RULE}`);
 
     const counters: ContextCounters = {
       countSystemTokens: async () => systemTotal,

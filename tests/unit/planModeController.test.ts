@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  PLAN_ENTER_REMINDER,
+  buildPlanEnterReminder,
+  buildStaleTodoReminder,
   PLAN_EXIT_REMINDER,
   PlanModeController,
-  STALE_TODO_REMINDER,
 } from '@/agent/planModeController';
 import { TodoStore, type Todo } from '@/agent/todoStore';
 import type {
@@ -58,11 +58,13 @@ describe('PlanModeController', () => {
     store = new TodoStore();
   });
 
+  const PLAN_PATH = '.leo/plans/foo-bar.md';
+
   it('defaults mode to normal and flips to plan on enterPlan', () => {
     const { logger, events } = newLogger();
     const c = new PlanModeController({ logger, todoStore: store });
     expect(c.getMode('t-1')).toBe('normal');
-    c.enterPlan('t-1');
+    c.enterPlan('t-1', PLAN_PATH);
     expect(c.getMode('t-1')).toBe('plan');
     expect(events.some((e) => e.event === 'plan.mode.enter' && e.fields.threadId === 't-1')).toBe(
       true,
@@ -75,7 +77,7 @@ describe('PlanModeController', () => {
   it('exitPlan flips back to normal and queues plan-exit reminder', () => {
     const { logger, events } = newLogger();
     const c = new PlanModeController({ logger, todoStore: store });
-    c.enterPlan('t-1');
+    c.enterPlan('t-1', PLAN_PATH);
     c.drainAttachments('t-1');
     c.exitPlan('t-1');
     expect(c.getMode('t-1')).toBe('normal');
@@ -85,20 +87,21 @@ describe('PlanModeController', () => {
     expect(events.some((e) => e.event === 'plan.mode.exit')).toBe(true);
   });
 
-  it('queues wrap reminder bodies with <system-reminder> tags byte-for-byte', () => {
+  it('plan-enter reminder embeds the plan file path and is wrapped in <system-reminder> tags', () => {
     const { logger } = newLogger();
     const c = new PlanModeController({ logger, todoStore: store });
-    c.enterPlan('t-1');
+    c.enterPlan('t-1', PLAN_PATH);
     const [enter] = c.drainAttachments('t-1');
-    expect(enter?.body).toBe(PLAN_ENTER_REMINDER);
+    expect(enter?.body).toBe(buildPlanEnterReminder(PLAN_PATH));
     expect(enter?.body.startsWith('<system-reminder>')).toBe(true);
     expect(enter?.body.endsWith('</system-reminder>')).toBe(true);
+    expect(enter?.body).toContain(PLAN_PATH);
   });
 
   it('flushes pending attachments on drain and empties the queue', () => {
     const { logger, events } = newLogger();
     const c = new PlanModeController({ logger, todoStore: store });
-    c.enterPlan('t-1');
+    c.enterPlan('t-1', PLAN_PATH);
     expect(c.drainAttachments('t-1').length).toBe(1);
     expect(c.drainAttachments('t-1').length).toBe(0);
     expect(events.filter((e) => e.event === 'plan.attachment.flushed').length).toBe(1);
@@ -107,7 +110,7 @@ describe('PlanModeController', () => {
   it('opposing-flag clearing drops both entries on rapid enter→exit before drain', () => {
     const { logger, events } = newLogger();
     const c = new PlanModeController({ logger, todoStore: store });
-    c.enterPlan('t-1');
+    c.enterPlan('t-1', PLAN_PATH);
     c.exitPlan('t-1');
     const attachments = c.drainAttachments('t-1');
     expect(attachments.length).toBe(0);
@@ -120,11 +123,11 @@ describe('PlanModeController', () => {
     const { logger } = newLogger();
     const c = new PlanModeController({ logger, todoStore: store });
     c.exitPlan('t-1');
-    c.enterPlan('t-1');
+    c.enterPlan('t-1', PLAN_PATH);
     expect(c.drainAttachments('t-1').length).toBe(0);
   });
 
-  it('allowlist predicate passes Read/Grep/Glob/WebFetch/EnterPlanMode/ExitPlanMode and denies create_note', () => {
+  it('allowlist passes read tools + TodoWrite + AskUserQuestion + open_note + reveal_in_note; denies write tools', () => {
     const { logger } = newLogger();
     const c = new PlanModeController({ logger, todoStore: store });
     for (const id of [
@@ -134,13 +137,42 @@ describe('PlanModeController', () => {
       'WebFetch',
       'EnterPlanMode',
       'ExitPlanMode',
+      'TodoWrite',
+      'AskUserQuestion',
       'read_note',
+      'read_file',
+      'search_vault',
+      'list_notes',
+      'glob_vault',
+      'grep_vault',
+      'open_note',
+      'reveal_in_note',
     ]) {
       expect(c.isToolAllowedInPlan(id)).toBe(true);
     }
-    for (const id of ['create_note', 'append_to_note', 'edit_note', 'TodoWrite']) {
+    for (const id of [
+      'create_note',
+      'append_to_note',
+      'edit_note',
+      'create_folder',
+      'delegate_external',
+    ]) {
       expect(c.isToolAllowedInPlan(id)).toBe(false);
     }
+  });
+
+  it('buildStaleTodoReminder formats todos as [N. [status] content] joined with newlines', () => {
+    const todos: readonly Todo[] = [
+      { id: 't1', content: 'create hub note', status: 'pending' },
+      { id: 't2', content: 'wire backlinks', status: 'in-progress' },
+      { id: 't3', content: 'review structure', status: 'completed' },
+    ];
+    const out = buildStaleTodoReminder(todos);
+    expect(out).toContain('[1. [pending] create hub note');
+    expect(out).toContain('2. [in-progress] wire backlinks');
+    expect(out).toContain('3. [completed] review structure]');
+    expect(out.startsWith('<system-reminder>')).toBe(true);
+    expect(out.endsWith('</system-reminder>')).toBe(true);
   });
 
   it('stale-todo reminder fires only when todos non-empty + rate-limit met + non-trivial work without TodoWrite', () => {
@@ -162,7 +194,7 @@ describe('PlanModeController', () => {
     // Cross the threshold
     c.recordAssistantTurn('t-1', { hasToolCall: true, calledTodoWrite: false });
     const reminder = c.maybeInjectStaleTodoReminder('t-1');
-    expect(reminder).toBe(STALE_TODO_REMINDER);
+    expect(reminder).toBe(buildStaleTodoReminder(TODOS));
     expect(events.some((e) => e.event === 'plan.stale-todo.reminder')).toBe(true);
   });
 
@@ -204,7 +236,7 @@ describe('PlanModeController', () => {
     c.recordAssistantTurn('t-1', { hasToolCall: true, calledTodoWrite: false });
     expect(c.maybeInjectStaleTodoReminder('t-1')).toBeNull();
     c.recordAssistantTurn('t-1', { hasToolCall: true, calledTodoWrite: false });
-    expect(c.maybeInjectStaleTodoReminder('t-1')).toBe(STALE_TODO_REMINDER);
+    expect(c.maybeInjectStaleTodoReminder('t-1')).toBe(buildStaleTodoReminder(TODOS));
     // Counter reset — one more turn should not re-trigger
     c.recordAssistantTurn('t-1', { hasToolCall: true, calledTodoWrite: false });
     expect(c.maybeInjectStaleTodoReminder('t-1')).toBeNull();
@@ -231,9 +263,63 @@ describe('PlanModeController', () => {
   it('dispose clears all state', () => {
     const { logger } = newLogger();
     const c = new PlanModeController({ logger, todoStore: store });
-    c.enterPlan('t-1');
+    c.enterPlan('t-1', PLAN_PATH);
     c.dispose();
     expect(c.getMode('t-1')).toBe('normal');
     expect(c.drainAttachments('t-1').length).toBe(0);
+  });
+
+  it('subscribe fires on enterPlan and exitPlan; unsubscribe stops further calls', () => {
+    const { logger } = newLogger();
+    const c = new PlanModeController({ logger, todoStore: store });
+    let calls = 0;
+    const off = c.subscribe(() => {
+      calls += 1;
+    });
+    c.enterPlan('t-1', PLAN_PATH);
+    expect(calls).toBe(1);
+    c.exitPlan('t-1');
+    expect(calls).toBe(2);
+    off();
+    c.enterPlan('t-1', PLAN_PATH);
+    expect(calls).toBe(2);
+  });
+
+  it('reset notifies only when state existed for the thread', () => {
+    const { logger } = newLogger();
+    const c = new PlanModeController({ logger, todoStore: store });
+    let calls = 0;
+    c.subscribe(() => {
+      calls += 1;
+    });
+    c.reset('never-existed');
+    expect(calls).toBe(0);
+    c.enterPlan('t-1', PLAN_PATH);
+    expect(calls).toBe(1);
+    c.reset('t-1');
+    expect(calls).toBe(2);
+  });
+
+  it('toggle scenario: enterPlan → exitPlan flips getMode both ways', () => {
+    const { logger } = newLogger();
+    const c = new PlanModeController({ logger, todoStore: store });
+    expect(c.getMode('t-1')).toBe('normal');
+    c.enterPlan('t-1', PLAN_PATH);
+    expect(c.getMode('t-1')).toBe('plan');
+    c.exitPlan('t-1');
+    expect(c.getMode('t-1')).toBe('normal');
+  });
+
+  it('dispose clears listeners so post-dispose mutations do not fire callbacks', () => {
+    const { logger } = newLogger();
+    const c = new PlanModeController({ logger, todoStore: store });
+    let calls = 0;
+    c.subscribe(() => {
+      calls += 1;
+    });
+    c.dispose();
+    // Internal state cleared; further mode mutations should not fire to a stale listener.
+    c.enterPlan('t-1', PLAN_PATH);
+    expect(calls).toBe(0);
   });
 });

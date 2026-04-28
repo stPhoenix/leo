@@ -154,6 +154,24 @@ export const NoFocusedFile: Story = {
   },
 };
 
+export const PlanModeActive: Story = {
+  args: {
+    messageStore: makeMessageStore(exampleConversation),
+    planModeSource: {
+      getMode: () => 'plan',
+      subscribe: () => () => undefined,
+    },
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Plan mode active — green inset frame on chat root + "Plan mode" pill in the header.',
+      },
+    },
+  },
+};
+
 export const CollapsedNarrow: Story = {
   args: { initialWidth: 280, messageStore: makeMessageStore(exampleConversation) },
   decorators: [

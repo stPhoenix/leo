@@ -5,12 +5,23 @@ export interface HeaderBarProps {
   readonly onOverflowMenu?: (anchor: HTMLElement) => void;
   readonly threadSwitcher?: ReactNode;
   readonly stats?: ReactNode;
+  readonly planModeActive?: boolean;
 }
 
 export function HeaderBar(props: HeaderBarProps): JSX.Element {
   return (
     <header className="leo-header-bar" role="banner" data-region="header">
       <span className="leo-header-title">Leo</span>
+      {props.planModeActive === true ? (
+        <span
+          className="leo-header-plan-pill"
+          data-slot="plan-mode-pill"
+          role="status"
+          aria-label="Plan mode active"
+        >
+          Plan mode
+        </span>
+      ) : null}
       {!props.collapsed && props.stats !== undefined ? (
         <span className="leo-header-stats-slot" data-slot="header-stats">
           {props.stats}

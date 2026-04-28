@@ -40,8 +40,49 @@ describe('ChatRoot — region scaffold', () => {
       'confirmation',
       'dialog',
       'plan-approval',
+      'clarify',
       'composer',
     ]);
+  });
+});
+
+describe('ChatRoot — plan mode indicator', () => {
+  it('default (no source / normal) → no is-plan-mode class, no pill, no data attr', () => {
+    const { container } = render(<ChatRoot {...defaultProps(400)} />);
+    const root = container.querySelector('[data-region="root"]');
+    expect(root?.classList.contains('is-plan-mode')).toBe(false);
+    expect(root?.getAttribute('data-plan-mode')).toBeNull();
+    expect(container.querySelector('[data-slot="plan-mode-pill"]')).toBeNull();
+  });
+
+  it('planModeSource returning "plan" renders is-plan-mode + data-plan-mode + pill', () => {
+    const planModeSource = {
+      getMode: () => 'plan' as const,
+      subscribe: () => () => undefined,
+    };
+    const { container } = render(
+      <ChatRoot {...defaultProps(400)} planModeSource={planModeSource} />,
+    );
+    const root = container.querySelector('[data-region="root"]');
+    expect(root?.classList.contains('is-plan-mode')).toBe(true);
+    expect(root?.getAttribute('data-plan-mode')).toBe('true');
+    const pill = container.querySelector('[data-slot="plan-mode-pill"]');
+    expect(pill).not.toBeNull();
+    expect(pill?.textContent).toBe('Plan mode');
+    expect(pill?.getAttribute('role')).toBe('status');
+  });
+
+  it('planModeSource returning "normal" does not render the pill', () => {
+    const planModeSource = {
+      getMode: () => 'normal' as const,
+      subscribe: () => () => undefined,
+    };
+    const { container } = render(
+      <ChatRoot {...defaultProps(400)} planModeSource={planModeSource} />,
+    );
+    const root = container.querySelector('[data-region="root"]');
+    expect(root?.classList.contains('is-plan-mode')).toBe(false);
+    expect(container.querySelector('[data-slot="plan-mode-pill"]')).toBeNull();
   });
 });
 
@@ -59,10 +100,10 @@ describe('ChatRoot — ARIA invariants (NFR-USE-07)', () => {
     expect(status?.getAttribute('aria-live')).toBe('polite');
   });
 
-  it('marks InlineConfirmation, InlineDialog, and PlanApprovalDialog as role=dialog + aria-modal', () => {
+  it('marks InlineConfirmation, InlineDialog, PlanApprovalDialog, and ClarifyingQuestionDialog as role=dialog + aria-modal', () => {
     const { container } = render(<ChatRoot {...defaultProps(400)} />);
     const dialogs = container.querySelectorAll('[role="dialog"]');
-    expect(dialogs.length).toBe(3);
+    expect(dialogs.length).toBe(4);
     for (const d of Array.from(dialogs)) {
       expect(d.getAttribute('aria-modal')).toBe('true');
     }

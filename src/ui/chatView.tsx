@@ -34,12 +34,15 @@ import type { FocusedContext } from '@/editor/types';
 import type { ConfirmationController } from '@/agent/confirmationController';
 import type { AcceptRejectController } from '@/agent/acceptRejectController';
 import type { PlanApprovalController } from '@/agent/planApprovalController';
+import type { ClarifyingQuestionController } from '@/agent/clarifyingQuestionController';
 import type { ContextData } from '@/agent/contextAnalyzer';
 import type { ContextSnapshotStore } from '@/agent/contextSnapshotStore';
 import { resolveContextWindow } from '@/agent/compactConstants';
 import { makeInlineConfirmationSource } from './chat/InlineConfirmation';
 import { makeAcceptRejectSource } from './chat/InlineDialog';
 import { makePlanApprovalSource } from './chat/PlanApprovalDialog';
+import { makeClarifyingQuestionSource } from './chat/ClarifyingQuestionDialog';
+import type { PlanModeSource } from './chat/planModeSource';
 import type { ThreadsSnapshot } from '@/storage/threadsStore';
 import { ChatRoot } from './chat/ChatRoot';
 import { PiiDetectorContext } from './chat/blocks/piiDetectorContext';
@@ -94,6 +97,7 @@ export interface ChatViewDeps {
   readonly confirmationController?: ConfirmationController;
   readonly acceptRejectController?: AcceptRejectController;
   readonly planMode?: ChatPlanModeAdapter;
+  readonly planModeSource?: PlanModeSource;
   readonly analyzeContext?: (signal: AbortSignal) => Promise<ContextData>;
   readonly contextSnapshot?: ContextSnapshotStore;
   readonly collectRagSnapshot?: (signal: AbortSignal) => Promise<RagSnapshot>;
@@ -102,6 +106,7 @@ export interface ChatViewDeps {
   readonly onReindexAll?: () => void;
   readonly onReindexChanged?: () => void;
   readonly planApprovalController?: PlanApprovalController;
+  readonly clarifyingQuestionController?: ClarifyingQuestionController;
   readonly getContextWindow?: () => number;
   readonly skillSlash?: SkillSlashAdapter;
   readonly compactRunner?: CompactRunnerAdapter;
@@ -256,6 +261,10 @@ export class ChatView extends ItemView {
       this.deps.planApprovalController !== undefined
         ? makePlanApprovalSource(this.deps.planApprovalController)
         : undefined;
+    const clarifyingQuestionSource =
+      this.deps.clarifyingQuestionController !== undefined
+        ? makeClarifyingQuestionSource(this.deps.clarifyingQuestionController)
+        : undefined;
     const renderPlanMarkdown = (container: HTMLElement, plan: string): (() => void) => {
       const cmp = new Component();
       this.renderComponents.add(cmp);
@@ -312,6 +321,10 @@ export class ChatView extends ItemView {
         ? { onReindexChanged: this.deps.onReindexChanged }
         : {}),
       ...(planApprovalSource !== undefined ? { planApprovalSource } : {}),
+      ...(clarifyingQuestionSource !== undefined ? { clarifyingQuestionSource } : {}),
+      ...(this.deps.planModeSource !== undefined
+        ? { planModeSource: this.deps.planModeSource }
+        : {}),
       renderPlanMarkdown,
       phaseSource: {
         getPhase: () => this.lastPhase,

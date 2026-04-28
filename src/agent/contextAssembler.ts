@@ -1,6 +1,7 @@
 import type { FocusedContext } from '@/editor/types';
 import {
   LEO_PREAMBLE,
+  PLAN_MODE_RULE,
   type AgentHistoryMessage,
   type AssembledPrompt,
   type AssembledPromptSegments,
@@ -44,7 +45,7 @@ function deriveActiveNote(focus: FocusedContext): string | null {
 
 export function renderPrompt(prompt: AssembledPrompt): ChatMessage[] {
   const { segments } = prompt;
-  const systemParts: string[] = [LEO_PREAMBLE];
+  const systemParts: string[] = [LEO_PREAMBLE, PLAN_MODE_RULE];
   if (segments.activeNote !== null) {
     systemParts.push(segments.activeNote);
   }

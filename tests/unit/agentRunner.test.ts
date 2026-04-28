@@ -717,7 +717,7 @@ describe('AgentRunner', () => {
       },
     });
     const controller = new PlanModeController({ todoStore: new TodoStore(), logger });
-    controller.enterPlan('t');
+    controller.enterPlan('t', '.leo/plans/foo-bar.md');
     controller.drainAttachments('t');
     const runner = new AgentRunner({
       provider,
@@ -768,7 +768,7 @@ describe('AgentRunner', () => {
       },
     });
     const controller = new PlanModeController({ todoStore: new TodoStore(), logger });
-    controller.enterPlan('t');
+    controller.enterPlan('t', '.leo/plans/foo-bar.md');
     controller.drainAttachments('t');
     const runner = new AgentRunner({
       provider,
@@ -790,12 +790,14 @@ describe('AgentRunner', () => {
   });
 
   it('prepends pending plan-mode attachments as system messages on next turn', async () => {
-    const { PlanModeController, PLAN_ENTER_REMINDER } = await import('@/agent/planModeController');
+    const { PlanModeController, buildPlanEnterReminder } =
+      await import('@/agent/planModeController');
+    const PLAN_ENTER_REMINDER = buildPlanEnterReminder('.leo/plans/foo-bar.md');
     const { TodoStore } = await import('@/agent/todoStore');
     const provider = new FakeProvider();
     const { logger } = makeLogger();
     const controller = new PlanModeController({ todoStore: new TodoStore(), logger });
-    controller.enterPlan('t');
+    controller.enterPlan('t', '.leo/plans/foo-bar.md');
     const runner = new AgentRunner({
       provider,
       focusedContext: new MutableFocus(),

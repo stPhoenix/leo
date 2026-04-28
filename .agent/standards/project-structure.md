@@ -54,17 +54,18 @@ leo/
 │   │   ├── agentRunner.ts
 │   │   ├── autocompact.ts
 │   │   ├── autocompactBreaker.ts
+│   │   ├── clarifyingQuestionController.ts # Promise-based main-agent clarifying-question controller backing AskUserQuestion (mirrors PlanApprovalController: present()/resolve()/subscribe(); single-pending semantics; outcomes answer | answerMulti | cancel)
 │   │   ├── compactConstants.ts
 │   │   ├── compactPrompts.ts
 │   │   ├── confirmationController.ts
 │   │   ├── contextAnalyzer.ts
-│   │   ├── contextAssembler.ts
+│   │   ├── contextAssembler.ts             # System-prompt assembler — prepends LEO_PREAMBLE + PLAN_MODE_RULE to systemParts, then activeNote + RAG hits; renderPrompt emits one system msg per turn
 │   │   ├── contextSnapshotStore.ts       # Reactive cached ContextData (debounced refresh, abort-aware) shared by /context widget + HeaderStat
 │   │   ├── graph.ts
 │   │   ├── messageBreakdown.ts           # Pure: per-message-type token tally (toolCall/toolResult/attachment/assistantText/userText) — SRS §6.6
 │   │   ├── microcompact.ts
 │   │   ├── planApprovalController.ts
-│   │   ├── planModeController.ts
+│   │   ├── planModeController.ts           # Per-thread plan/normal mode FSM, allowlist gate (read tools + TodoWrite + AskUserQuestion + open_note + reveal_in_note + ExitPlanMode), buildPlanEnterReminder(planFilePath) + buildStaleTodoReminder(todos) + PLAN_EXIT_REMINDER, subscribe(cb) for reactive UI
 │   │   ├── planSessionResume.ts
 │   │   ├── ptlRetry.ts
 │   │   ├── skillTokenCount.ts            # Pure: skill frontmatter token counter (name+description+whenToUse+systemPrompt)
@@ -74,7 +75,7 @@ leo/
 │   │   ├── tokenEstimator.ts
 │   │   ├── toolTokenCount.ts             # Pure: tool descriptor token counter with -500/tool overhead per SRS §5.3
 │   │   ├── truncator.ts
-│   │   └── types.ts
+│   │   └── types.ts                       # LEO_PREAMBLE + PLAN_MODE_RULE always-on system-prompt segments; ThreadId, AgentHistoryMessage, RagHit, AssembledPrompt typings
 │   ├── chat/                            # Chat message store, streaming, attachments, usage, diff, run state, group read-only
 │   │   ├── attachments.ts
 │   │   ├── attachmentsStore.ts
@@ -179,7 +180,7 @@ leo/
 │   ├── storage/                         # IndexedDB stores, vault adapter, safeStorage, vectors
 │   │   ├── conversationSchema.ts
 │   │   ├── conversationStore.ts
-│   │   ├── planStore.ts
+│   │   ├── planStore.ts                  # Slug-per-sessionId Map<sessionId,slug>; currentSlug/writePlan/readPlan/resetSlug/setSlug all take sessionId; path-traversal guard on configuredDir; default `.leo/plans`
 │   │   ├── safeStorage.ts
 │   │   ├── threadsStore.ts
 │   │   ├── vaultAdapter.ts
@@ -187,6 +188,7 @@ leo/
 │   ├── tools/                           # Tool registry + builtin + user tool loader + zod adapter
 │   │   ├── builtin/
 │   │   │   ├── appendToNote.ts
+│   │   │   ├── askUserQuestion.ts        # AskUserQuestion tool — schema {question, header?, options?[2..4], multiSelect?}; isReadOnly, forbidden in subagent; routes to ClarifyingQuestionController; allowed in plan mode
 │   │   │   ├── createFolder.ts
 │   │   │   ├── createNote.ts
 │   │   │   ├── delegateExternal.ts       # delegate_external tool — schema enforces 1–16384 char ask, owns own confirmation (requiresConfirmation:false), wraps DelegateExternalToolResult in {ok:true,data:…} so structured payload survives serializer
@@ -206,8 +208,8 @@ leo/
 │   │   ├── user/
 │   │   │   ├── userToolsLoader.ts
 │   │   │   └── wireUserTools.ts
-│   │   ├── planModeTools.ts
-│   │   ├── todoWriteTool.ts
+│   │   ├── planModeTools.ts              # EnterPlanMode + ExitPlanMode tools — note-authoring long descriptions; EnterPlanMode resolves planFilePath via planStore.currentSlug(threadId); ExitPlanMode writes plan on approve and edit, returns buildApprovedPlanMessage with file-path line; subagent + empty-plan short-circuits
+│   │   ├── todoWriteTool.ts              # TodoWrite tool — note-authoring long description (when/when-not-to-use, examples, states, one-in-progress invariant); schema {id, content, status, priority?, activeForm?}
 │   │   ├── toolRegistry.ts
 │   │   ├── types.ts
 │   │   └── zodAdapter.ts
@@ -256,7 +258,9 @@ leo/
 │   │   │   ├── BottomLiveIndicator.tsx
 │   │   │   ├── ChatRoot.stories.tsx
 │   │   │   ├── ChatRootBlocks.stories.tsx
-│   │   │   ├── ChatRoot.tsx
+│   │   │   ├── ChatRoot.tsx                          # Chat shell — useSyncExternalStore over planModeSource; toggles is-plan-mode class + data-plan-mode attr on root; forwards planModeActive to HeaderBar
+│   │   │   ├── ClarifyingQuestionDialog.stories.tsx  # Storybook fixtures for ClarifyingQuestionDialog (idle/single-select 2/single-select 4/multi-select/freeform-only)
+│   │   │   ├── ClarifyingQuestionDialog.tsx          # Inline dialog for AskUserQuestion — radio/checkbox/textarea variants, Send/Cancel, Esc cancels; mirrors PlanApprovalDialog source/subscribe pattern
 │   │   │   ├── codeBlockEnhancer.ts
 │   │   │   ├── ComposerInput.stories.tsx
 │   │   │   ├── ComposerInput.tsx                   # Textarea + slash picker + @ mention picker + paste/drop + paperclip
@@ -264,7 +268,7 @@ leo/
 │   │   │   ├── ContextIndicator.tsx
 │   │   │   ├── fuzzyMatch.ts
 │   │   │   ├── HeaderBar.stories.tsx
-│   │   │   ├── HeaderBar.tsx
+│   │   │   ├── HeaderBar.tsx               # Chat header — title, optional stats slot, optional `Plan mode` pill (data-slot="plan-mode-pill") gated by planModeActive prop
 │   │   │   ├── HeaderStat.tsx
 │   │   │   ├── HeaderStatsLive.tsx
 │   │   │   ├── headerStatsSources.ts
@@ -281,6 +285,7 @@ leo/
 │   │   │   ├── MessageList.tsx
 │   │   │   ├── PlanApprovalDialog.stories.tsx
 │   │   │   ├── PlanApprovalDialog.tsx
+│   │   │   ├── planModeSource.ts          # makePlanModeSource(controller, getActiveThread) — { getMode, subscribe } adapter for useSyncExternalStore-driven plan-mode UI
 │   │   │   ├── scrollAnchoring.ts
 │   │   │   ├── SentAttachmentList.stories.tsx
 │   │   │   ├── SentAttachmentList.tsx              # Chips on the sent user bubble (renders `record.blocks` image/document)

@@ -107,7 +107,7 @@ export class PlanSessionResume {
     }
     let existing: string | null = null;
     try {
-      existing = await this.planStore.readPlan();
+      existing = await this.planStore.readPlan(thread.id);
     } catch {
       existing = null;
     }
@@ -119,7 +119,7 @@ export class PlanSessionResume {
       });
       return;
     }
-    await this.planStore.writePlan(hit.content);
+    await this.planStore.writePlan(thread.id, hit.content);
     this.logger?.info('plan.resume.plan.write', { threadId: thread.id, tier: hit.tier });
   }
 

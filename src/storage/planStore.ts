@@ -65,7 +65,8 @@ export class PlanStore {
   private readonly logger: Logger | undefined;
   private readonly dir: string;
   private readonly random: () => number;
-  private cachedSlug: string | null = null;
+  // TODO: persist slug in ChatMessageRecord for filename continuity across reload
+  private readonly slugBySession = new Map<string, string>();
 
   constructor(opts: PlanStoreOptions) {
     this.vault = opts.vault;
@@ -82,44 +83,52 @@ export class PlanStore {
     }
   }
 
-  async currentSlug(): Promise<string> {
-    if (this.cachedSlug !== null) return this.cachedSlug;
+  async currentSlug(sessionId: string): Promise<string> {
+    const cached = this.slugBySession.get(sessionId);
+    if (cached !== undefined) return cached;
     for (let i = 0; i < MAX_SLUG_RETRIES + 1; i += 1) {
       const candidate = this.randomSlug();
       const path = this.planPath(candidate);
       const exists = await this.vault.exists(path).catch(() => false);
       if (!exists) {
-        this.cachedSlug = candidate;
-        this.logger?.debug('plan.slug.generated', { slug: candidate, retries: i });
+        this.slugBySession.set(sessionId, candidate);
+        this.logger?.debug('plan.slug.generated', { sessionId, slug: candidate, retries: i });
         return candidate;
       }
-      this.logger?.debug('plan.slug.collision', { slug: candidate, retries: i });
+      this.logger?.debug('plan.slug.collision', { sessionId, slug: candidate, retries: i });
     }
-    this.logger?.error('plan.slug.collision-exhausted', { retries: MAX_SLUG_RETRIES });
+    this.logger?.error('plan.slug.collision-exhausted', { sessionId, retries: MAX_SLUG_RETRIES });
     throw new PlanSlugExhausted(
       `could not generate a unique plan slug after ${MAX_SLUG_RETRIES} retries`,
     );
   }
 
-  resetSlug(): void {
-    this.cachedSlug = null;
+  setSlug(sessionId: string, slug: string): void {
+    if (!/^[a-z]+-[a-z]+$/.test(slug)) {
+      throw new PlanPathEscape(`invalid plan slug: ${slug}`);
+    }
+    this.slugBySession.set(sessionId, slug);
   }
 
-  async writePlan(content: string): Promise<string> {
-    const slug = await this.currentSlug();
+  resetSlug(sessionId: string): void {
+    this.slugBySession.delete(sessionId);
+  }
+
+  async writePlan(sessionId: string, content: string): Promise<string> {
+    const slug = await this.currentSlug(sessionId);
     const path = this.planPath(slug);
     await this.vault.mkdir(this.dir);
     await this.vault.write(path, content);
-    this.logger?.info('plan.write', { slug, bytes: content.length });
+    this.logger?.info('plan.write', { sessionId, slug, bytes: content.length });
     return path;
   }
 
-  async readPlan(): Promise<string | null> {
-    const slug = await this.currentSlug();
+  async readPlan(sessionId: string): Promise<string | null> {
+    const slug = await this.currentSlug(sessionId);
     const path = this.planPath(slug);
     if (!(await this.vault.exists(path))) return null;
     const content = await this.vault.read(path);
-    this.logger?.info('plan.read', { slug, bytes: content.length });
+    this.logger?.info('plan.read', { sessionId, slug, bytes: content.length });
     return content;
   }
 
