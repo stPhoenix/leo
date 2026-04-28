@@ -1,0 +1,5 @@
+#!/bin/sh
+# Reindex GitNexus graph after each commit.
+# Detached + nohup so the shell returns immediately; logs to .git/gitnexus-analyze.log.
+nohup npx gitnexus analyze --skip-agents-md \
+  >> "$(git rev-parse --git-dir)/gitnexus-analyze.log" 2>&1 &

@@ -1,0 +1,436 @@
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
+import type { ChatMessageRecord } from '@/chat/types';
+import type { ChatMessageStore } from '@/chat/messageStore';
+import { enhanceCodeBlocks, type CodeBlockClipboard } from './codeBlockEnhancer';
+import { isNearBottom } from './scrollAnchoring';
+import { InlineEditor, MessageActionBar, type MessageActions } from './MessageActionBar';
+import { lookupWidget } from './widgets/registry';
+import { AssistantBlocks, type ToolUseBlockSlots } from './blocks';
+import { SentAttachmentList } from './SentAttachmentList';
+
+export interface MarkdownRenderFn {
+  (text: string, container: HTMLElement): (() => void) | void;
+}
+
+function formatBubbleTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (sameDay) return time;
+  const date = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return `${date} · ${time}`;
+}
+
+export interface MessageListProps {
+  readonly store: ChatMessageStore;
+  readonly renderMarkdown: MarkdownRenderFn;
+  readonly clipboard: CodeBlockClipboard;
+  readonly setIcon?: (el: HTMLElement, name: string) => void;
+  readonly actions?: MessageActions;
+  readonly toolUseSlots?: ToolUseBlockSlots;
+}
+
+export function MessageList(props: MessageListProps): JSX.Element {
+  const messages = useSyncExternalStore<readonly ChatMessageRecord[]>(
+    props.store.subscribe,
+    props.store.getSnapshot,
+    props.store.getSnapshot,
+  );
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const wasAtBottomRef = useRef<boolean>(true);
+  const [pendingNew, setPendingNew] = useState<number>(0);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const startEdit = useCallback((id: string) => setEditingId(id), []);
+  const endEdit = useCallback(() => setEditingId(null), []);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el === null) return;
+    if (wasAtBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+      setPendingNew(0);
+    } else {
+      setPendingNew((prev) => prev + 1);
+    }
+  }, [messages.length]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el === null) return;
+    const onScroll = (): void => {
+      wasAtBottomRef.current = isNearBottom({
+        scrollTop: el.scrollTop,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+      });
+      if (wasAtBottomRef.current) setPendingNew(0);
+    };
+    el.addEventListener('scroll', onScroll);
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  const jumpToLatest = (): void => {
+    const el = scrollRef.current;
+    if (el === null) return;
+    el.scrollTop = el.scrollHeight;
+    wasAtBottomRef.current = true;
+    setPendingNew(0);
+  };
+
+  return (
+    <section
+      className="leo-message-list"
+      role="log"
+      aria-live="polite"
+      aria-relevant="additions"
+      aria-label="conversation"
+      data-region="messages"
+    >
+      <div className="leo-message-list-scroll" ref={scrollRef} data-slot="scroll-host">
+        {messages.length === 0 ? (
+          <div className="leo-message-list-empty" data-slot="empty-state">
+            Start a conversation — Leo's responses will appear here.
+          </div>
+        ) : (
+          <ol className="leo-message-list-items">
+            {messages.map((m) => (
+              <li
+                key={m.id}
+                className={`leo-message leo-message-${m.role}`}
+                data-role={m.role}
+                role="listitem"
+              >
+                {m.role === 'user' ? (
+                  <UserBubble
+                    record={m}
+                    {...(props.actions !== undefined ? { actions: props.actions } : {})}
+                    {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+                    editing={editingId === m.id}
+                    onStartEdit={startEdit}
+                    onFinishEdit={endEdit}
+                  />
+                ) : m.role === 'banner' ? (
+                  <BannerRow record={m} />
+                ) : m.role === 'widget' ? (
+                  <WidgetRow record={m} />
+                ) : (
+                  <AssistantBubble
+                    record={m}
+                    renderMarkdown={props.renderMarkdown}
+                    clipboard={props.clipboard}
+                    setIcon={props.setIcon}
+                    {...(props.actions !== undefined ? { actions: props.actions } : {})}
+                    {...(props.toolUseSlots !== undefined
+                      ? { toolUseSlots: props.toolUseSlots }
+                      : {})}
+                  />
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+      {pendingNew > 0 ? (
+        <button
+          type="button"
+          className="leo-jump-to-latest"
+          onClick={jumpToLatest}
+          aria-label={`Jump to latest (${pendingNew} new)`}
+        >
+          ↓ Jump to latest ({pendingNew})
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+interface UserBubbleProps {
+  readonly record: ChatMessageRecord;
+  readonly actions?: MessageActions;
+  readonly setIcon?: (el: HTMLElement, name: string) => void;
+  readonly editing: boolean;
+  readonly onStartEdit: (id: string) => void;
+  readonly onFinishEdit: () => void;
+}
+
+function UserBubble(props: UserBubbleProps): JSX.Element {
+  const { record } = props;
+  if (props.editing && props.actions?.editAndResend !== undefined) {
+    return (
+      <div className="leo-bubble leo-bubble-user is-editing">
+        <header className="leo-bubble-header">
+          <span className="leo-bubble-role">You</span>
+          <time className="leo-bubble-time" dateTime={record.createdAt}>
+            {formatBubbleTime(record.createdAt)}
+          </time>
+        </header>
+        <InlineEditor
+          initial={record.content}
+          onSave={(text) => {
+            props.actions!.editAndResend!(record.id, text);
+            props.onFinishEdit();
+          }}
+          onCancel={props.onFinishEdit}
+        />
+      </div>
+    );
+  }
+  const userBlocks = record.blocks ?? [];
+  const hasAttachments = userBlocks.some((b) => b.type === 'image' || b.type === 'document');
+  return (
+    <div className="leo-bubble leo-bubble-user">
+      <header className="leo-bubble-header">
+        <span className="leo-bubble-role">You</span>
+        <time className="leo-bubble-time" dateTime={record.createdAt}>
+          {formatBubbleTime(record.createdAt)}
+        </time>
+      </header>
+      {hasAttachments ? (
+        <SentAttachmentList
+          blocks={userBlocks}
+          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+        />
+      ) : null}
+      <div className="leo-bubble-body" data-slot="user-text">
+        {record.content}
+      </div>
+      {props.actions !== undefined ? (
+        <MessageActionBar
+          record={record}
+          actions={props.actions}
+          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+          onStartEdit={props.onStartEdit}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+interface AssistantBubbleProps {
+  readonly record: ChatMessageRecord;
+  readonly renderMarkdown: MarkdownRenderFn;
+  readonly clipboard: CodeBlockClipboard;
+  readonly setIcon?: (el: HTMLElement, name: string) => void;
+  readonly actions?: MessageActions;
+  readonly toolUseSlots?: ToolUseBlockSlots;
+}
+
+function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const blocks = props.record.blocks;
+  const useBlocks = blocks !== undefined && blocks.length > 0;
+
+  useEffect(() => {
+    if (useBlocks) return;
+    const host = hostRef.current;
+    if (host === null) return;
+    host.replaceChildren();
+    const cleanupMarkdown = props.renderMarkdown(props.record.content, host);
+    const cleanupCodeButtons = enhanceCodeBlocks(host, {
+      clipboard: props.clipboard,
+      ...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {}),
+    });
+    return () => {
+      cleanupCodeButtons();
+      if (typeof cleanupMarkdown === 'function') cleanupMarkdown();
+      host.replaceChildren();
+    };
+  }, [
+    useBlocks,
+    props.record.id,
+    props.record.content,
+    props.renderMarkdown,
+    props.clipboard,
+    props.setIcon,
+  ]);
+
+  const status = props.record.status;
+  const streaming = status === 'streaming';
+  const classes = [
+    'leo-bubble',
+    'leo-bubble-assistant',
+    streaming ? 'is-streaming' : '',
+    status !== undefined ? `status-${status}` : '',
+  ]
+    .filter((s) => s.length > 0)
+    .join(' ');
+
+  const lastBlockIsText = useBlocks && blocks![blocks!.length - 1]?.type === 'text';
+
+  return (
+    <div className={classes} data-status={status ?? 'done'}>
+      <header className="leo-bubble-header">
+        <span className="leo-bubble-role">Leo</span>
+        <time className="leo-bubble-time" dateTime={props.record.createdAt}>
+          {formatBubbleTime(props.record.createdAt)}
+        </time>
+      </header>
+      {useBlocks ? (
+        <AssistantBlocks
+          messageId={props.record.id}
+          blocks={blocks!}
+          streaming={streaming}
+          renderMarkdown={props.renderMarkdown}
+          clipboard={props.clipboard}
+          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+          {...(props.toolUseSlots !== undefined ? { toolUseSlots: props.toolUseSlots } : {})}
+        />
+      ) : (
+        <div className="leo-bubble-body" data-slot="assistant-markdown" ref={hostRef} />
+      )}
+      {streaming && !useBlocks ? (
+        <span className="leo-streaming-cursor" data-slot="streaming-cursor" aria-hidden="true" />
+      ) : null}
+      {streaming && useBlocks && !lastBlockIsText ? (
+        <span
+          className="leo-streaming-cursor"
+          data-slot="streaming-cursor-trailing"
+          aria-hidden="true"
+        />
+      ) : null}
+      {!streaming && props.record.tokens !== undefined ? (
+        <TokenUsageFooter
+          input={props.record.tokens.input}
+          output={props.record.tokens.output}
+          total={props.record.tokens.total}
+          estimatedInput={props.record.tokens.estimatedInput === true}
+          estimatedOutput={props.record.tokens.estimatedOutput === true}
+          {...(props.record.tokens.reasoning !== undefined
+            ? { reasoning: props.record.tokens.reasoning }
+            : {})}
+          {...(props.record.tokens.cacheCreation !== undefined
+            ? { cacheCreation: props.record.tokens.cacheCreation }
+            : {})}
+          {...(props.record.tokens.cacheRead !== undefined
+            ? { cacheRead: props.record.tokens.cacheRead }
+            : {})}
+        />
+      ) : null}
+      {!streaming && props.actions !== undefined ? (
+        <MessageActionBar
+          record={props.record}
+          actions={props.actions}
+          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+interface TokenUsageFooterProps {
+  readonly input: number;
+  readonly output: number;
+  readonly total: number;
+  readonly estimatedInput: boolean;
+  readonly estimatedOutput: boolean;
+  readonly reasoning?: number;
+  readonly cacheCreation?: number;
+  readonly cacheRead?: number;
+}
+
+function TokenUsageFooter(props: TokenUsageFooterProps): JSX.Element {
+  const totalEstimated = props.estimatedInput || props.estimatedOutput;
+  const prefix = (est: boolean): string => (est ? '~' : '');
+  return (
+    <footer className="leo-bubble-usage" data-slot="assistant-usage" aria-label="token usage">
+      <span data-slot="usage-input" data-estimated={props.estimatedInput ? 'true' : 'false'}>
+        input {prefix(props.estimatedInput)}
+        {props.input}
+        {(props.cacheRead !== undefined && props.cacheRead > 0) ||
+        (props.cacheCreation !== undefined && props.cacheCreation > 0) ? (
+          <span className="leo-usage-cache" data-slot="usage-cache">
+            {' '}
+            (
+            {props.cacheRead !== undefined && props.cacheRead > 0 ? (
+              <span data-slot="usage-cache-read">cache hit {props.cacheRead}</span>
+            ) : null}
+            {props.cacheRead !== undefined &&
+            props.cacheRead > 0 &&
+            props.cacheCreation !== undefined &&
+            props.cacheCreation > 0
+              ? ', '
+              : ''}
+            {props.cacheCreation !== undefined && props.cacheCreation > 0 ? (
+              <span data-slot="usage-cache-write">cache write {props.cacheCreation}</span>
+            ) : null}
+            )
+          </span>
+        ) : null}
+      </span>
+      <span data-slot="usage-output" data-estimated={props.estimatedOutput ? 'true' : 'false'}>
+        output {prefix(props.estimatedOutput)}
+        {props.output}
+        {props.reasoning !== undefined && props.reasoning > 0 ? (
+          <span className="leo-usage-reasoning" data-slot="usage-reasoning">
+            {' '}
+            (thinking {props.reasoning})
+          </span>
+        ) : null}
+      </span>
+      <span data-slot="usage-total" data-estimated={totalEstimated ? 'true' : 'false'}>
+        total {prefix(totalEstimated)}
+        {props.total}
+      </span>
+    </footer>
+  );
+}
+
+function WidgetRow({ record }: { record: ChatMessageRecord }): JSX.Element {
+  const widget = record.widget;
+  if (widget === undefined) {
+    return (
+      <div className="leo-widget leo-widget-missing" data-slot="widget-missing">
+        widget payload missing
+      </div>
+    );
+  }
+  const Component = lookupWidget(widget.kind);
+  if (Component === null) {
+    return (
+      <div
+        className="leo-widget leo-widget-unknown"
+        data-slot="widget-unknown"
+        data-widget-kind={widget.kind}
+      >
+        unknown widget: {widget.kind}
+      </div>
+    );
+  }
+  return (
+    <div
+      className={`leo-widget leo-widget-${widget.kind}`}
+      data-slot="widget"
+      data-widget-kind={widget.kind}
+    >
+      <Component props={widget.props} />
+    </div>
+  );
+}
+
+function BannerRow({ record }: { record: ChatMessageRecord }): JSX.Element {
+  const kind = record.banner?.kind ?? 'cancelled';
+  const preformatted = kind === 'info';
+  return (
+    <div
+      className={`leo-banner leo-banner-${kind}`}
+      role="status"
+      data-slot={`banner-${kind}`}
+      data-banner-kind={kind}
+      data-tool-count={record.banner?.toolCount ?? ''}
+      {...(preformatted
+        ? { style: { whiteSpace: 'pre', fontFamily: 'var(--font-monospace)' } }
+        : {})}
+    >
+      {record.content}
+    </div>
+  );
+}

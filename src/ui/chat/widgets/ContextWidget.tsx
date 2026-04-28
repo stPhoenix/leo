@@ -1,0 +1,247 @@
+import type { ContextData } from '@/agent/contextAnalyzer';
+import { EMPTY_BREAKDOWN, type MessageBreakdown } from '@/agent/messageBreakdown';
+import { type CategoryId, type ContextCategory } from '@/ui/contextGrid';
+import {
+  AUTOCOMPACT_BUFFER_TOKENS,
+  MANUAL_COMPACT_BUFFER_TOKENS,
+  MAX_OUTPUT_TOKENS_DEFAULT,
+  WARNING_THRESHOLD_BUFFER_TOKENS,
+  effectiveContextWindow,
+} from '@/agent/compactConstants';
+import { registerWidget, type WidgetComponentProps } from './registry';
+
+export interface ContextWidgetPayload {
+  readonly data: ContextData;
+  readonly contextWindow: number;
+}
+
+const CATEGORY_LABELS: Readonly<Record<CategoryId, string>> = {
+  system_prompt: 'system prompt',
+  system_tools: 'built-in tools',
+  mcp_tools: 'mcp tools',
+  mcp_tools_deferred: 'mcp tools (deferred)',
+  system_tools_deferred: 'built-in tools (deferred)',
+  custom_agents: 'custom agents',
+  memory_files: 'memory files',
+  skills: 'skills',
+  messages: 'messages',
+  compact_buffer: 'compact buffer',
+  free_space: 'free',
+};
+
+export function ContextWidget({ props }: WidgetComponentProps): JSX.Element {
+  const payload = props as ContextWidgetPayload;
+  return <ContextWidgetBody data={payload.data} contextWindow={payload.contextWindow} />;
+}
+
+interface BodyProps {
+  readonly data: ContextData;
+  readonly contextWindow: number;
+}
+
+function ContextWidgetBody({ data, contextWindow }: BodyProps): JSX.Element {
+  const window = contextWindow > 0 ? contextWindow : 1;
+  const used = sumUsed(data);
+  const reserved = Math.min(AUTOCOMPACT_BUFFER_TOKENS, Math.max(0, window - used));
+  const free = Math.max(0, window - used - reserved);
+  const categories = buildCategories(data, reserved, free);
+  const totalTokens = data.totalTokens > 0 ? data.totalTokens : used;
+  const pct = Math.min(100, Math.round((totalTokens / window) * 100));
+  const pctReserved = Math.min(100 - pct, Math.round((reserved / window) * 100));
+  const pctLeft = Math.max(0, 100 - pct - pctReserved);
+  const source = data.tokenTotalSource === 'api' ? 'measured' : 'estimated';
+  const legend = categories.filter(
+    (c) => c.isFreeSpace !== true && c.isReserved !== true && c.tokens > 0,
+  );
+  const arcs = buildArcs(categories, window);
+  const effective = effectiveContextWindow(window, MAX_OUTPUT_TOKENS_DEFAULT);
+  const warnAt = effective - WARNING_THRESHOLD_BUFFER_TOKENS;
+  const critAt = effective - MANUAL_COMPACT_BUFFER_TOKENS;
+  const level: 'ok' | 'warn' | 'critical' =
+    totalTokens >= critAt ? 'critical' : totalTokens >= warnAt ? 'warn' : 'ok';
+
+  return (
+    <section
+      className={`leo-context-widget is-level-${level}`}
+      data-slot="context-widget"
+      data-level={level}
+      aria-label="Context usage breakdown"
+    >
+      <header className="leo-context-widget-head">
+        <span className="leo-context-widget-title">Context</span>
+        <span className="leo-context-widget-total" data-slot="widget-total">
+          {fmt(totalTokens)} / {fmt(window)} ({pct}% used · {pctLeft}% left
+          {pctReserved > 0 ? ` · ${pctReserved}% reserved` : ''})
+        </span>
+        <span className="leo-context-widget-meta" data-slot="widget-meta">
+          {source} · {data.model} · {data.pipelineMessageCount} msgs
+          {data.skillCountFailed ? ' · skills: count failed' : ''}
+        </span>
+      </header>
+      <div className="leo-context-widget-chart" data-slot="widget-chart">
+        <ContextDonut arcs={arcs} pct={pct} totalTokens={totalTokens} window={window} />
+        <ul className="leo-context-widget-legend" data-slot="widget-legend">
+          {legend.map((c) => (
+            <li
+              key={c.id}
+              className={`leo-context-widget-legend-item leo-cat-${c.id}`}
+              data-category={c.id}
+            >
+              <span className="leo-context-widget-legend-swatch" aria-hidden="true">
+                ◉
+              </span>
+              <span className="leo-context-widget-legend-label">{c.label}</span>
+              <span className="leo-context-widget-legend-value">{fmt(c.tokens)}</span>
+              {c.id === 'messages' ? (
+                <MessagesSubLine breakdown={data.messageBreakdown ?? EMPTY_BREAKDOWN} />
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+  );
+}
+
+interface DonutArc {
+  readonly id: CategoryId;
+  readonly len: number;
+  readonly offset: number;
+}
+
+const DONUT_RADIUS = 56;
+const DONUT_STROKE = 18;
+const DONUT_SIZE = 140;
+const DONUT_CIRCUMFERENCE = 2 * Math.PI * DONUT_RADIUS;
+
+function buildArcs(categories: readonly ContextCategory[], window: number): readonly DonutArc[] {
+  const out: DonutArc[] = [];
+  let cursor = 0;
+  for (const c of categories) {
+    if (c.isFreeSpace === true || c.isReserved === true || c.tokens <= 0) continue;
+    const len = (c.tokens / window) * DONUT_CIRCUMFERENCE;
+    out.push({ id: c.id, len, offset: cursor });
+    cursor += len;
+  }
+  return out;
+}
+
+interface DonutProps {
+  readonly arcs: readonly DonutArc[];
+  readonly pct: number;
+  readonly totalTokens: number;
+  readonly window: number;
+}
+
+function ContextDonut({ arcs, pct, totalTokens, window }: DonutProps): JSX.Element {
+  const center = DONUT_SIZE / 2;
+  return (
+    <div className="leo-context-widget-donut" data-slot="widget-donut">
+      <svg
+        className="leo-context-widget-donut-svg"
+        viewBox={`0 0 ${DONUT_SIZE} ${DONUT_SIZE}`}
+        role="img"
+        aria-label={`Context usage: ${fmt(totalTokens)} of ${fmt(window)} tokens (${pct}%)`}
+      >
+        <circle
+          className="leo-context-widget-donut-track"
+          cx={center}
+          cy={center}
+          r={DONUT_RADIUS}
+          fill="none"
+          strokeWidth={DONUT_STROKE}
+        />
+        <g transform={`rotate(-90 ${center} ${center})`}>
+          {arcs.map((arc) => (
+            <circle
+              key={arc.id}
+              className={`leo-context-widget-donut-arc leo-cat-${arc.id}`}
+              data-category={arc.id}
+              cx={center}
+              cy={center}
+              r={DONUT_RADIUS}
+              fill="none"
+              strokeWidth={DONUT_STROKE}
+              strokeDasharray={`${arc.len} ${DONUT_CIRCUMFERENCE - arc.len}`}
+              strokeDashoffset={-arc.offset}
+              stroke="currentColor"
+            />
+          ))}
+        </g>
+      </svg>
+      <div className="leo-context-widget-donut-center" aria-hidden="true">
+        <span className="leo-context-widget-donut-pct">{pct}%</span>
+        <span className="leo-context-widget-donut-sub">used</span>
+      </div>
+    </div>
+  );
+}
+
+function sumUsed(data: ContextData): number {
+  return (
+    data.systemTokens +
+    data.memoryFileTokens +
+    data.builtInToolTokens +
+    data.mcpToolTokens +
+    data.customAgentTokens +
+    data.slashCommandTokens +
+    data.messageTokens +
+    data.skillTokens
+  );
+}
+
+function buildCategories(data: ContextData, reserved: number, free: number): ContextCategory[] {
+  return [
+    { id: 'system_prompt', label: CATEGORY_LABELS.system_prompt, tokens: data.systemTokens },
+    { id: 'system_tools', label: CATEGORY_LABELS.system_tools, tokens: data.builtInToolTokens },
+    { id: 'mcp_tools', label: CATEGORY_LABELS.mcp_tools, tokens: data.mcpToolTokens },
+    { id: 'custom_agents', label: CATEGORY_LABELS.custom_agents, tokens: data.customAgentTokens },
+    { id: 'memory_files', label: CATEGORY_LABELS.memory_files, tokens: data.memoryFileTokens },
+    { id: 'skills', label: CATEGORY_LABELS.skills, tokens: data.skillTokens },
+    { id: 'messages', label: CATEGORY_LABELS.messages, tokens: data.messageTokens },
+    {
+      id: 'compact_buffer',
+      label: CATEGORY_LABELS.compact_buffer,
+      tokens: reserved,
+      isReserved: true,
+    },
+    { id: 'free_space', label: CATEGORY_LABELS.free_space, tokens: free, isFreeSpace: true },
+  ];
+}
+
+function fmt(n: number): string {
+  return n.toLocaleString('en-US');
+}
+
+interface MessagesSubLineProps {
+  readonly breakdown: MessageBreakdown;
+}
+
+function MessagesSubLine({ breakdown }: MessagesSubLineProps): JSX.Element | null {
+  const parts: { label: string; tokens: number }[] = [];
+  if (breakdown.toolResultTokens > 0)
+    parts.push({ label: 'tool_result', tokens: breakdown.toolResultTokens });
+  if (breakdown.toolCallTokens > 0)
+    parts.push({ label: 'tool_use', tokens: breakdown.toolCallTokens });
+  if (breakdown.attachmentTokens > 0)
+    parts.push({ label: 'attachments', tokens: breakdown.attachmentTokens });
+  const text = breakdown.assistantTextTokens + breakdown.userTextTokens;
+  if (text > 0) parts.push({ label: 'text', tokens: text });
+  if (parts.length <= 1) return null;
+  return (
+    <span
+      className="leo-context-widget-legend-sub"
+      data-slot="messages-breakdown"
+      aria-label="messages breakdown"
+    >
+      {parts.map((p, i) => (
+        <span key={p.label} className="leo-context-widget-legend-sub-part">
+          {i > 0 ? ' · ' : ''}
+          {p.label} {fmt(p.tokens)}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+registerWidget('context', ContextWidget);

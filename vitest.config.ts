@@ -1,0 +1,17 @@
+import { defineConfig } from 'vitest/config';
+import { fileURLToPath } from 'node:url';
+
+export default defineConfig({
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+      obsidian: fileURLToPath(new URL('./tests/_mocks/obsidian.ts', import.meta.url)),
+    },
+  },
+  test: {
+    environment: 'node',
+    include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
+    exclude: ['node_modules/**', 'tests/llm/**'],
+    reporters: ['default'],
+  },
+});

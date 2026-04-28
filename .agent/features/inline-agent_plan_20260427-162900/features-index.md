@@ -1,0 +1,22 @@
+# Features index
+
+| # | id | slug | name | purpose | deps | ui-needed | priority | covers |
+|---|----|------|------|---------|------|-----------|----------|--------|
+| 1 | F01 | adapter-scaffold | Adapter scaffold + DI registration | Skeleton `InlineAgentAdapter` class, ESLint isolation rule extension, `main.ts` registration with `providerFactory` DI. | — | no | high | FR-IA-01, FR-IA-02, FR-IA-04, FR-IA-05a |
+| 2 | F02 | config-schema | Config schema + system prompt + caveat | Full Zod schema for `data.json` config, default values, sandbox-caveat description, built-in system prompt module. | F01 | no | high | FR-IA-03, FR-IA-05, FR-IA-06, FR-IA-07, FR-IA-08, NFR-IA-01 |
+| 3 | F03 | sandbox-primitives | Sandbox primitives | `Sandbox` class — init/resolve/check/bytes/cleanup; orphan sweep on construction; symlink + path-prefix guard. | F01 | no | high | FR-IA-09, FR-IA-10, FR-IA-11, FR-IA-12, NFR-IA-04 |
+| 4 | F04 | run-state-budgets | Run state + budget helpers | `InlineAgentRunState`, `budgets.ts` cap selection, per-step split (FR-IA-41 helper), token tick, wall-clock controller composition. | F01 | no | high | FR-IA-41, FR-IA-42, FR-IA-43, FR-IA-44 |
+| 5 | F05 | event-bridge | Event bridge + log elision | LangGraph stream → `ExternalEvent` translator; argument elision rules; node-level metadata logging; error mapping. | F01 | no | high | FR-IA-45, FR-IA-46, FR-IA-47, FR-IA-48, NFR-IA-05 |
+| 6 | F06 | tool-fetch-url | `fetch_url` tool | HTTP/HTTPS fetch with allow/blocklist precedence, timeout, byte-cap truncation, redirect re-checking, request log without payload. | F03, F05 | no | high | FR-IA-13, FR-IA-14, FR-IA-15, FR-IA-16, NFR-IA-02 |
+| 7 | F07 | tool-search-web | `search_web` Tavily tool | Tavily-backed search with SafeStorage api-key indirection, byte cap, status-mapped errors, payload elision. | F03, F05 | no | high | FR-IA-17, FR-IA-18, FR-IA-19, FR-IA-20, FR-IA-21, FR-IA-22, FR-IA-23 |
+| 8 | F08 | tool-file-ops | Sandbox file ops tools | `read_file`, `write_file`, `list_dir`, `delete_file` factories with sandbox-scoped IO + error mapping. | F03, F05 | no | high | FR-IA-24, FR-IA-25, FR-IA-26, FR-IA-27 |
+| 9 | F09 | tool-publish-artifact | `publish_artifact` + flush | Artifact nomination buffer, dedupe, max-count, terminal flush emitting `file` events, missing-artifact warn-skip. | F03, F05 | no | high | FR-IA-28, FR-IA-29, FR-IA-30, FR-IA-31 |
+| 10 | F10 | tool-extract-note | `extract_note` + message rewriter | Multistep-only note tool, `NoteRecord` append, raw-tool-result→stub rewriter, step-boundary message drop. | F04, F05 | no | high | FR-IA-39 |
+| 11 | F11 | router-classify | Classifier router node | `classify_task` structured-output node with runtime tool inventory, retry, fallback to simple, routing-mode override. | F01, F02, F04, F05 | no | high | FR-IA-32, FR-IA-33, FR-IA-34 |
+| 12 | F12 | branch-simple | Simple branch | `createReactAgent` over inline tools (excluding `extract_note`); termination + iteration-cap path with partial-artifact flush. | F04, F05, F06, F07, F08, F09 | no | high | FR-IA-35, FR-IA-36 |
+| 13 | F13 | multistep-planner | Planner node | Accept classifier `initialPlan` or generate via structured-output; clamp to `[1, planMaxSteps]`; empty-plan fall-back to simple. | F04, F05, F11 | no | high | FR-IA-37 |
+| 14 | F14 | multistep-research-step | Research step node | Bounded `createReactAgent` per plan step over multistep tool subset (no `publish_artifact`); per-step budget split + step-end raw-message drop. | F04, F05, F06, F07, F08, F10, F13 | no | high | FR-IA-38, FR-IA-41 |
+| 15 | F15 | multistep-synthesize | Synthesize node | Notes-only prompt; `publish_artifact` allowed only here; final assistant text + termination. | F04, F05, F09, F14 | no | high | FR-IA-40 |
+| 16 | F16 | graph-wiring | Top-level StateGraph + recursion guard + cancellation | `graph.ts` wiring all nodes, conditional edges, composed AbortSignal, recursion-guard tool-list assertions, sandbox cleanup `finally`. | F11, F12, F15 | no | high | FR-IA-49, FR-IA-50, FR-IA-51 |
+| 17 | F17 | bundle-budget | Bundle budget verification | Adjust `.agent/budgets/bundle-baseline.json` headroom; re-run `pnpm check:bundle`; document delta. | F16 | no | high | NFR-IA-03 |
+| 18 | F18 | test-fixtures-stories | Test fixtures + Storybook scenarios | Fake `ChatModel` driver, msw Tavily fixtures, cross-cutting integration tests, Storybook fixtures showing inline-agent runs in `ExternalAgentWidget` (simple/multistep/classifier-fallback). | F16 | yes | high | NFR-IA-06, NFR-IA-07 |
