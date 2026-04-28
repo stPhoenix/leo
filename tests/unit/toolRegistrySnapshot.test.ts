@@ -12,6 +12,11 @@ import { createAppendToNoteTool } from '@/tools/builtin/appendToNote';
 import { createCreateFolderTool } from '@/tools/builtin/createFolder';
 import { createListNotesTool } from '@/tools/builtin/listNotes';
 import { createSearchVaultTool } from '@/tools/builtin/searchVault';
+import { createRenameNoteTool } from '@/tools/builtin/renameNote';
+import { createMoveNoteTool } from '@/tools/builtin/moveNote';
+import { createCopyNoteTool } from '@/tools/builtin/copyNote';
+import { createDeleteNoteTool } from '@/tools/builtin/deleteNote';
+import { createDeleteFolderTool } from '@/tools/builtin/deleteFolder';
 import type { AcceptRejectController } from '@/agent/acceptRejectController';
 import type { SearchVaultEngine } from '@/tools/builtin/searchVault';
 
@@ -32,17 +37,27 @@ describe('toolRegistry.toOpenAITools — built-in tool snapshot', () => {
   registry.register(createListNotesTool());
   registry.register(createEditNoteTool({ acceptReject: fakeAcceptReject() }));
   registry.register(createSearchVaultTool(fakeSearch()));
+  registry.register(createRenameNoteTool({ acceptReject: fakeAcceptReject() }));
+  registry.register(createMoveNoteTool({ acceptReject: fakeAcceptReject() }));
+  registry.register(createCopyNoteTool({ acceptReject: fakeAcceptReject() }));
+  registry.register(createDeleteNoteTool({ acceptReject: fakeAcceptReject() }));
+  registry.register(createDeleteFolderTool({ acceptReject: fakeAcceptReject() }));
   const tools = registry.toOpenAITools('t1');
 
   it('exposes every registered built-in tool with the stable id + function wrapper', () => {
     const ids = tools.map((t) => t.function.name).sort();
     expect(ids).toEqual([
       'append_to_note',
+      'copy_note',
       'create_folder',
       'create_note',
+      'delete_folder',
+      'delete_note',
       'edit_note',
       'list_notes',
+      'move_note',
       'read_note',
+      'rename_note',
       'search_vault',
     ]);
     for (const t of tools) expect(t.type).toBe('function');
@@ -58,7 +73,18 @@ describe('toolRegistry.toOpenAITools — built-in tool snapshot', () => {
   });
 
   it('path-accepting tools require path and declare it as a string', () => {
-    for (const id of ['read_note', 'create_note', 'append_to_note', 'create_folder', 'edit_note']) {
+    for (const id of [
+      'read_note',
+      'create_note',
+      'append_to_note',
+      'create_folder',
+      'edit_note',
+      'rename_note',
+      'move_note',
+      'copy_note',
+      'delete_note',
+      'delete_folder',
+    ]) {
       const t = tools.find((x) => x.function.name === id)!;
       const p = t.function.parameters as {
         properties: { path: { type: string } };
@@ -66,6 +92,19 @@ describe('toolRegistry.toOpenAITools — built-in tool snapshot', () => {
       };
       expect(p.properties.path.type).toBe('string');
       expect(p.required).toContain('path');
+    }
+  });
+
+  it('rename/move/copy require both path and new_path', () => {
+    for (const id of ['rename_note', 'move_note', 'copy_note']) {
+      const t = tools.find((x) => x.function.name === id)!;
+      const p = t.function.parameters as {
+        properties: { path: { type: string }; new_path: { type: string } };
+        required: readonly string[];
+      };
+      expect(p.properties.new_path.type).toBe('string');
+      expect(p.required).toContain('path');
+      expect(p.required).toContain('new_path');
     }
   });
 

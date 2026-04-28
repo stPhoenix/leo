@@ -30,7 +30,7 @@ export const LEO_PREAMBLE =
 export const PLAN_MODE_RULE = [
   '## Plan mode',
   '',
-  'Before authoring or restructuring more than one note (creating a folder + multiple notes, building a hub + linked sub-notes, restructuring a folder, retagging many notes, splitting/merging notes), call EnterPlanMode FIRST. Do NOT call create_note, edit_note, append_to_note, create_folder, or delegate_external until the user has approved your plan via ExitPlanMode.',
+  'Before authoring or restructuring more than one note (creating a folder + multiple notes, building a hub + linked sub-notes, restructuring a folder, retagging many notes, splitting/merging notes), call EnterPlanMode FIRST. Do NOT call create_note, edit_note, append_to_note, create_folder, rename_note, move_note, copy_note, delete_note, or delegate_external until the user has approved your plan via ExitPlanMode.',
   '',
   'In plan mode: explore with read tools (read_note, search_vault, glob_vault, grep_vault, open_note), use AskUserQuestion if a structural choice depends on user preference (flat vs hierarchical, MOC vs tag-driven, naming, location), use TodoWrite to track sub-steps, then present the final plan markdown via ExitPlanMode for approval.',
   '',

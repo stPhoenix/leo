@@ -1,4 +1,4 @@
-import type { DataAdapter } from 'obsidian';
+import { TFile, type App, type DataAdapter } from 'obsidian';
 
 export interface VaultListing {
   readonly files: readonly string[];
@@ -17,12 +17,15 @@ export interface VaultAdapter {
   write(path: string, data: string): Promise<void>;
   writeBinary?(path: string, data: Uint8Array): Promise<void>;
   rename(from: string, to: string): Promise<void>;
+  renameWithLinks?(from: string, to: string): Promise<void>;
+  copy?(from: string, to: string): Promise<void>;
   remove(path: string): Promise<void>;
+  rmdir?(path: string): Promise<void>;
   list(path: string): Promise<VaultListing>;
   stat(path: string): Promise<VaultStat | null>;
 }
 
-export function createObsidianVaultAdapter(adapter: DataAdapter): VaultAdapter {
+export function createObsidianVaultAdapter(adapter: DataAdapter, app?: App): VaultAdapter {
   return {
     async exists(path) {
       return adapter.exists(path);
@@ -46,8 +49,24 @@ export function createObsidianVaultAdapter(adapter: DataAdapter): VaultAdapter {
     async rename(from, to) {
       await adapter.rename(from, to);
     },
+    async renameWithLinks(from, to) {
+      if (app !== undefined) {
+        const file = app.vault.getAbstractFileByPath(from);
+        if (file instanceof TFile) {
+          await app.fileManager.renameFile(file, to);
+          return;
+        }
+      }
+      await adapter.rename(from, to);
+    },
+    async copy(from, to) {
+      await adapter.copy(from, to);
+    },
     async remove(path) {
       await adapter.remove(path);
+    },
+    async rmdir(path) {
+      await adapter.rmdir(path, false);
     },
     async list(path) {
       const result = await adapter.list(path);

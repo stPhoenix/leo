@@ -192,6 +192,7 @@ leo/
 │   │   │   ├── createFolder.ts
 │   │   │   ├── createNote.ts
 │   │   │   ├── delegateExternal.ts       # delegate_external tool — schema enforces 1–16384 char ask, owns own confirmation (requiresConfirmation:false), wraps DelegateExternalToolResult in {ok:true,data:…} so structured payload survives serializer
+│   │   │   ├── deleteFolder.ts           # delete_folder tool — empty-only (errors `folder not empty` on non-empty), pre-confirm via AcceptRejectController (accept→rmdir, reject→no-op); blocked in plan mode
 │   │   │   ├── editNote.ts
 │   │   │   ├── globVault.ts             # glob_vault tool — minimatch-based vault file enumeration with cap + truncation
 │   │   │   ├── grepVault.ts             # grep_vault tool — regex search across vault with content/files/count modes + context lines

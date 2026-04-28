@@ -64,6 +64,11 @@ import { createAppendToNoteTool } from '@/tools/builtin/appendToNote';
 import { createCreateFolderTool } from '@/tools/builtin/createFolder';
 import { createEditNoteTool } from '@/tools/builtin/editNote';
 import { createOpenNoteTool } from '@/tools/builtin/openNote';
+import { createRenameNoteTool } from '@/tools/builtin/renameNote';
+import { createMoveNoteTool } from '@/tools/builtin/moveNote';
+import { createCopyNoteTool } from '@/tools/builtin/copyNote';
+import { createDeleteNoteTool } from '@/tools/builtin/deleteNote';
+import { createDeleteFolderTool } from '@/tools/builtin/deleteFolder';
 import { createRevealInNoteTool } from '@/tools/builtin/revealInNote';
 import { createObsidianWorkspaceNavigator } from '@/editor/workspaceNavigator';
 import type { ToolSpec } from '@/tools/types';
@@ -330,7 +335,7 @@ export default class LeoPlugin extends Plugin {
       userChannel,
     });
 
-    const vaultAdapterForSecrets = createObsidianVaultAdapter(this.app.vault.adapter);
+    const vaultAdapterForSecrets = createObsidianVaultAdapter(this.app.vault.adapter, this.app);
 
     this.safeStorage = new SafeStorage({
       logger: this.logger,
@@ -410,7 +415,7 @@ export default class LeoPlugin extends Plugin {
     });
     this.editorBridge.start();
 
-    const vaultAdapter = createObsidianVaultAdapter(this.app.vault.adapter);
+    const vaultAdapter = createObsidianVaultAdapter(this.app.vault.adapter, this.app);
     this.toolRegistry = new ToolRegistry({
       logger: this.logger,
       isToolAllowedInPlan: (toolId, thread) => {
@@ -485,6 +490,36 @@ export default class LeoPlugin extends Plugin {
       }) as unknown as ToolSpec<unknown, unknown>,
     );
     this.toolRegistry.register(createCreateFolderTool() as unknown as ToolSpec<unknown, unknown>);
+    this.toolRegistry.register(
+      createRenameNoteTool({
+        acceptReject: this.acceptRejectController,
+        logger: this.logger,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createMoveNoteTool({
+        acceptReject: this.acceptRejectController,
+        logger: this.logger,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createCopyNoteTool({
+        acceptReject: this.acceptRejectController,
+        logger: this.logger,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createDeleteNoteTool({
+        acceptReject: this.acceptRejectController,
+        logger: this.logger,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createDeleteFolderTool({
+        acceptReject: this.acceptRejectController,
+        logger: this.logger,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
     this.editLock = new EditLockController({
       logger: this.logger,
       onBlockedKeystroke: () => new Notice('Leo: range is locked — wait for edit to finish.'),

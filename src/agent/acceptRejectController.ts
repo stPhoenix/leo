@@ -1,11 +1,12 @@
 export type AcceptRejectDecision = 'accept' | 'reject';
 
-export type MutationIntent = 'create' | 'edit' | 'append';
+export type MutationIntent = 'create' | 'edit' | 'append' | 'rename' | 'move' | 'copy' | 'delete';
 
 export interface EditNoteProposal {
   readonly toolId: string;
   readonly intent: MutationIntent;
   readonly path: string;
+  readonly newPath?: string;
   readonly lineStart: number;
   readonly lineEnd: number;
   readonly routedVia: 'editor' | 'vault';
