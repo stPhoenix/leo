@@ -33,7 +33,7 @@ leo/
 │   │   │   ├── adapters/
 │   │   │   │   ├── base.ts               # ExternalAgentAdapter abstract class + ExternalEvent discriminated union (log/text/file/done/error) + AdapterCapabilities — adapter-only ESLint isolation enforced
 │   │   │   │   └── inlineAgent/tools/    # Inline-Agent network/sanitize helpers (`fetch_url` + `search_web` hardening — SSRF/DNS-rebind + prompt-injection envelope)
-│   │   │   │       ├── ipGuard.ts        # parseIp (v4/v6 incl. IPv4-mapped + brackets), cidrContains (v4 + v6, prefix>64), isPrivateOrLoopbackIp (RFC1918/CGNAT/link-local/IPv6 ULA/loopback/64:ff9b::/96), resolveAndCheck (dynamic node:dns/promises lookup, fail-closed)
+│   │   │   │       ├── ipGuard.ts        # parseIp (v4/v6 incl. IPv4-mapped + brackets), cidrContains (v4 + v6, prefix>64), isPrivateOrLoopbackIp (RFC1918/CGNAT/link-local/IPv6 ULA/loopback/64:ff9b::/96), resolveAndCheck (Electron renderer `globalThis.require('dns').promises.lookup` — fail-closed when require unavailable; previous `import('node:dns/promises')` broke in CJS bundle)
 │   │   │   │       ├── sanitize.ts       # stripInvisible (zero-width + bidi controls), stripHtmlScriptStyleComments, sanitizeBody(body, contentType?) — html-strip only when text/html
 │   │   │   │       └── untrustedWrap.ts  # wrapUntrusted(text, origin) → `<untrusted-content origin="…">…</untrusted-content>` (escapes nested close, scrubs origin); wrapToolResultForLLM(name, result) maps fetch_url body + search_web answer/per-row content
 │   │   │   ├── adapterRegistry.ts        # AdapterRegistry — register/freeze/list (alphabetical)/get/defaultId/isEnabled

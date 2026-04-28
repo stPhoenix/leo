@@ -161,13 +161,22 @@ let cachedLookup: DnsLookupAll | null | undefined;
 async function loadDnsLookup(): Promise<DnsLookupAll | null> {
   if (cachedLookup !== undefined) return cachedLookup;
   try {
-    // Dynamic import — node:dns is externalized by esbuild and resolved at
-    // runtime by Electron renderer. If unavailable (non-Electron host), fall
-    // back to null and callers fail closed.
-    const mod = (await import('node:dns/promises')) as {
-      readonly lookup: (host: string, opts: { all: true }) => Promise<readonly DnsLookupAddr[]>;
+    // `dns` is externalized via builtin-modules and resolved by Electron's
+    // renderer `require`. The previous `await import('node:dns/promises')`
+    // path threw in the renderer's CJS bundle (subpath not externalized,
+    // dynamic ESM specifier unreliable), causing every fetch to fail closed
+    // with reason='unsupported'.
+    const req = (globalThis as { require?: (id: string) => unknown }).require;
+    if (typeof req !== 'function') {
+      cachedLookup = null;
+      return cachedLookup;
+    }
+    const mod = req('dns') as {
+      readonly promises: {
+        readonly lookup: (host: string, opts: { all: true }) => Promise<readonly DnsLookupAddr[]>;
+      };
     };
-    cachedLookup = (host) => mod.lookup(host, { all: true });
+    cachedLookup = (host) => mod.promises.lookup(host, { all: true });
   } catch {
     cachedLookup = null;
   }

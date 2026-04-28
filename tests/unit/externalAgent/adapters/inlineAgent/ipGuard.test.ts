@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   cidrContains,
   isCidr,
@@ -154,5 +154,92 @@ describe('resolveAndCheck', () => {
   it('strips brackets from IPv6 hostname literal', async () => {
     const out = await resolveAndCheck('[::1]');
     expect(out).toEqual({ ok: false, reason: 'private' });
+  });
+});
+
+// Regression: prior implementation used `await import('node:dns/promises')`
+// which threw in Obsidian's renderer (esbuild externalized `node:dns` but
+// not the subpath), so every fetch failed closed with reason='unsupported'.
+// These tests cover the runtime DNS-load path that all `resolveAndCheck`
+// callers without an injected `opts.lookup` exercise.
+describe('loadDnsLookup runtime path (no injected opts.lookup)', () => {
+  const globalSlot = globalThis as { require?: unknown };
+  const original = globalSlot.require;
+
+  afterEach(() => {
+    if (original === undefined) delete globalSlot.require;
+    else globalSlot.require = original;
+    vi.resetModules();
+  });
+
+  it('uses globalThis.require("dns").promises.lookup to resolve hostnames', async () => {
+    const lookup = vi.fn(async () => [{ address: '8.8.8.8', family: 4 }]);
+    const fakeRequire = vi.fn((id: string) => {
+      if (id === 'dns') return { promises: { lookup } };
+      throw new Error(`unexpected require: ${id}`);
+    });
+    globalSlot.require = fakeRequire;
+    vi.resetModules();
+
+    const mod = await import('@/agent/externalAgent/adapters/inlineAgent/tools/ipGuard');
+    const out = await mod.resolveAndCheck('example.com');
+
+    expect(out).toEqual({ ok: true });
+    expect(fakeRequire).toHaveBeenCalledWith('dns');
+    expect(lookup).toHaveBeenCalledWith('example.com', { all: true });
+  });
+
+  it('returns unsupported when globalThis.require is unavailable', async () => {
+    delete globalSlot.require;
+    vi.resetModules();
+
+    const mod = await import('@/agent/externalAgent/adapters/inlineAgent/tools/ipGuard');
+    const out = await mod.resolveAndCheck('example.com');
+
+    expect(out).toEqual({ ok: false, reason: 'unsupported' });
+  });
+
+  it('returns unsupported when require throws synchronously (no native dns)', async () => {
+    const fakeRequire = vi.fn((_id: string) => {
+      throw new Error('Cannot find module');
+    });
+    globalSlot.require = fakeRequire;
+    vi.resetModules();
+
+    const mod = await import('@/agent/externalAgent/adapters/inlineAgent/tools/ipGuard');
+    const out = await mod.resolveAndCheck('example.com');
+
+    expect(out).toEqual({ ok: false, reason: 'unsupported' });
+    expect(fakeRequire).toHaveBeenCalledWith('dns');
+  });
+
+  it('flags private when lookup returns RFC1918 address', async () => {
+    const lookup = vi.fn(async () => [{ address: '10.0.0.5', family: 4 }]);
+    globalSlot.require = (id: string): unknown => {
+      if (id === 'dns') return { promises: { lookup } };
+      throw new Error(`unexpected require: ${id}`);
+    };
+    vi.resetModules();
+
+    const mod = await import('@/agent/externalAgent/adapters/inlineAgent/tools/ipGuard');
+    const out = await mod.resolveAndCheck('rebind.example');
+
+    expect(out).toEqual({ ok: false, reason: 'private' });
+  });
+
+  it('returns resolve_failed when require-loaded lookup throws', async () => {
+    const lookup = vi.fn(async () => {
+      throw new Error('NXDOMAIN');
+    });
+    globalSlot.require = (id: string): unknown => {
+      if (id === 'dns') return { promises: { lookup } };
+      throw new Error(`unexpected require: ${id}`);
+    };
+    vi.resetModules();
+
+    const mod = await import('@/agent/externalAgent/adapters/inlineAgent/tools/ipGuard');
+    const out = await mod.resolveAndCheck('nope.example');
+
+    expect(out).toEqual({ ok: false, reason: 'resolve_failed' });
   });
 });

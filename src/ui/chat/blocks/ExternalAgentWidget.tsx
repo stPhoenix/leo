@@ -470,7 +470,7 @@ function TerminalView({ vm }: TerminalProps): JSX.Element {
 }
 
 function ValidationErrorBanner({ vm }: { vm: WidgetViewModel }): JSX.Element | null {
-  if (vm.validationError === null) return null;
+  if (vm.validationError === null || vm.validationError.length === 0) return null;
   return (
     <p className="leo-ea-validation" role="alert" data-slot="external-agent-validation">
       {vm.validationError}
