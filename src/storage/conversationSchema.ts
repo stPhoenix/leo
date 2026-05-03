@@ -1,5 +1,5 @@
 import type { Logger } from '@/platform/Logger';
-import type { ContentBlock } from '@/chat/types';
+import type { ContentBlock, TextBlock, ToolReferenceBlock, ToolResultContent } from '@/chat/types';
 
 export const CONVERSATION_SCHEMA_VERSION = 2;
 
@@ -205,15 +205,35 @@ function parseBlocks(raw: unknown): readonly ContentBlock[] | undefined {
           : {}),
       });
     } else if (type === 'tool_result' && typeof obj.tool_use_id === 'string') {
+      const parsedContent = parseToolResultContent(obj.content);
       out.push({
         type: 'tool_result',
         tool_use_id: obj.tool_use_id,
-        content: typeof obj.content === 'string' ? obj.content : '',
+        content: parsedContent,
         ...(typeof obj.is_error === 'boolean' ? { is_error: obj.is_error } : {}),
       });
+    } else if (type === 'tool_reference' && typeof obj.tool_name === 'string') {
+      out.push({ type: 'tool_reference', tool_name: obj.tool_name });
     }
   }
   return out;
+}
+
+function parseToolResultContent(raw: unknown): ToolResultContent {
+  if (typeof raw === 'string') return raw;
+  if (!Array.isArray(raw)) return '';
+  type Inner = TextBlock | ToolReferenceBlock;
+  const inner: Inner[] = [];
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const o = entry as Record<string, unknown>;
+    if (o.type === 'text' && typeof o.text === 'string') {
+      inner.push({ type: 'text', text: o.text });
+    } else if (o.type === 'tool_reference' && typeof o.tool_name === 'string') {
+      inner.push({ type: 'tool_reference', tool_name: o.tool_name });
+    }
+  }
+  return inner;
 }
 
 /**

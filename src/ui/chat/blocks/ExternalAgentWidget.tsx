@@ -265,15 +265,16 @@ function ReadyView({ vm, controller }: SubProps): JSX.Element {
             </select>
           </label>
           <label className="leo-ea-field">
-            <span>Timeout (ms)</span>
+            <span>Timeout (minutes)</span>
             <input
               type="number"
               className="leo-ea-input"
-              aria-label="Adapter call timeout in milliseconds"
-              min={1000}
-              step={1000}
-              value={vm.draftTimeoutMs}
-              onChange={(e) => controller.onSetTimeout(Number(e.target.value))}
+              aria-label="Adapter call timeout in minutes"
+              min={1}
+              max={1440}
+              step={1}
+              value={vm.draftTimeoutMinutes}
+              onChange={(e) => controller.onSetTimeout(Number(e.target.value) * 60_000)}
             />
           </label>
           <label className="leo-ea-field">

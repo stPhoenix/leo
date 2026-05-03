@@ -60,15 +60,24 @@ export function makeScriptedAdapter(
  */
 export function makeStructuredOutputModel(outputs: readonly unknown[]): BaseChatModel {
   let i = 0;
+  const next = (): unknown => {
+    const out = outputs[i] ?? outputs[outputs.length - 1];
+    i += 1;
+    if (out instanceof Error) throw out;
+    return out;
+  };
   return {
     invoke: async () => undefined,
     withStructuredOutput() {
       return {
+        invoke: async (): Promise<unknown> => next(),
+      };
+    },
+    bindTools() {
+      return {
         invoke: async (): Promise<unknown> => {
-          const out = outputs[i] ?? outputs[outputs.length - 1];
-          i += 1;
-          if (out instanceof Error) throw out;
-          return out;
+          const args = next();
+          return { content: '', tool_calls: [{ name: 'classify_task', args }] };
         },
       };
     },

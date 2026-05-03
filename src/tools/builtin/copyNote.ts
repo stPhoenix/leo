@@ -48,6 +48,7 @@ export function createCopyNoteTool(
     parameters: jsonSchemaFromZod(CopyNoteSchema),
     requiresConfirmation: true,
     source: 'builtin',
+    shouldDefer: true,
     validate: validateFromZod(CopyNoteSchema),
     async invoke(args, ctx) {
       if (ctx.signal.aborted) return { ok: false, error: 'aborted' };

@@ -1,5 +1,5 @@
 import { memo, useState, type ReactNode } from 'react';
-import type { ToolResultBlock, ToolUseBlock } from '@/chat/types';
+import { toolResultContentToText, type ToolResultBlock, type ToolUseBlock } from '@/chat/types';
 import { resolveStatus, useToolUseStatus, type RunStateSource } from './toolUseStatus';
 
 export interface ToolResultBlockViewProps {
@@ -15,7 +15,8 @@ const DEFAULT_COLLAPSE = 2000;
 function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
   const { block, associatedToolUse } = props;
   const isError = block.is_error === true;
-  const long = block.content.length > (props.defaultCollapseAtChars ?? DEFAULT_COLLAPSE);
+  const contentText = toolResultContentToText(block.content);
+  const long = contentText.length > (props.defaultCollapseAtChars ?? DEFAULT_COLLAPSE);
   const [expanded, setExpanded] = useState<boolean>(!long || isError);
   const fromStore = useToolUseStatus(props.runState, block.tool_use_id);
 
@@ -57,7 +58,7 @@ function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
       aria-label="tool result"
     >
       <header className="leo-tool-result-header" data-slot="tool-result-header">
-        {renderHeader(status, block)}
+        {renderHeader(status, block, contentText)}
         {status === 'success' && long ? (
           <button
             type="button"
@@ -70,24 +71,25 @@ function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
           </button>
         ) : null}
       </header>
-      {renderBody(props, status, isCollapsed, associatedToolUse)}
+      {renderBody(props, status, isCollapsed, associatedToolUse, contentText)}
     </section>
   );
 }
 
 function renderHeader(
   status: 'success' | 'errored' | 'rejected' | 'canceled',
-  block: ToolResultBlock,
+  _block: ToolResultBlock,
+  contentText: string,
 ): ReactNode {
   if (status === 'errored') return <span data-slot="tool-result-label">⚠ Tool error</span>;
   if (status === 'rejected') {
-    const reason = block.content.length > 0 ? `· ${block.content}` : '';
+    const reason = contentText.length > 0 ? `· ${contentText}` : '';
     return <span data-slot="tool-result-label">Rejected by user {reason}</span>;
   }
   if (status === 'canceled') {
     return <span data-slot="tool-result-label">Canceled · ⎋</span>;
   }
-  return <span data-slot="tool-result-label">result · {block.content.length} chars</span>;
+  return <span data-slot="tool-result-label">result · {contentText.length} chars</span>;
 }
 
 function renderBody(
@@ -95,13 +97,14 @@ function renderBody(
   status: 'success' | 'errored' | 'rejected' | 'canceled',
   isCollapsed: boolean,
   associated: ToolUseBlock,
+  contentText: string,
 ): ReactNode {
   if (status === 'rejected' || status === 'canceled') return null;
   if (status === 'errored') {
     return (
       <div className="leo-tool-result-body-wrap">
         <pre className="leo-tool-result-body" data-slot="tool-result-body" data-status="errored">
-          {props.block.content}
+          {contentText}
         </pre>
       </div>
     );
@@ -117,7 +120,7 @@ function renderBody(
         data-status="success"
         aria-hidden={isCollapsed}
       >
-        {props.block.content}
+        {contentText}
       </pre>
     </div>
   );

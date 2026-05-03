@@ -7,6 +7,7 @@ export interface ExternalAgentInput {
   readonly timeoutMs: number;
   readonly config: unknown;
   readonly runId?: string;
+  readonly threadId?: string;
 }
 
 export type ExternalEvent =

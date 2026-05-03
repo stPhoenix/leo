@@ -1,11 +1,18 @@
 import { ChatAnthropic } from '@langchain/anthropic';
 import type { Runnable } from '@langchain/core/runnables';
 import type { AIMessageChunk, BaseMessage } from '@langchain/core/messages';
-import type { Provider, ProviderChatRequest, ProviderModel, StreamEvent } from './types';
+import type {
+  OpenAITool,
+  Provider,
+  ProviderChatRequest,
+  ProviderModel,
+  StreamEvent,
+} from './types';
 import { ProviderConnectError } from './types';
 import { toLangchainMessages } from './langchainMessages';
 import { toStreamEvents } from './langchainStream';
 import { toRunnableConfig } from './traceConfig';
+import { makeAnthropicFetchPatch } from './anthropicFetchPatch';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -36,6 +43,16 @@ export class AnthropicProvider implements Provider {
     if (apiKey.length === 0) throw new ProviderConnectError('missing API key');
     const endpoint = this.opts.endpoint?.();
 
+    const betas = req.providerHints?.betas ?? [];
+    const deferLoadingNames = collectDeferLoadingNames(req.tools);
+    const needsPatch = betas.length > 0 || deferLoadingNames.size > 0;
+    const fetchPatched = needsPatch
+      ? makeAnthropicFetchPatch({
+          betas,
+          deferLoading: deferLoadingNames,
+        })
+      : undefined;
+
     const model: ChatAnthropic = new ChatAnthropic({
       model: req.model,
       apiKey,
@@ -46,12 +63,22 @@ export class AnthropicProvider implements Provider {
       clientOptions: {
         dangerouslyAllowBrowser: true,
         ...(endpoint !== undefined && endpoint.length > 0 ? { baseURL: endpoint } : {}),
+        ...(fetchPatched !== undefined ? { fetch: fetchPatched } : {}),
       },
     });
 
+    const disableParallel = req.providerHints?.disableParallelToolCalls === true;
     const callable: AnthropicCallable =
       req.tools !== undefined && req.tools.length > 0
-        ? model.bindTools(toToolDefs(req.tools))
+        ? model.bindTools(
+            toToolDefs(req.tools),
+            disableParallel
+              ? // ChatAnthropicCallOptions narrows tool_choice.type to 'tool', but the
+                // Anthropic API also accepts {type:'auto', disable_parallel_tool_use:true}.
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                ({ tool_choice: { type: 'auto', disable_parallel_tool_use: true } } as any)
+              : undefined,
+          )
         : model;
 
     const messages = toLangchainMessages(req.messages);
@@ -77,6 +104,7 @@ interface OpenAIToolLike {
     readonly description: string;
     readonly parameters: unknown;
   };
+  readonly defer_loading?: boolean;
 }
 
 function toToolDefs(tools: readonly OpenAIToolLike[]): Array<{
@@ -84,12 +112,21 @@ function toToolDefs(tools: readonly OpenAIToolLike[]): Array<{
   description: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   schema: any;
+  defer_loading?: boolean;
 }> {
   return tools.map((t) => ({
     name: t.function.name,
     description: t.function.description,
     schema: t.function.parameters,
+    ...(t.defer_loading === true ? { defer_loading: true } : {}),
   }));
+}
+
+function collectDeferLoadingNames(tools: readonly OpenAITool[] | undefined): ReadonlySet<string> {
+  if (tools === undefined) return new Set<string>();
+  const out = new Set<string>();
+  for (const t of tools) if (t.defer_loading === true) out.add(t.function.name);
+  return out;
 }
 
 function asConnectError(err: unknown, fallback: string): ProviderConnectError {

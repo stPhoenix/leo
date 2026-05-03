@@ -1,7 +1,9 @@
-import { memo, useEffect, useMemo, useState } from 'react';
+import { Fragment, memo, useEffect, useMemo, useState } from 'react';
 import type { z } from 'zod';
 import type { AdapterRegistry } from '@/agent/externalAgent/adapterRegistry';
 import type { ExternalAgentAdapter } from '@/agent/externalAgent/adapters/base';
+import { kindRequiresApiKey } from '@/providers/registry';
+import type { ProviderKind } from './settingsStore';
 import type { SafeStorage } from '@/storage/safeStorage';
 import {
   describeConfigSchema,
@@ -9,6 +11,14 @@ import {
   type ZodFieldDescriptor,
 } from './externalAgentResolver';
 import type { ExternalAgentInstanceSettings, ExternalAgentsSettings } from './settingsStore';
+
+const PROVIDER_KIND_SET: ReadonlySet<ProviderKind> = new Set([
+  'lmstudio',
+  'openai',
+  'anthropic',
+  'ollama',
+  'custom',
+]);
 
 export interface ProviderOption {
   readonly id: string;
@@ -24,6 +34,7 @@ export interface ExternalAgentsSectionProps {
   readonly writeSecret?: (key: string, value: string) => Promise<void>;
   readonly providerOptions?: readonly ProviderOption[];
   readonly discoveredModels?: readonly { readonly id: string }[];
+  readonly onProviderApiKeyChanged?: () => Promise<void> | void;
 }
 
 const EMPTY_NOTE =
@@ -118,6 +129,9 @@ function ExternalAgentsSectionImpl(props: ExternalAgentsSectionProps): JSX.Eleme
               {...(props.discoveredModels !== undefined
                 ? { discoveredModels: props.discoveredModels }
                 : {})}
+              {...(props.onProviderApiKeyChanged !== undefined
+                ? { onProviderApiKeyChanged: props.onProviderApiKeyChanged }
+                : {})}
             />
           ))}
         </ul>
@@ -136,6 +150,7 @@ interface AdapterBlockProps {
   readonly writeSecret?: (key: string, value: string) => Promise<void>;
   readonly providerOptions?: readonly ProviderOption[];
   readonly discoveredModels?: readonly { readonly id: string }[];
+  readonly onProviderApiKeyChanged?: () => Promise<void> | void;
 }
 
 function AdapterBlock(props: AdapterBlockProps): JSX.Element {
@@ -146,6 +161,18 @@ function AdapterBlock(props: AdapterBlockProps): JSX.Element {
     const config = setIn(instance.config, path, next);
     onChange({ config: config as Record<string, unknown> });
   };
+
+  const inlineProviderId =
+    adapter.id === 'inline-agent'
+      ? typeof (instance.config as { providerId?: unknown }).providerId === 'string'
+        ? ((instance.config as { providerId: string }).providerId as string)
+        : 'lmstudio'
+      : null;
+  const inlineProviderKind: ProviderKind | null =
+    inlineProviderId !== null && PROVIDER_KIND_SET.has(inlineProviderId as ProviderKind)
+      ? (inlineProviderId as ProviderKind)
+      : null;
+  const showInlineApiKey = inlineProviderKind !== null && kindRequiresApiKey(inlineProviderKind);
 
   return (
     <li
@@ -168,27 +195,116 @@ function AdapterBlock(props: AdapterBlockProps): JSX.Element {
         {fields.length === 0 ? (
           <p className="leo-eas-no-fields">No configurable fields.</p>
         ) : (
-          fields.map((f) => (
-            <FieldRow
-              key={f.path.join('.')}
-              field={f}
-              value={getIn(instance.config, f.path)}
-              schema={adapter.configSchema}
-              adapterId={adapter.id}
-              onChange={(v) => setConfigPath(f.path, v)}
-              {...(props.readSecret !== undefined ? { readSecret: props.readSecret } : {})}
-              {...(props.writeSecret !== undefined ? { writeSecret: props.writeSecret } : {})}
-              {...(props.providerOptions !== undefined
-                ? { providerOptions: props.providerOptions }
-                : {})}
-              {...(props.discoveredModels !== undefined
-                ? { discoveredModels: props.discoveredModels }
-                : {})}
-            />
-          ))
+          fields.map((f) => {
+            const isProviderIdField =
+              adapter.id === 'inline-agent' && f.path.length === 1 && f.path[0] === 'providerId';
+            return (
+              <Fragment key={f.path.join('.')}>
+                <FieldRow
+                  field={f}
+                  value={getIn(instance.config, f.path)}
+                  schema={adapter.configSchema}
+                  adapterId={adapter.id}
+                  onChange={(v) => setConfigPath(f.path, v)}
+                  {...(props.readSecret !== undefined ? { readSecret: props.readSecret } : {})}
+                  {...(props.writeSecret !== undefined ? { writeSecret: props.writeSecret } : {})}
+                  {...(props.providerOptions !== undefined
+                    ? { providerOptions: props.providerOptions }
+                    : {})}
+                  {...(props.discoveredModels !== undefined
+                    ? { discoveredModels: props.discoveredModels }
+                    : {})}
+                />
+                {isProviderIdField && showInlineApiKey && inlineProviderKind !== null ? (
+                  <ProviderApiKeyField
+                    providerKind={inlineProviderKind}
+                    adapterId={adapter.id}
+                    {...(props.readSecret !== undefined ? { readSecret: props.readSecret } : {})}
+                    {...(props.writeSecret !== undefined ? { writeSecret: props.writeSecret } : {})}
+                    {...(props.onProviderApiKeyChanged !== undefined
+                      ? { onProviderApiKeyChanged: props.onProviderApiKeyChanged }
+                      : {})}
+                  />
+                ) : null}
+              </Fragment>
+            );
+          })
         )}
       </div>
     </li>
+  );
+}
+
+interface ProviderApiKeyFieldProps {
+  readonly providerKind: ProviderKind;
+  readonly adapterId: string;
+  readonly readSecret?: (key: string) => Promise<string>;
+  readonly writeSecret?: (key: string, value: string) => Promise<void>;
+  readonly onProviderApiKeyChanged?: () => Promise<void> | void;
+}
+
+function ProviderApiKeyField(props: ProviderApiKeyFieldProps): JSX.Element {
+  const storageKey = `provider.${props.providerKind}.apiKey`;
+  const [draft, setDraft] = useState<string>('');
+  const [stored, setStored] = useState<boolean>(false);
+  const [reveal, setReveal] = useState(false);
+
+  useEffect(() => {
+    setDraft('');
+    let cancelled = false;
+    if (props.readSecret !== undefined) {
+      void props.readSecret(storageKey).then((v) => {
+        if (!cancelled) setStored(v.length > 0);
+      });
+    } else {
+      setStored(false);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [storageKey, props.readSecret]);
+
+  const save = async (): Promise<void> => {
+    if (props.writeSecret === undefined) return;
+    await props.writeSecret(storageKey, draft);
+    setStored(draft.length > 0);
+    setDraft('');
+    if (props.onProviderApiKeyChanged !== undefined) {
+      await props.onProviderApiKeyChanged();
+    }
+  };
+
+  const labelText = `apiKey (provider: ${props.providerKind})`;
+  return (
+    <label
+      className="leo-eas-field leo-eas-field-secret"
+      data-slot="external-agents-provider-apikey"
+      data-provider-kind={props.providerKind}
+    >
+      <span>{labelText}</span>
+      <input
+        type={reveal ? 'text' : 'password'}
+        className="leo-eas-input"
+        aria-label={`${props.adapterId}.${labelText}`}
+        placeholder={stored ? '(stored — leave blank to keep)' : ''}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft.length > 0) void save();
+        }}
+      />
+      <button
+        type="button"
+        className="leo-eas-reveal"
+        aria-label={`Toggle reveal for ${labelText}`}
+        onClick={() => setReveal((v) => !v)}
+      >
+        {reveal ? 'Hide' : 'Reveal'}
+      </button>
+      <small className="leo-eas-help">
+        Shared with the main provider settings. Stored via SafeStorage.
+      </small>
+    </label>
   );
 }
 
@@ -296,6 +412,9 @@ function FieldRow(props: FieldRowProps): JSX.Element {
             value={typeof props.value === 'number' ? props.value : 0}
             onChange={(e) => props.onChange(Number(e.target.value))}
           />
+          {props.field.description !== undefined ? (
+            <small className="leo-eas-help">{props.field.description}</small>
+          ) : null}
         </label>
       );
     case 'boolean':
@@ -308,6 +427,9 @@ function FieldRow(props: FieldRowProps): JSX.Element {
             onChange={(e) => props.onChange(e.target.checked)}
           />
           <span>{label}</span>
+          {props.field.description !== undefined ? (
+            <small className="leo-eas-help">{props.field.description}</small>
+          ) : null}
         </label>
       );
     case 'string-array':
@@ -328,6 +450,9 @@ function FieldRow(props: FieldRowProps): JSX.Element {
               )
             }
           />
+          {props.field.description !== undefined ? (
+            <small className="leo-eas-help">{props.field.description}</small>
+          ) : null}
         </label>
       );
     case 'object':

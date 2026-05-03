@@ -9,6 +9,8 @@ import {
   type ProviderKind,
   type RagMode,
   type SectionId,
+  type ToolSearchMode,
+  TOOL_SEARCH_MODES,
   type SettingsStore,
 } from './settingsStore';
 import type { SafeStorage } from '@/storage/safeStorage';
@@ -50,6 +52,7 @@ export interface SettingsTabDeps {
   readonly mcpClient?: MCPClient;
   readonly tracer?: TracerService;
   readonly adapterRegistry?: AdapterRegistry;
+  readonly refreshInlineProviderSecrets?: () => Promise<void> | void;
 }
 
 interface McpDraft {
@@ -240,6 +243,9 @@ export class SettingsTab extends PluginSettingTab {
                 writeSecret: (key, value) => safeStorage.set(key, value),
               }
             : {}),
+          ...(this.deps.refreshInlineProviderSecrets !== undefined
+            ? { onProviderApiKeyChanged: this.deps.refreshInlineProviderSecrets }
+            : {}),
         }),
       );
     };
@@ -415,6 +421,40 @@ export class SettingsTab extends PluginSettingTab {
           await this.deps.store.update((prev) => ({
             ...prev,
             provider: { ...prev.provider, maxTokens: parsed },
+          }));
+        });
+      });
+
+    new Setting(body)
+      .setName('Forbid parallel tool calls')
+      .setDesc(
+        'Force the model to emit one tool call per turn. ' +
+          'OpenAI-compatible: sets parallel_tool_calls=false. ' +
+          'Anthropic: sets tool_choice.disable_parallel_tool_use=true. ' +
+          'Local servers may ignore the flag.',
+      )
+      .addToggle((t) => {
+        t.setValue(settings.provider.disableParallelToolCalls).onChange(async (value) => {
+          await this.deps.store.update((prev) => ({
+            ...prev,
+            provider: { ...prev.provider, disableParallelToolCalls: value },
+          }));
+        });
+      });
+
+    new Setting(body)
+      .setName('Disable Qwen thinking (LM Studio only)')
+      .setDesc(
+        'Skip the reasoning chain on Qwen3 / Qwen3.6 family served via LM Studio. ' +
+          'Sends extra_body.chat_template_kwargs.enable_thinking=false (canonical Qwen flag). ' +
+          'Much faster generation, mild quality cost on multi-step tasks. ' +
+          'Only applied when the active provider is LM Studio; whether the model honors it depends on its chat template.',
+      )
+      .addToggle((t) => {
+        t.setValue(settings.provider.disableThinking).onChange(async (value) => {
+          await this.deps.store.update((prev) => ({
+            ...prev,
+            provider: { ...prev.provider, disableThinking: value },
           }));
         });
       });
@@ -682,6 +722,36 @@ export class SettingsTab extends PluginSettingTab {
             }));
           },
         );
+      });
+
+    new Setting(body)
+      .setName('Tool search mode')
+      .setDesc(
+        'standard: send every tool schema each turn. tst: defer MCP tools until ToolSearch fetches them. tst-auto: defer above a token threshold (currently routes to tst).',
+      )
+      .addDropdown((d) => {
+        for (const mode of TOOL_SEARCH_MODES) d.addOption(mode, mode);
+        d.setValue(settings.toolSearch.mode).onChange(async (value) => {
+          const next = value as ToolSearchMode;
+          await this.deps.store.update((prev) => ({
+            ...prev,
+            toolSearch: { ...prev.toolSearch, mode: next },
+          }));
+        });
+      });
+
+    new Setting(body)
+      .setName('Tool search kill switch')
+      .setDesc(
+        'Force standard mode regardless of the mode setting above. Toggle on if ToolSearch causes problems.',
+      )
+      .addToggle((t) => {
+        t.setValue(settings.toolSearch.killSwitch).onChange(async (value) => {
+          await this.deps.store.update((prev) => ({
+            ...prev,
+            toolSearch: { ...prev.toolSearch, killSwitch: value },
+          }));
+        });
       });
   }
 

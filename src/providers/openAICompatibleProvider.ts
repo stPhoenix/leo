@@ -44,6 +44,8 @@ export class OpenAICompatibleProvider implements Provider {
     const apiKey = this.opts.apiKey?.() ?? 'placeholder';
     const defaultHeaders = this.headersFn();
 
+    const disableThinking = req.providerHints?.disableThinking === true;
+    const lmStudioNoThink = disableThinking && this.id === 'lmstudio';
     const model = new ChatOpenAI({
       model: req.model,
       apiKey,
@@ -51,6 +53,9 @@ export class OpenAICompatibleProvider implements Provider {
       streamUsage: true,
       ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+      ...(lmStudioNoThink
+        ? { modelKwargs: { extra_body: { chat_template_kwargs: { enable_thinking: false } } } }
+        : {}),
       configuration: {
         baseURL,
         dangerouslyAllowBrowser: true,
@@ -58,8 +63,14 @@ export class OpenAICompatibleProvider implements Provider {
       },
     });
 
+    const disableParallel = req.providerHints?.disableParallelToolCalls === true;
     const callable: OpenAICallable =
-      req.tools !== undefined && req.tools.length > 0 ? model.bindTools([...req.tools]) : model;
+      req.tools !== undefined && req.tools.length > 0
+        ? model.bindTools(
+            [...req.tools],
+            disableParallel ? { parallel_tool_calls: false } : undefined,
+          )
+        : model;
 
     const normalized = normalizeForOpenAI(req.messages);
     const messages = toLangchainMessages(normalized);

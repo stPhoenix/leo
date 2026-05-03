@@ -205,17 +205,19 @@ describe('createRefineSubAgent', () => {
     expect(decision.refinedPrompt).toContain('free-form streamed');
   });
 
-  it('throws refine_empty_response when provider yields nothing useful', async () => {
+  it('falls back to originalAsk passthrough when provider yields nothing', async () => {
     const sub = createRefineSubAgent({
       provider: provider([{ type: 'done' }]),
       model: () => 'm-1',
     });
-    await expect(
-      sub.refine({
-        state: baseState(),
-        userInput: null,
-        signal: new AbortController().signal,
-      }),
-    ).rejects.toThrow(/refine_empty_response/);
+    const decision = await sub.refine({
+      state: baseState(),
+      userInput: null,
+      signal: new AbortController().signal,
+    });
+    expect(decision.type).toBe('final_prompt');
+    if (decision.type === 'final_prompt') {
+      expect(decision.refinedPrompt).toBe('find me 3 references on X');
+    }
   });
 });

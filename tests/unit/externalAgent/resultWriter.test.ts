@@ -26,11 +26,21 @@ class MemVault implements VaultAdapter {
   }
   async write(p: string, d: string): Promise<void> {
     if (p === this.failOn) throw new Error('disk full');
+    this.assertParentDir(p);
     this.text.set(p, d);
   }
   async writeBinary(p: string, d: Uint8Array): Promise<void> {
     if (p === this.failOn) throw new Error('disk full');
+    this.assertParentDir(p);
     this.bin.set(p, d);
+  }
+  private assertParentDir(p: string): void {
+    const lastSlash = p.lastIndexOf('/');
+    if (lastSlash <= 0) return;
+    const dir = p.slice(0, lastSlash);
+    if (!this.folders.has(dir)) {
+      throw new Error(`ENOENT: parent dir missing for ${p}`);
+    }
   }
   async rename(): Promise<void> {
     /* */
@@ -157,6 +167,25 @@ describe('ResultWriter.write', () => {
     expect(vault.text.get(`${r.folder}/response.md`)).toBe('Streamed response body.');
     expect(vault.text.get(`${r.folder}/sources.md`)).toContain('# Refs');
     expect(vault.bin.get(`${r.folder}/extra/img.bin`)).toEqual(new Uint8Array([1, 2, 3, 4]));
+  });
+
+  it('creates nested parent dirs before writing adapter files', async () => {
+    const vault = new MemVault();
+    const w = new ResultWriter({ vault });
+    const r = await w.write({
+      ...baseInput,
+      textBuffer: 'body',
+      files: [
+        { relPath: 'canon/00-foo.md', content: '# Foo' },
+        { relPath: 'canon/sub/bar.bin', content: new Uint8Array([9, 9]) },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(vault.folders.has(`${r.folder}/canon`)).toBe(true);
+    expect(vault.folders.has(`${r.folder}/canon/sub`)).toBe(true);
+    expect(vault.text.get(`${r.folder}/canon/00-foo.md`)).toBe('# Foo');
+    expect(vault.bin.get(`${r.folder}/canon/sub/bar.bin`)).toEqual(new Uint8Array([9, 9]));
   });
 
   it('partial-write failure flushes error.md with code/message and partial inventory', async () => {

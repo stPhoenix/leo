@@ -23,10 +23,7 @@ const noopLogger: InlineAgentLogger = {
 
 interface FakeModel {
   readonly invoke: (...args: unknown[]) => Promise<unknown>;
-  withStructuredOutput(
-    schema: unknown,
-    opts?: { name?: string },
-  ): {
+  bindTools(defs: unknown[]): {
     invoke: (messages: unknown, opts?: { signal?: AbortSignal }) => Promise<unknown>;
   };
 }
@@ -34,9 +31,15 @@ interface FakeModel {
 function makeModel(handler: () => unknown | Promise<unknown>): FakeModel {
   return {
     invoke: async () => undefined,
-    withStructuredOutput() {
+    bindTools() {
       return {
-        invoke: async () => handler(),
+        invoke: async () => {
+          const args = await handler();
+          return {
+            content: '',
+            tool_calls: [{ name: 'classify_task', args }],
+          };
+        },
       };
     },
   };

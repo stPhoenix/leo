@@ -121,6 +121,7 @@ export function createRenameNoteTool(
     parameters: jsonSchemaFromZod(RenameNoteSchema),
     requiresConfirmation: true,
     source: 'builtin',
+    shouldDefer: true,
     validate: validateFromZod(RenameNoteSchema),
     invoke(args, ctx) {
       return runRename(ctx, args, opts, 'rename');

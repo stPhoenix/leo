@@ -436,6 +436,7 @@ export class MCPClient {
       parameters: tool.inputSchema,
       requiresConfirmation: true,
       source: 'mcp',
+      isMcp: true,
       mcpServerId: serverId,
       validate: (raw): ToolResult<unknown> => ({ ok: true, data: raw }),
       invoke: async (args, ctx): Promise<ToolResult<unknown>> =>

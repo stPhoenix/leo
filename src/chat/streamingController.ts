@@ -280,7 +280,7 @@ export class StreamingTurnController {
         if (existing.type === 'text') {
           nextBlocks[idx] = { ...existing, text: existing.text + append };
           assistantTextAppend += append;
-        } else if (existing.type === 'tool_result') {
+        } else if (existing.type === 'tool_result' && typeof existing.content === 'string') {
           nextBlocks[idx] = { ...existing, content: existing.content + append };
         } else {
           nextBlocks[idx] = { type: 'text', text: append } as TextBlock;

@@ -1,74 +1,92 @@
 // Guards the OpenAI tools payload shape emitted by ToolRegistry.toOpenAITools() so
 // migrations of the underlying schema source (hand-rolled → zod → future) cannot
-// silently change what the model sees. Focus on structural invariants, not zod-
-// internal metadata that may legitimately drift.
+// silently change what the model sees.
+//
+// Tools auto-enumerate via `import.meta.glob` over `src/tools/{*.ts,builtin/*.ts}`,
+// so a new builtin factory automatically extends the structural guard surface
+// without re-curating a list. The earlier hand-curated registration drifted from
+// main.ts and let `delegate_wiki_ingest` ship with a discriminated-union root that
+// emitted JSON Schema without `type: "object"`, which LM Studio rejects.
+//
+// Stub deps are a recursive callable Proxy — every property access yields the same
+// callable stub, so destructuring and method-calls during construction are inert.
+// Factories invoke deps only inside `invoke(ctx)`, never at build time, so this is
+// safe across the entire builtin set.
+
+/// <reference types="vite/client" />
 
 import { describe, expect, it } from 'vitest';
 import { ToolRegistry } from '@/tools/toolRegistry';
-import { createReadNoteTool } from '@/tools/builtin/readNote';
-import { createEditNoteTool } from '@/tools/builtin/editNote';
-import { createCreateNoteTool } from '@/tools/builtin/createNote';
-import { createAppendToNoteTool } from '@/tools/builtin/appendToNote';
-import { createCreateFolderTool } from '@/tools/builtin/createFolder';
-import { createListNotesTool } from '@/tools/builtin/listNotes';
-import { createSearchVaultTool } from '@/tools/builtin/searchVault';
-import { createRenameNoteTool } from '@/tools/builtin/renameNote';
-import { createMoveNoteTool } from '@/tools/builtin/moveNote';
-import { createCopyNoteTool } from '@/tools/builtin/copyNote';
-import { createDeleteNoteTool } from '@/tools/builtin/deleteNote';
-import { createDeleteFolderTool } from '@/tools/builtin/deleteFolder';
-import type { AcceptRejectController } from '@/agent/acceptRejectController';
-import type { SearchVaultEngine } from '@/tools/builtin/searchVault';
+import type { ToolSpec } from '@/tools/types';
 
-function fakeAcceptReject(): AcceptRejectController {
-  return { present: async () => 'accept' } as unknown as AcceptRejectController;
+type StubFn = ((...args: unknown[]) => unknown) & Record<string | symbol, unknown>;
+
+function makeStub(): StubFn {
+  const fn = ((): unknown => stub) as StubFn;
+  const stub: StubFn = new Proxy(fn, {
+    get(_target, key) {
+      if (key === 'then') return undefined;
+      if (key === Symbol.toPrimitive) return () => 'stub';
+      if (key === Symbol.iterator) return undefined;
+      return stub;
+    },
+    apply: () => stub,
+  }) as StubFn;
+  return stub;
 }
 
-function fakeSearch(): SearchVaultEngine {
-  return { query: async () => ({ hits: [] }) };
-}
+type FactoryModule = Record<string, unknown>;
 
-describe('toolRegistry.toOpenAITools — built-in tool snapshot', () => {
+const modules: Record<string, FactoryModule> = {
+  ...import.meta.glob<FactoryModule>('../../src/tools/*.ts', { eager: true }),
+  ...import.meta.glob<FactoryModule>('../../src/tools/builtin/*.ts', { eager: true }),
+};
+
+const factories: ReadonlyArray<{ name: string; factory: (deps: unknown) => unknown }> = (() => {
+  const collected: Array<{ name: string; factory: (deps: unknown) => unknown }> = [];
+  for (const mod of Object.values(modules)) {
+    for (const [exportName, value] of Object.entries(mod)) {
+      if (typeof value !== 'function') continue;
+      if (!exportName.startsWith('create') || !exportName.endsWith('Tool')) continue;
+      collected.push({
+        name: exportName,
+        factory: value as (deps: unknown) => unknown,
+      });
+    }
+  }
+  collected.sort((a, b) => a.name.localeCompare(b.name));
+  return collected;
+})();
+
+describe('toolRegistry.toOpenAITools — auto-enumerated builtin snapshot', () => {
   const registry = new ToolRegistry();
-  registry.register(createReadNoteTool());
-  registry.register(createCreateNoteTool({ acceptReject: fakeAcceptReject() }));
-  registry.register(createAppendToNoteTool({ acceptReject: fakeAcceptReject() }));
-  registry.register(createCreateFolderTool());
-  registry.register(createListNotesTool());
-  registry.register(createEditNoteTool({ acceptReject: fakeAcceptReject() }));
-  registry.register(createSearchVaultTool(fakeSearch()));
-  registry.register(createRenameNoteTool({ acceptReject: fakeAcceptReject() }));
-  registry.register(createMoveNoteTool({ acceptReject: fakeAcceptReject() }));
-  registry.register(createCopyNoteTool({ acceptReject: fakeAcceptReject() }));
-  registry.register(createDeleteNoteTool({ acceptReject: fakeAcceptReject() }));
-  registry.register(createDeleteFolderTool({ acceptReject: fakeAcceptReject() }));
+  const stub = makeStub();
+  for (const { factory } of factories) {
+    const spec = factory(stub) as ToolSpec<unknown, unknown>;
+    registry.register(spec);
+  }
   const tools = registry.toOpenAITools('t1');
 
-  it('exposes every registered built-in tool with the stable id + function wrapper', () => {
-    const ids = tools.map((t) => t.function.name).sort();
-    expect(ids).toEqual([
-      'append_to_note',
-      'copy_note',
-      'create_folder',
-      'create_note',
-      'delete_folder',
-      'delete_note',
-      'edit_note',
-      'list_notes',
-      'move_note',
-      'read_note',
-      'rename_note',
-      'search_vault',
-    ]);
+  it('discovers every builtin factory in src/tools', () => {
+    expect(factories.length).toBeGreaterThanOrEqual(16);
+    const ids = tools.map((t) => t.function.name);
+    expect(new Set(ids).size).toBe(ids.length);
     for (const t of tools) expect(t.type).toBe('function');
   });
 
-  it('every tool parameters block is a JSON Schema object with type:"object" and additionalProperties:false', () => {
+  it('every tool parameters block is a JSON Schema with type:"object" + properties (LM Studio compatibility)', () => {
     for (const t of tools) {
       const p = t.function.parameters as Record<string, unknown>;
-      expect(p.type).toBe('object');
-      expect(p.additionalProperties).toBe(false);
-      expect(typeof p.properties).toBe('object');
+      expect(p.type, `tool ${t.function.name} parameters.type`).toBe('object');
+      expect(typeof p.properties, `tool ${t.function.name} parameters.properties`).toBe('object');
+      const branches = (p.oneOf ?? p.anyOf) as Array<Record<string, unknown>> | undefined;
+      if (branches !== undefined) {
+        // discriminated-union root: branches carry additionalProperties; root must not
+        // declare additionalProperties:false because that conflicts with branch fields.
+        expect(Array.isArray(branches)).toBe(true);
+      } else {
+        expect(p.additionalProperties, `tool ${t.function.name} additionalProperties`).toBe(false);
+      }
     }
   });
 
@@ -85,7 +103,9 @@ describe('toolRegistry.toOpenAITools — built-in tool snapshot', () => {
       'delete_note',
       'delete_folder',
     ]) {
-      const t = tools.find((x) => x.function.name === id)!;
+      const t = tools.find((x) => x.function.name === id);
+      expect(t, `expected tool ${id} to be auto-discovered`).toBeDefined();
+      if (t === undefined) continue;
       const p = t.function.parameters as {
         properties: { path: { type: string } };
         required: readonly string[];
@@ -134,5 +154,12 @@ describe('toolRegistry.toOpenAITools — built-in tool snapshot', () => {
     expect(read.function.description).toContain('Read the contents');
     const edit = tools.find((x) => x.function.name === 'edit_note')!;
     expect(edit.function.description).toContain('Replace a line range');
+  });
+
+  it('discovers the new wiki tools (regression guard for hand-curated drift)', () => {
+    const ids = new Set(tools.map((t) => t.function.name));
+    for (const id of ['delegate_wiki_ingest', 'delegate_wiki_lint', 'inbox_add', 'search_wiki']) {
+      expect(ids, `auto-enumeration must include ${id}`).toContain(id);
+    }
   });
 });

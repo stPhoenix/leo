@@ -69,7 +69,6 @@ export class ExternalAgentOrchestrator {
     readonly originalAsk: string;
     readonly refineBudget?: number;
     readonly timeoutMs?: number;
-    readonly preferredAdapterId?: string | null;
   }): DelegationStartResult {
     const runId = generateRunId();
     const acquire = this.deps.slots.acquire(input.threadId, runId);
@@ -88,7 +87,16 @@ export class ExternalAgentOrchestrator {
       ...(this.deps.abortGraceMs !== undefined ? { abortGraceMs: this.deps.abortGraceMs } : {}),
     };
 
-    const adapterId = input.preferredAdapterId ?? this.deps.registry.defaultId() ?? null;
+    const adapterId = this.deps.registry.defaultId() ?? null;
+
+    // Resolve adapter config once at run-start so the user's stored config
+    // (decrypted safeStorage refs included) reaches the adapter on its first
+    // call. Reused for the terminal-snapshot persist below — same Promise,
+    // awaited twice, no double resolution.
+    const resolvedConfigPromise: Promise<unknown> =
+      adapterId !== null && this.deps.resolveConfig !== undefined
+        ? this.deps.resolveConfig(adapterId).catch(() => ({}))
+        : Promise.resolve({});
 
     const handle = startExternalAgentRun(subgraphDeps, {
       runId,
@@ -97,6 +105,7 @@ export class ExternalAgentOrchestrator {
       refineBudget: input.refineBudget ?? this.deps.defaultRefineBudget ?? 3,
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
       selectedAdapterId: adapterId,
+      resolvedConfig: resolvedConfigPromise,
     });
 
     this.liveHandles.set(runId, handle);
@@ -122,11 +131,15 @@ export class ExternalAgentOrchestrator {
       const cancelledFrom = pickCancelPhase(lastNonTerminalPhase);
       try {
         if (this.deps.persistSnapshot !== undefined) {
-          const adapterId = finalState.selectedAdapterId ?? '';
+          const finalAdapterId = finalState.selectedAdapterId ?? '';
+          // Reuse run-start resolution when the adapter is unchanged; otherwise
+          // resolve fresh for the snapshot's actual adapter.
           const resolvedConfig =
-            this.deps.resolveConfig !== undefined
-              ? await this.deps.resolveConfig(adapterId).catch(() => ({}))
-              : {};
+            finalAdapterId === (adapterId ?? '')
+              ? await resolvedConfigPromise
+              : this.deps.resolveConfig !== undefined
+                ? await this.deps.resolveConfig(finalAdapterId).catch(() => ({}))
+                : {};
           const snapshot = buildTerminalSnapshot({
             state: finalState,
             registry: this.deps.registry,

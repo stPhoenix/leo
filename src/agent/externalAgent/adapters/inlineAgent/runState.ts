@@ -16,6 +16,14 @@ export interface PublishedArtifact {
   readonly summary?: string;
 }
 
+export type InlineTodoStatus = 'pending' | 'in_progress' | 'completed';
+
+export interface InlineTodo {
+  readonly id: string;
+  readonly content: string;
+  readonly status: InlineTodoStatus;
+}
+
 export interface InlineAgentRunState {
   readonly runId: string;
   readonly sandboxRoot: string;
@@ -29,6 +37,7 @@ export interface InlineAgentRunState {
   cumulativeTokens: number;
   sandboxBytes: number;
   publishedArtifacts: PublishedArtifact[];
+  todos: InlineTodo[];
   startedAt: number;
 }
 
@@ -51,6 +60,7 @@ export function createInitialRunState(input: {
     cumulativeTokens: 0,
     sandboxBytes: 0,
     publishedArtifacts: [],
+    todos: [],
     startedAt: input.startedAt,
   };
 }
@@ -99,4 +109,8 @@ export function appendPublishedArtifact(
   artifact: PublishedArtifact,
 ): void {
   state.publishedArtifacts.push(artifact);
+}
+
+export function setTodos(state: InlineAgentRunState, todos: readonly InlineTodo[]): void {
+  state.todos = todos.map((t) => ({ id: t.id, content: t.content, status: t.status }));
 }

@@ -40,15 +40,15 @@ Give the main assistant a structured, user-controlled escape hatch for tasks out
 
 ## 2. Glossary
 
-| Term | Meaning |
-|---|---|
-| **Main agent** | The thread's primary LangGraph (`src/agent/graph.ts`). |
-| **Subgraph** | The external-agent LangGraph defined under `src/agent/externalAgent/`. |
-| **Adapter** | A subclass of `ExternalAgentAdapter` that knows how to call one external system. |
+| Term                 | Meaning                                                                                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Main agent**       | The thread's primary LangGraph (`src/agent/graph.ts`).                                                                                                        |
+| **Subgraph**         | The external-agent LangGraph defined under `src/agent/externalAgent/`.                                                                                        |
+| **Adapter**          | A subclass of `ExternalAgentAdapter` that knows how to call one external system.                                                                              |
 | **Refine sub-agent** | An LLM loop inside the subgraph that turns the user's original ask into a final, well-scoped prompt. Uses the thread's provider + a core-owned system prompt. |
-| **Refined prompt** | The output of the refine phase. The exact text sent to the adapter. |
-| **Widget** | The inline chat message block that surfaces the subgraph state and accepts user input. |
-| **Result folder** | `externalAgentResults/<isoTimestamp>/` (vault-relative). Holds `request.md`, `response.md`, optional adapter-produced files, and `error.md` on failure. |
+| **Refined prompt**   | The output of the refine phase. The exact text sent to the adapter. Adapter-agnostic; outcome-shaped, not procedural.                                         |
+| **Widget**           | The inline chat message block that surfaces the subgraph state and accepts user input.                                                                        |
+| **Result folder**    | `externalAgentResults/<isoTimestamp>/` (vault-relative). Holds `request.md`, `response.md`, optional adapter-produced files, and `error.md` on failure.       |
 
 ---
 
@@ -56,102 +56,102 @@ Give the main assistant a structured, user-controlled escape hatch for tasks out
 
 ### 3.1 Trigger & Confirmation
 
-| ID | Requirement |
-|---|---|
+| ID            | Requirement                                                                                                                                                                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **FR-EXT-01** | A built-in tool `delegate_external` is registered in `ToolRegistry` at plugin load. Its `description` instructs the main agent to use it only when no other tool fits the user's request and the task plausibly needs an external system (research, web search, long-running computation, third-party agent). |
-| **FR-EXT-02** | `delegate_external` declares `requiresConfirmation: true`. The confirmation surface is the existing `confirmationController` inline prompt with two actions: **Prepare external agent request** and **Deny**. |
-| **FR-EXT-03** | Deny → tool returns `{ ok: false, denied: true }`. The main agent receives this as a tool result and continues normally (no subgraph started). |
-| **FR-EXT-04** | Prepare → the subgraph mounts an inline widget block in the same thread (assistant-side message), and the `delegate_external` tool call enters a **suspended** state until the subgraph completes. |
+| **FR-EXT-02** | `delegate_external` declares `requiresConfirmation: true`. The confirmation surface is the existing `confirmationController` inline prompt with two actions: **Prepare external agent request** and **Deny**.                                                                                                 |
+| **FR-EXT-03** | Deny → tool returns `{ ok: false, denied: true }`. The main agent receives this as a tool result and continues normally (no subgraph started).                                                                                                                                                                |
+| **FR-EXT-04** | Prepare → the subgraph mounts an inline widget block in the same thread (assistant-side message), and the `delegate_external` tool call enters a **suspended** state until the subgraph completes.                                                                                                            |
 
 ### 3.2 One-Slot Concurrency
 
-| ID | Requirement |
-|---|---|
-| **FR-EXT-05** | At most one external-agent subgraph may be active per thread. Multiple threads may each have one. |
+| ID            | Requirement                                                                                                                                                               |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **FR-EXT-05** | At most one external-agent subgraph may be active per thread. Multiple threads may each have one.                                                                         |
 | **FR-EXT-06** | A second `delegate_external` call in the same thread while one is active returns immediately with `{ ok: false, error: 'busy', activeRunId }` — no new widget is mounted. |
 
 ### 3.3 Refine Phase
 
-| ID | Requirement |
-|---|---|
-| **FR-EXT-07** | The subgraph enters `PREPARING`. A refine sub-agent runs an LLM loop using the thread's current provider + the core-owned refine system prompt (`src/agent/externalAgent/refinePrompt.ts`). The adapter has no influence on this prompt. |
-| **FR-EXT-08** | The refine sub-agent may either (a) emit a clarifying question, or (b) emit a `final_prompt`. Clarifying questions trigger LangGraph `interrupt()`. The widget renders the question inside its own conversation area; user replies in the widget. |
-| **FR-EXT-09** | Refine iterations are budgeted. Default budget = 3. Budget is configurable in the widget before any iteration completes. Reaching the budget without `final_prompt` forces a transition to `READY` using the sub-agent's current best draft. |
-| **FR-EXT-10** | The refine sub-agent **never** calls vault tools, web tools, or `delegate_external` recursively. Its allowed action set is limited to `ask_clarifying_question` and `emit_final_prompt`. |
+| ID            | Requirement                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **FR-EXT-07** | The subgraph enters `PREPARING`. A refine sub-agent runs an LLM loop using the thread's current provider + the core-owned refine system prompt (`src/agent/externalAgent/refinePrompt.ts`). The adapter has no influence on this prompt.                                                                                                                                                                      |
+| **FR-EXT-08** | The refine sub-agent may either (a) emit a clarifying question, or (b) emit a `final_prompt`. Clarifying questions trigger LangGraph `interrupt()`. The widget renders the question inside its own conversation area; user replies in the widget.                                                                                                                                                             |
+| **FR-EXT-09** | Refine iterations are budgeted. Default budget = 3. Budget is configurable in the widget before any iteration completes. Reaching the budget without `final_prompt` forces a transition to `READY` using the sub-agent's current best draft.                                                                                                                                                                  |
+| **FR-EXT-10** | The refine sub-agent **never** calls vault tools, web tools, or `delegate_external` recursively. Its allowed action set is limited to `ask_clarifying_question` and `emit_final_prompt`. The refined prompt MUST NOT prescribe specific tools, shell/CLI invocations, network verbs, VCS commands, or local storage paths — only goal, acceptance criteria, and desired output shape (text + optional files). |
 
 ### 3.4 Ready Phase
 
-| ID | Requirement |
-|---|---|
+| ID            | Requirement                                                                                                                                                                                   |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **FR-EXT-11** | On `READY`, the widget displays the refined prompt in an editable textarea plus three actions: **Send**, **Edit**, **Cancel**. Adapter picker and timeout control are visible and modifiable. |
-| **FR-EXT-12** | **Edit** transitions back to `PREPARING`. The user's edited prompt becomes the next refine input; refine budget is **not** reset. (Prevents loops via repeated edits.) |
-| **FR-EXT-13** | **Cancel** transitions to `CANCELLED`; tool returns `{ ok: false, cancelled: true, phase: 'ready' }`. |
-| **FR-EXT-14** | **Send** transitions to `RUNNING`. The adapter selected in the widget picker (defaulting to the global default from settings) is invoked with the refined prompt. |
+| **FR-EXT-12** | **Edit** transitions back to `PREPARING`. The user's edited prompt becomes the next refine input; refine budget is **not** reset. (Prevents loops via repeated edits.)                        |
+| **FR-EXT-13** | **Cancel** transitions to `CANCELLED`; tool returns `{ ok: false, cancelled: true, phase: 'ready' }`.                                                                                         |
+| **FR-EXT-14** | **Send** transitions to `RUNNING`. The adapter selected in the widget picker (defaulting to the global default from settings) is invoked with the refined prompt.                             |
 
 ### 3.5 Running Phase
 
-| ID | Requirement |
-|---|---|
-| **FR-EXT-15** | Adapter is invoked via `adapter.start({ refinedAsk, systemPrompt, signal, timeoutMs, config })` and yields `AsyncIterable<ExternalEvent>`. |
-| **FR-EXT-16** | Each event updates the widget: `text` chunks append to a streaming response panel; `log` events render in a collapsible log; `file` events show a placeholder until written. |
-| **FR-EXT-17** | Timeout: `timeoutMs` (default = `adapter.defaultTimeoutMs`, overridable in widget) starts when `start()` is called. Reaching it triggers the `AbortSignal` and a transition to `ERROR` with `error.code = 'timeout'`. |
+| ID            | Requirement                                                                                                                                                                                                                                          |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **FR-EXT-15** | Adapter is invoked via `adapter.start({ refinedAsk, systemPrompt, signal, timeoutMs, config })` and yields `AsyncIterable<ExternalEvent>`.                                                                                                           |
+| **FR-EXT-16** | Each event updates the widget: `text` chunks append to a streaming response panel; `log` events render in a collapsible log; `file` events show a placeholder until written.                                                                         |
+| **FR-EXT-17** | Timeout: `timeoutMs` (default = `adapter.defaultTimeoutMs`, overridable in widget) starts when `start()` is called. Reaching it triggers the `AbortSignal` and a transition to `ERROR` with `error.code = 'timeout'`.                                |
 | **FR-EXT-18** | **Cancel** during `RUNNING` triggers the `AbortSignal`. The adapter must terminate within ≤ 2 s wall-clock (NFR-EXT-01); partial output is discarded — no result folder is written. Tool returns `{ ok: false, cancelled: true, phase: 'running' }`. |
 
 ### 3.6 Writing Phase
 
-| ID | Requirement |
-|---|---|
-| **FR-EXT-19** | On `done`, the subgraph transitions to `WRITING`. `ResultWriter` creates `externalAgentResults/<isoTimestamp>/` via `VaultAdapter`. |
+| ID            | Requirement                                                                                                                                                                                                                                                                        |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **FR-EXT-19** | On `done`, the subgraph transitions to `WRITING`. `ResultWriter` creates `externalAgentResults/<isoTimestamp>/` via `VaultAdapter`.                                                                                                                                                |
 | **FR-EXT-20** | Always written: `request.md` (the refined prompt + adapter id + start/end times) and `response.md` (the streamed text buffer). Adapter-produced `file` events are written under the same folder using the event's `relPath` (sanitized; absolute paths or `..` segments rejected). |
-| **FR-EXT-21** | The folder prefix `externalAgentResults/` is added to the default RAG exclude list in `excludeListStore` on plugin load (idempotent), and is filtered out at `dirtyQueue` intake so it never enters the indexer. |
-| **FR-EXT-22** | After `WRITING` succeeds, the subgraph transitions to `DONE` and the `delegate_external` tool resumes with result `{ ok: true, folder, files: string[], summary: string, adapterId, durationMs }`. `summary` = first 500 characters of `response.md`. |
+| **FR-EXT-21** | The folder prefix `externalAgentResults/` is added to the default RAG exclude list in `excludeListStore` on plugin load (idempotent), and is filtered out at `dirtyQueue` intake so it never enters the indexer.                                                                   |
+| **FR-EXT-22** | After `WRITING` succeeds, the subgraph transitions to `DONE` and the `delegate_external` tool resumes with result `{ ok: true, folder, files: string[], summary: string, adapterId, durationMs }`. `summary` = first 500 characters of `response.md`.                              |
 
 ### 3.7 Error Handling
 
-| ID | Requirement |
-|---|---|
+| ID            | Requirement                                                                                                                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **FR-EXT-23** | Any adapter `error` event, an unhandled throw inside the subgraph, or a timeout transitions to `ERROR`. `ResultWriter` writes `error.md` (code, message, timestamps, adapter id, refined prompt) to the result folder; partial `response.md` is also flushed. |
-| **FR-EXT-24** | On `ERROR`, the tool returns `{ ok: false, error: { code, message }, folder, files }`. The main agent sees the structured error and may apologize / suggest retry. |
+| **FR-EXT-24** | On `ERROR`, the tool returns `{ ok: false, error: { code, message }, folder, files }`. The main agent sees the structured error and may apologize / suggest retry.                                                                                            |
 
 ### 3.8 Widget Lifecycle
 
-| ID | Requirement |
-|---|---|
-| **FR-EXT-25** | The widget is rendered as an inline assistant message block in the thread (mirrors `PlanApprovalDialog`). It is part of the conversation record. |
+| ID            | Requirement                                                                                                                                                                                                                                                                                         |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **FR-EXT-25** | The widget is rendered as an inline assistant message block in the thread (mirrors `PlanApprovalDialog`). It is part of the conversation record.                                                                                                                                                    |
 | **FR-EXT-26** | After `DONE`, `CANCELLED`, or `ERROR`, the widget collapses to a one-line summary (status icon + adapter label + folder link + duration) but remains visible in chat history when the thread is reopened. The collapsed view is expandable to show the recorded refine transcript and final prompt. |
-| **FR-EXT-27** | The widget exposes: adapter picker (default from settings), timeout input (default from selected adapter), refine-budget input (default 3), Send / Edit / Cancel buttons (state-dependent), live event log, response stream panel. |
+| **FR-EXT-27** | The widget exposes: adapter picker (default from settings), timeout input (default from selected adapter), refine-budget input (default 3), Send / Edit / Cancel buttons (state-dependent), live event log, response stream panel.                                                                  |
 
 ### 3.9 Adapters & Registry
 
-| ID | Requirement |
-|---|---|
-| **FR-EXT-28** | All adapters are concrete subclasses of `ExternalAgentAdapter` (see §7). Built-in adapters are imported and registered statically at plugin load. |
-| **FR-EXT-29** | An `AdapterRegistry` (mirrors `ToolRegistry` shape) exposes `list()`, `get(id)`, `defaultId()`, with the default id stored in plugin settings (`externalAgents.defaultAdapterId`). |
-| **FR-EXT-30** | An adapter must declare a Zod `configSchema`. The Settings tab renders one section per adapter, parsing/saving config under `data.json: externalAgents.<id>.config`. Secret fields (`format: 'secret'` in schema metadata) are persisted via `SafeStorage`. |
-| **FR-EXT-31** | An adapter MUST NOT receive a `VaultAdapter`, `EditorBridge`, or any vault handle. Its only inputs are `ExternalAgentInput` (refined ask, system prompt, signal, timeout, config). All file persistence is done by core via `ResultWriter`. |
+| ID            | Requirement                                                                                                                                                                                                                                                                                                           |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **FR-EXT-28** | All adapters are concrete subclasses of `ExternalAgentAdapter` (see §7). Built-in adapters are imported and registered statically at plugin load.                                                                                                                                                                     |
+| **FR-EXT-29** | An `AdapterRegistry` (mirrors `ToolRegistry` shape) exposes `list()`, `get(id)`, `defaultId()`, with the default id stored in plugin settings (`externalAgents.defaultAdapterId`).                                                                                                                                    |
+| **FR-EXT-30** | An adapter must declare a Zod `configSchema`. The Settings tab renders one section per adapter, parsing/saving config under `data.json: externalAgents.<id>.config`. Secret fields (`format: 'secret'` in schema metadata) are persisted via `SafeStorage`.                                                           |
+| **FR-EXT-31** | An adapter MUST NOT receive a `VaultAdapter`, `EditorBridge`, or any vault handle. Its only inputs are `ExternalAgentInput` (refined ask, system prompt, signal, timeout, config). All file persistence is done by core via `ResultWriter`.                                                                           |
 | **FR-EXT-32** | **Deferred from v1.** Concrete built-in adapter implementations (e.g. `claude-code` stdio, `openai-compatible` HTTP/SSE) are out-of-scope for the v1 plan and will be added incrementally in a follow-up phase. v1 ships the contract + registry + UI + settings such that registering an adapter is purely additive. |
 
 ### 3.10 Configuration & Settings
 
-| ID | Requirement |
-|---|---|
+| ID            | Requirement                                                                                                                                                                         |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **FR-EXT-33** | Settings tab gains a section "External Agents" with: global default adapter dropdown, per-adapter config blocks (rendered from `configSchema`), and per-adapter `enabled: boolean`. |
-| **FR-EXT-34** | Disabled adapters do not appear in the widget picker. If the global default is disabled, the first enabled adapter (alphabetical by id) becomes the runtime default. |
+| **FR-EXT-34** | Disabled adapters do not appear in the widget picker. If the global default is disabled, the first enabled adapter (alphabetical by id) becomes the runtime default.                |
 
 ---
 
 ## 4. Non-Functional Requirements
 
-| ID | Requirement |
-|---|---|
-| **NFR-EXT-01** | Cancel surfaces within ≤ 2 s wall-clock from button press to subgraph terminal state. Adapters must respect the `AbortSignal` and surface abort as a non-error termination. |
-| **NFR-EXT-02** | Adapter implementations have no access to vault, editor, or other plugin state. Enforced by passing only `ExternalAgentInput` to `start()` (no ambient `LeoContext`). |
-| **NFR-EXT-03** | Result folder writes are atomic per-file. A failure mid-write must still produce `error.md` describing what was/was not flushed. |
-| **NFR-EXT-04** | Subgraph state is in-memory only. A plugin reload during `RUNNING` discards the request; the widget transitions to `ERROR { code: 'reload' }` on rehydrate. Document this in the widget's collapsed summary view. |
-| **NFR-EXT-05** | Logging: every state transition + adapter event logged at `debug`; errors at `error`. Do **not** log refined-prompt or response content above `debug` level — research content may be sensitive. |
+| ID             | Requirement                                                                                                                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **NFR-EXT-01** | Cancel surfaces within ≤ 2 s wall-clock from button press to subgraph terminal state. Adapters must respect the `AbortSignal` and surface abort as a non-error termination.                                                                      |
+| **NFR-EXT-02** | Adapter implementations have no access to vault, editor, or other plugin state. Enforced by passing only `ExternalAgentInput` to `start()` (no ambient `LeoContext`).                                                                            |
+| **NFR-EXT-03** | Result folder writes are atomic per-file. A failure mid-write must still produce `error.md` describing what was/was not flushed.                                                                                                                 |
+| **NFR-EXT-04** | Subgraph state is in-memory only. A plugin reload during `RUNNING` discards the request; the widget transitions to `ERROR { code: 'reload' }` on rehydrate. Document this in the widget's collapsed summary view.                                |
+| **NFR-EXT-05** | Logging: every state transition + adapter event logged at `debug`; errors at `error`. Do **not** log refined-prompt or response content above `debug` level — research content may be sensitive.                                                 |
 | **NFR-EXT-06** | Bundle: external-agent contract + registry + widget + settings together add ≤ 30 KB minified to `main.js`. No new top-level dependency. (When concrete adapters are added in a later phase, each adapter's bundle impact is tracked separately.) |
-| **NFR-EXT-07** | All subgraph nodes that touch IO are wrapped in `try/finally` to ensure `AbortController` cleanup, `child_process` kill, and HTTP body cancellation. |
-| **NFR-EXT-08** | The subgraph is unit-testable end-to-end with a mock adapter (`AsyncIterable` of canned events) — no msw or real provider required for the state machine tests. |
+| **NFR-EXT-07** | All subgraph nodes that touch IO are wrapped in `try/finally` to ensure `AbortController` cleanup, `child_process` kill, and HTTP body cancellation.                                                                                             |
+| **NFR-EXT-08** | The subgraph is unit-testable end-to-end with a mock adapter (`AsyncIterable` of canned events) — no msw or real provider required for the state machine tests.                                                                                  |
 
 ---
 
@@ -199,11 +199,16 @@ import { z } from 'zod';
 import type { BaseMessage } from '@langchain/core/messages';
 
 export type ExternalPhase =
-  | 'preparing' | 'ready' | 'running' | 'writing'
-  | 'done' | 'cancelled' | 'error';
+  | 'preparing'
+  | 'ready'
+  | 'running'
+  | 'writing'
+  | 'done'
+  | 'cancelled'
+  | 'error';
 
 export interface ExternalAgentState {
-  runId: string;                        // ULID; used as folder timestamp suffix
+  runId: string; // ULID; used as folder timestamp suffix
   threadId: string;
   phase: ExternalPhase;
 
@@ -223,7 +228,7 @@ export interface ExternalAgentState {
   // Output buffers (in-memory; flushed in WRITING)
   textBuffer: string;
   pendingFiles: ReadonlyArray<{ relPath: string; content: string | Uint8Array; mime?: string }>;
-  logEvents: ReadonlyArray<{ level: 'debug'|'info'|'warn'; msg: string; ts: number }>;
+  logEvents: ReadonlyArray<{ level: 'debug' | 'info' | 'warn'; msg: string; ts: number }>;
 
   // Result
   resultFolder: string | null;
@@ -244,10 +249,10 @@ import { z } from 'zod';
 
 export interface ExternalAgentInput {
   readonly refinedAsk: string;
-  readonly systemPrompt: string;        // core-owned base; adapter MAY prepend/append
+  readonly systemPrompt: string; // core-owned base; adapter MAY prepend/append
   readonly signal: AbortSignal;
   readonly timeoutMs: number;
-  readonly config: unknown;             // already validated against this.configSchema
+  readonly config: unknown; // already validated against this.configSchema
 }
 
 export type ExternalEvent =
@@ -258,11 +263,11 @@ export type ExternalEvent =
   | { type: 'error'; error: { code: string; message: string } };
 
 export abstract class ExternalAgentAdapter {
-  abstract readonly id: string;                 // 'claude-code', 'openai-compatible', ...
-  abstract readonly label: string;              // display name for the widget picker
+  abstract readonly id: string; // 'claude-code', 'openai-compatible', ...
+  abstract readonly label: string; // display name for the widget picker
   abstract readonly defaultTimeoutMs: number;
   abstract readonly capabilities: { files: boolean; stream: boolean };
-  abstract readonly configSchema: z.ZodType;    // metadata: secret fields tagged `.describe('secret')`
+  abstract readonly configSchema: z.ZodType; // metadata: secret fields tagged `.describe('secret')`
   abstract start(input: ExternalAgentInput): AsyncIterable<ExternalEvent>;
 }
 ```
@@ -377,39 +382,39 @@ sequenceDiagram
 
 All new modules respect the `UI → Agent → Domain/Adapters → Platform` rule (architecture.md §1, §2). No back-edges.
 
-| Module | Layer | Responsibility |
-|---|---|---|
-| `tools/builtin/delegateExternal.ts` | Agent (tool) | Trigger tool. `requiresConfirmation: true`. On Prepare, hands off to subgraph and suspends until terminal state. |
-| `agent/externalAgent/subgraph.ts` | Agent | LangGraph `StateGraph` defining the state machine in §5. Pure node functions where possible; IO isolated. |
-| `agent/externalAgent/state.ts` | Agent (Domain) | Typed state shape + Zod. Pure. |
-| `agent/externalAgent/refinePrompt.ts` | Agent (Domain) | Pure. Returns the refine sub-agent system prompt (file/return contract instructions). |
-| `agent/externalAgent/adapterRegistry.ts` | Agent | Registry mirroring `ToolRegistry`. `list / get / defaultId`. |
-| `agent/externalAgent/widgetController.ts` | Agent ↔ UI bridge | Projects `ExternalAgentState` → widget store events; resolves widget actions back into the subgraph. Same pattern as `confirmationController` / `planApprovalController`. |
-| `agent/externalAgent/resultWriter.ts` | Adapter | Writes folder + files via `VaultAdapter`. Sanitizes `relPath`. Emits `error.md` on failure paths. |
-| `agent/externalAgent/adapters/base.ts` | Agent (contract) | `ExternalAgentAdapter` abstract class + types from §7. |
-| `agent/externalAgent/adapters/claudeCode.ts` | Adapter | Built-in. Spawns `claude` CLI via `child_process.spawn`, parses stream-json output. |
-| `agent/externalAgent/adapters/openAICompatible.ts` | Adapter | Built-in. POSTs `/v1/chat/completions` with `stream: true`, parses SSE. |
-| `ui/chat/blocks/ExternalAgentWidget.tsx` | UI | Inline message block. Live view + collapsed history view. Subscribes to `widgetController`. |
-| `ui/chat/blocks/ExternalAgentWidget.stories.tsx` | UI (stories) | Storybook fixtures: each phase + error variant. |
-| `settings/externalAgentsSection.ts` | UI (settings) | Settings tab section: default-picker + per-adapter config rendered from `configSchema`. |
-| `storage/safeStorage.ts` | Adapter (existing) | Reused for adapter secret fields (no changes). |
-| `rag/excludeMatcher.ts` (existing) + `settings/excludeListStore.ts` (existing) | Domain / Settings | `externalAgentResults/` added to defaults at plugin load. |
-| `indexer/dirtyQueue.ts` (existing) | Domain | Filter at intake: paths under `externalAgentResults/` are dropped. |
-| `chat/messageStore.ts` (existing) | Chat | New block kind `external_agent_widget` recorded in thread JSON so widget rehydrates as collapsed summary. |
+| Module                                                                         | Layer              | Responsibility                                                                                                                                                            |
+| ------------------------------------------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tools/builtin/delegateExternal.ts`                                            | Agent (tool)       | Trigger tool. `requiresConfirmation: true`. On Prepare, hands off to subgraph and suspends until terminal state.                                                          |
+| `agent/externalAgent/subgraph.ts`                                              | Agent              | LangGraph `StateGraph` defining the state machine in §5. Pure node functions where possible; IO isolated.                                                                 |
+| `agent/externalAgent/state.ts`                                                 | Agent (Domain)     | Typed state shape + Zod. Pure.                                                                                                                                            |
+| `agent/externalAgent/refinePrompt.ts`                                          | Agent (Domain)     | Pure. Returns the refine sub-agent system prompt (file/return contract instructions).                                                                                     |
+| `agent/externalAgent/adapterRegistry.ts`                                       | Agent              | Registry mirroring `ToolRegistry`. `list / get / defaultId`.                                                                                                              |
+| `agent/externalAgent/widgetController.ts`                                      | Agent ↔ UI bridge  | Projects `ExternalAgentState` → widget store events; resolves widget actions back into the subgraph. Same pattern as `confirmationController` / `planApprovalController`. |
+| `agent/externalAgent/resultWriter.ts`                                          | Adapter            | Writes folder + files via `VaultAdapter`. Sanitizes `relPath`. Emits `error.md` on failure paths.                                                                         |
+| `agent/externalAgent/adapters/base.ts`                                         | Agent (contract)   | `ExternalAgentAdapter` abstract class + types from §7.                                                                                                                    |
+| `agent/externalAgent/adapters/claudeCode.ts`                                   | Adapter            | Built-in. Spawns `claude` CLI via `child_process.spawn`, parses stream-json output.                                                                                       |
+| `agent/externalAgent/adapters/openAICompatible.ts`                             | Adapter            | Built-in. POSTs `/v1/chat/completions` with `stream: true`, parses SSE.                                                                                                   |
+| `ui/chat/blocks/ExternalAgentWidget.tsx`                                       | UI                 | Inline message block. Live view + collapsed history view. Subscribes to `widgetController`.                                                                               |
+| `ui/chat/blocks/ExternalAgentWidget.stories.tsx`                               | UI (stories)       | Storybook fixtures: each phase + error variant.                                                                                                                           |
+| `settings/externalAgentsSection.ts`                                            | UI (settings)      | Settings tab section: default-picker + per-adapter config rendered from `configSchema`.                                                                                   |
+| `storage/safeStorage.ts`                                                       | Adapter (existing) | Reused for adapter secret fields (no changes).                                                                                                                            |
+| `rag/excludeMatcher.ts` (existing) + `settings/excludeListStore.ts` (existing) | Domain / Settings  | `externalAgentResults/` added to defaults at plugin load.                                                                                                                 |
+| `indexer/dirtyQueue.ts` (existing)                                             | Domain             | Filter at intake: paths under `externalAgentResults/` are dropped.                                                                                                        |
+| `chat/messageStore.ts` (existing)                                              | Chat               | New block kind `external_agent_widget` recorded in thread JSON so widget rehydrates as collapsed summary.                                                                 |
 
 ### 10.1 Touchpoints to existing modules
 
-| Module | Change |
-|---|---|
-| `tools/toolRegistry.ts` | Register `delegateExternal` at load. |
-| `agent/confirmationController.ts` | Two-action variant ("Prepare" / "Deny") supported (existing pattern allows arbitrary action labels). |
-| `agent/graph.ts` | No structural change. The subgraph runs **outside** the main graph; the main graph only sees the suspended tool call and its eventual result. |
-| `chat/messageStore.ts` | New persisted block type `external_agent_widget` with payload = `{ runId, phase: terminal, adapterId, folder, files, durationMs, refineTranscript, refinedPrompt, error? }`. |
-| `chat/types.ts` | Add `ExternalAgentBlock` to the chat block union. |
-| `settings/SettingsTab.ts` | Mount `externalAgentsSection`. |
-| `settings/excludeListStore.ts` | Default list includes `externalAgentResults/` (idempotent on load). |
-| `indexer/dirtyQueue.ts` | Drop paths matching `externalAgentResults/**` at `add()`. |
-| `platform/Logger.ts` | New log namespace `externalAgent.*`. No new sink. |
+| Module                            | Change                                                                                                                                                                       |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tools/toolRegistry.ts`           | Register `delegateExternal` at load.                                                                                                                                         |
+| `agent/confirmationController.ts` | Two-action variant ("Prepare" / "Deny") supported (existing pattern allows arbitrary action labels).                                                                         |
+| `agent/graph.ts`                  | No structural change. The subgraph runs **outside** the main graph; the main graph only sees the suspended tool call and its eventual result.                                |
+| `chat/messageStore.ts`            | New persisted block type `external_agent_widget` with payload = `{ runId, phase: terminal, adapterId, folder, files, durationMs, refineTranscript, refinedPrompt, error? }`. |
+| `chat/types.ts`                   | Add `ExternalAgentBlock` to the chat block union.                                                                                                                            |
+| `settings/SettingsTab.ts`         | Mount `externalAgentsSection`.                                                                                                                                               |
+| `settings/excludeListStore.ts`    | Default list includes `externalAgentResults/` (idempotent on load).                                                                                                          |
+| `indexer/dirtyQueue.ts`           | Drop paths matching `externalAgentResults/**` at `add()`.                                                                                                                    |
+| `platform/Logger.ts`              | New log namespace `externalAgent.*`. No new sink.                                                                                                                            |
 
 ---
 
@@ -446,17 +451,17 @@ All new modules respect the `UI → Agent → Domain/Adapters → Platform` rule
 
 ## 12. Error Handling
 
-| Failure | Handling |
-|---|---|
-| Adapter throws synchronously inside `start()` | Caught by subgraph IO node → ERROR with `error.code='adapter_throw'`. |
-| Adapter emits `{type:'error'}` event | ERROR with adapter-supplied code/message. |
-| Adapter never yields and timeout fires | AbortSignal triggered → adapter must terminate; ERROR with `error.code='timeout'`. |
-| Adapter ignores AbortSignal beyond 2 s | Subgraph forces transition to ERROR with `error.code='abort_timeout'`; for `child_process` adapters, `SIGKILL` after 2 s grace. |
+| Failure                                                   | Handling                                                                                                                                                            |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Adapter throws synchronously inside `start()`             | Caught by subgraph IO node → ERROR with `error.code='adapter_throw'`.                                                                                               |
+| Adapter emits `{type:'error'}` event                      | ERROR with adapter-supplied code/message.                                                                                                                           |
+| Adapter never yields and timeout fires                    | AbortSignal triggered → adapter must terminate; ERROR with `error.code='timeout'`.                                                                                  |
+| Adapter ignores AbortSignal beyond 2 s                    | Subgraph forces transition to ERROR with `error.code='abort_timeout'`; for `child_process` adapters, `SIGKILL` after 2 s grace.                                     |
 | `VaultAdapter.create` fails (path collision, permissions) | ResultWriter retries once with a `-retry` suffix on the folder; second failure → ERROR with `error.code='write_failed'`. Tool result still includes `folder: null`. |
-| `ExcludeListStore` write fails | Logged at `warn`. Does not block subgraph success — `dirtyQueue` filter is the safety net. |
-| Plugin unload during RUNNING | AbortSignal fires from `onunload`. No partial write. Widget rehydrates as ERROR `{code:'reload'}`. |
-| Refine sub-agent times out / errors | Subgraph transitions to ERROR with `error.code='refine_failed'`; no adapter call is made; no result folder is written. |
-| User denies confirmation prompt | No subgraph started; tool result `{ok:false, denied:true}`. |
+| `ExcludeListStore` write fails                            | Logged at `warn`. Does not block subgraph success — `dirtyQueue` filter is the safety net.                                                                          |
+| Plugin unload during RUNNING                              | AbortSignal fires from `onunload`. No partial write. Widget rehydrates as ERROR `{code:'reload'}`.                                                                  |
+| Refine sub-agent times out / errors                       | Subgraph transitions to ERROR with `error.code='refine_failed'`; no adapter call is made; no result folder is written.                                              |
+| User denies confirmation prompt                           | No subgraph started; tool result `{ok:false, denied:true}`.                                                                                                         |
 
 ---
 
@@ -481,51 +486,51 @@ Strawman targets for the follow-up phase (non-binding sketches):
 
 ## 14. Out of Scope (v1) — Explicit Deferrals
 
-| Topic | Defer to | Rationale |
-|---|---|---|
-| Concrete built-in adapter implementations (`claude-code`, `openai-compatible`, …) | Follow-up phase | v1 plan slices the contract + plumbing first; adapters land as additive PRs once the platform is solid. Strawman targets sketched in §13. |
-| User-supplied adapter `.js` modules in `.leo/adapters/` | Phase 2 | Same `Function`-constructor sandbox concerns as user tools (tech-stack §"Open Decisions"). Decide loader + permission model first. |
-| Cross-thread parallel external calls | Phase 2 | UI surface for tracking N widgets is non-trivial; one-slot keeps scope tight. |
-| Resume in-flight RUNNING across plugin reload | Phase 3 | Requires checkpoint store for subgraph state + adapter-side resumption protocol. Most adapters can't resume anyway. |
-| Auto-attaching produced files to next user turn | — | The main agent has `read_note` / `read_file` and the folder path; explicit attachment is over-eager and breaks user agency. |
-| Tool ACL prompts on file writes from external agents | Phase 2 | All writes already go through `ResultWriter` into a single excluded folder; no broader vault touch possible. Revisit if adapters gain write-anywhere capability. |
-| Adapters that need access to vault context | — | Out of scope by design (NFR-EXT-02). If an adapter needs note content, the refine sub-agent must inline it into the refined prompt. |
+| Topic                                                                             | Defer to        | Rationale                                                                                                                                                        |
+| --------------------------------------------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Concrete built-in adapter implementations (`claude-code`, `openai-compatible`, …) | Follow-up phase | v1 plan slices the contract + plumbing first; adapters land as additive PRs once the platform is solid. Strawman targets sketched in §13.                        |
+| User-supplied adapter `.js` modules in `.leo/adapters/`                           | Phase 2         | Same `Function`-constructor sandbox concerns as user tools (tech-stack §"Open Decisions"). Decide loader + permission model first.                               |
+| Cross-thread parallel external calls                                              | Phase 2         | UI surface for tracking N widgets is non-trivial; one-slot keeps scope tight.                                                                                    |
+| Resume in-flight RUNNING across plugin reload                                     | Phase 3         | Requires checkpoint store for subgraph state + adapter-side resumption protocol. Most adapters can't resume anyway.                                              |
+| Auto-attaching produced files to next user turn                                   | —               | The main agent has `read_note` / `read_file` and the folder path; explicit attachment is over-eager and breaks user agency.                                      |
+| Tool ACL prompts on file writes from external agents                              | Phase 2         | All writes already go through `ResultWriter` into a single excluded folder; no broader vault touch possible. Revisit if adapters gain write-anywhere capability. |
+| Adapters that need access to vault context                                        | —               | Out of scope by design (NFR-EXT-02). If an adapter needs note content, the refine sub-agent must inline it into the refined prompt.                              |
 
 ---
 
 ## 15. Open Decisions
 
-| # | Decision | Notes |
-|---|---|---|
-| OD-1 | Refine sub-agent model: same as thread provider, or pinned per-adapter? | Default v1: same as thread. Add per-adapter override later if needed. |
-| OD-2 | Refine sub-agent control surface: tool calls (`ask_clarifying_question`, `emit_final_prompt`) or structured-output JSON? | Tool calls reuse existing LangGraph machinery and stream nicely. Lean tool calls. |
-| OD-3 | Widget rendering inside main thread vs in a dedicated tab. | SRS picks inline-block per FR-EXT-25. Revisit only if widgets grow large enough to dominate the viewport. |
-| OD-4 | `runId` format. | ISO + 6-char ULID tail balances readability vs collision safety. |
-| OD-5 | Retry button on ERROR widget. | v1 = no. User can re-issue the message; the refine transcript is preserved in `messageStore` for re-use. |
+| #    | Decision                                                                                                                 | Notes                                                                                                     |
+| ---- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| OD-1 | Refine sub-agent model: same as thread provider, or pinned per-adapter?                                                  | Default v1: same as thread. Add per-adapter override later if needed.                                     |
+| OD-2 | Refine sub-agent control surface: tool calls (`ask_clarifying_question`, `emit_final_prompt`) or structured-output JSON? | Tool calls reuse existing LangGraph machinery and stream nicely. Lean tool calls.                         |
+| OD-3 | Widget rendering inside main thread vs in a dedicated tab.                                                               | SRS picks inline-block per FR-EXT-25. Revisit only if widgets grow large enough to dominate the viewport. |
+| OD-4 | `runId` format.                                                                                                          | ISO + 6-char ULID tail balances readability vs collision safety.                                          |
+| OD-5 | Retry button on ERROR widget.                                                                                            | v1 = no. User can re-issue the message; the refine transcript is preserved in `messageStore` for re-use.  |
 
 ---
 
 ## 16. SRS → Module Mapping
 
-| FR / NFR | Modules |
-|---|---|
-| FR-EXT-01..04 | `tools/builtin/delegateExternal.ts`, `tools/toolRegistry.ts`, `agent/confirmationController.ts` |
-| FR-EXT-05..06 | `agent/externalAgent/subgraph.ts`, `agent/externalAgent/widgetController.ts` |
-| FR-EXT-07..10 | `agent/externalAgent/subgraph.ts`, `agent/externalAgent/refinePrompt.ts`, `providers/providerManager.ts` |
-| FR-EXT-11..14 | `agent/externalAgent/subgraph.ts`, `ui/chat/blocks/ExternalAgentWidget.tsx`, `agent/externalAgent/widgetController.ts` |
-| FR-EXT-15..18 | `agent/externalAgent/subgraph.ts`, `agent/externalAgent/adapters/base.ts`, `agent/externalAgent/adapters/*.ts` |
-| FR-EXT-19..22 | `agent/externalAgent/resultWriter.ts`, `storage/vaultAdapter.ts`, `settings/excludeListStore.ts`, `indexer/dirtyQueue.ts` |
-| FR-EXT-23..24 | `agent/externalAgent/subgraph.ts`, `agent/externalAgent/resultWriter.ts` |
-| FR-EXT-25..27 | `ui/chat/blocks/ExternalAgentWidget.tsx`, `chat/messageStore.ts`, `chat/types.ts` |
+| FR / NFR      | Modules                                                                                                                                                                            |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| FR-EXT-01..04 | `tools/builtin/delegateExternal.ts`, `tools/toolRegistry.ts`, `agent/confirmationController.ts`                                                                                    |
+| FR-EXT-05..06 | `agent/externalAgent/subgraph.ts`, `agent/externalAgent/widgetController.ts`                                                                                                       |
+| FR-EXT-07..10 | `agent/externalAgent/subgraph.ts`, `agent/externalAgent/refinePrompt.ts`, `providers/providerManager.ts`                                                                           |
+| FR-EXT-11..14 | `agent/externalAgent/subgraph.ts`, `ui/chat/blocks/ExternalAgentWidget.tsx`, `agent/externalAgent/widgetController.ts`                                                             |
+| FR-EXT-15..18 | `agent/externalAgent/subgraph.ts`, `agent/externalAgent/adapters/base.ts`, `agent/externalAgent/adapters/*.ts`                                                                     |
+| FR-EXT-19..22 | `agent/externalAgent/resultWriter.ts`, `storage/vaultAdapter.ts`, `settings/excludeListStore.ts`, `indexer/dirtyQueue.ts`                                                          |
+| FR-EXT-23..24 | `agent/externalAgent/subgraph.ts`, `agent/externalAgent/resultWriter.ts`                                                                                                           |
+| FR-EXT-25..27 | `ui/chat/blocks/ExternalAgentWidget.tsx`, `chat/messageStore.ts`, `chat/types.ts`                                                                                                  |
 | FR-EXT-28..32 | `agent/externalAgent/adapterRegistry.ts`, `agent/externalAgent/adapters/base.ts`, `agent/externalAgent/adapters/claudeCode.ts`, `agent/externalAgent/adapters/openAICompatible.ts` |
-| FR-EXT-33..34 | `settings/externalAgentsSection.ts`, `settings/SettingsTab.ts`, `storage/safeStorage.ts` |
-| NFR-EXT-01 | `agent/externalAgent/subgraph.ts`, all adapters |
-| NFR-EXT-02 | `agent/externalAgent/adapters/base.ts` (contract), ESLint `no-restricted-imports` for adapter files |
-| NFR-EXT-03 | `agent/externalAgent/resultWriter.ts` |
-| NFR-EXT-04 | `agent/externalAgent/widgetController.ts`, `chat/messageStore.ts` |
-| NFR-EXT-05 | `platform/Logger.ts` (namespace `externalAgent.*`) |
-| NFR-EXT-06 | esbuild bundle check |
-| NFR-EXT-07 | All IO nodes in `agent/externalAgent/subgraph.ts` and adapters |
-| NFR-EXT-08 | `tests/unit/externalAgent/*.test.ts` with mock `AsyncIterable` adapter |
+| FR-EXT-33..34 | `settings/externalAgentsSection.ts`, `settings/SettingsTab.ts`, `storage/safeStorage.ts`                                                                                           |
+| NFR-EXT-01    | `agent/externalAgent/subgraph.ts`, all adapters                                                                                                                                    |
+| NFR-EXT-02    | `agent/externalAgent/adapters/base.ts` (contract), ESLint `no-restricted-imports` for adapter files                                                                                |
+| NFR-EXT-03    | `agent/externalAgent/resultWriter.ts`                                                                                                                                              |
+| NFR-EXT-04    | `agent/externalAgent/widgetController.ts`, `chat/messageStore.ts`                                                                                                                  |
+| NFR-EXT-05    | `platform/Logger.ts` (namespace `externalAgent.*`)                                                                                                                                 |
+| NFR-EXT-06    | esbuild bundle check                                                                                                                                                               |
+| NFR-EXT-07    | All IO nodes in `agent/externalAgent/subgraph.ts` and adapters                                                                                                                     |
+| NFR-EXT-08    | `tests/unit/externalAgent/*.test.ts` with mock `AsyncIterable` adapter                                                                                                             |
 
 Every requirement maps to ≥ 1 module. Any orphan FR or adapter without an FR is a gap — fix here before implementation.

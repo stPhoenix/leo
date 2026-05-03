@@ -1,8 +1,8 @@
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { HumanMessage, SystemMessage } from '@langchain/core/messages';
+import { type AIMessage, HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { classifyTaskOutputSchema, type ClassifyTaskOutput } from './tools/schemas';
 import type { InlineAgentConfig } from './configSchema';
-import type { InlineAgentLogger, ProviderFactory } from './index';
+import type { InlineAgentLogger, InvokeTraceConfig, ProviderFactory } from './index';
 import { addTokens, incrementIterations, setRoute, type InlineAgentRunState } from './runState';
 import type { BridgeChunk } from './eventBridge';
 
@@ -54,6 +54,7 @@ export interface ClassifyTaskInput {
    */
   readonly chatModel?: BaseChatModel;
   readonly now?: () => number;
+  readonly traceConfig?: InvokeTraceConfig;
 }
 
 export interface ClassifyTaskNodeResult {
@@ -102,28 +103,38 @@ export async function classifyTask(input: ClassifyTaskInput): Promise<ClassifyTa
     });
 
   const attempt = async (model: BaseChatModel): Promise<ClassifyTaskOutput> => {
-    const structured = (
-      model as BaseChatModel & {
-        withStructuredOutput?: (
-          schema: typeof classifyTaskOutputSchema,
-          opts?: { name?: string },
-        ) => { invoke: (messages: unknown, opts?: { signal?: AbortSignal }) => Promise<unknown> };
-      }
-    ).withStructuredOutput;
-    if (typeof structured !== 'function') {
-      throw new Error('chat model does not support withStructuredOutput');
+    const binder = (model as unknown as { bindTools?: (defs: unknown[]) => BaseChatModel })
+      .bindTools;
+    if (typeof binder !== 'function') {
+      throw new Error('chat model does not support bindTools');
     }
-    const bound = structured.call(model, classifyTaskOutputSchema, { name: 'classify_task' });
-    const result = await bound.invoke(
+    const bound = binder.call(model, [
+      {
+        name: 'classify_task',
+        description:
+          "Decide whether the task is 'simple' (one tool round-trip) or 'multistep' (plan + multiple sources + synthesis). Optionally include initialPlan with 1..planMaxSteps short sub-questions.",
+        schema: classifyTaskOutputSchema,
+      },
+    ]);
+    const result = (await bound.invoke(
       [new SystemMessage(CLASSIFIER_SYSTEM_PROMPT), new HumanMessage(userPrompt)],
-      { signal: input.signal },
-    );
-    return classifyTaskOutputSchema.parse(result);
+      mergeInvokeConfig({ signal: input.signal }, input.traceConfig) as Record<string, unknown>,
+    )) as AIMessage;
+    const calls =
+      (result as unknown as { tool_calls?: ReadonlyArray<{ name?: string; args?: unknown }> })
+        .tool_calls ?? [];
+    const classifyCall = calls.find((c) => c.name === 'classify_task') ?? calls[0];
+    if (classifyCall === undefined || classifyCall.args === undefined) {
+      throw new Error('classifier emitted no tool call');
+    }
+    return classifyTaskOutputSchema.parse(classifyCall.args);
   };
 
   let parsed: ClassifyTaskOutput | null = null;
   let lastError: unknown = null;
+  const classifyStartedAt = now();
   for (let i = 0; i < 2; i += 1) {
+    const attemptStart = now();
     try {
       incrementIterations(input.runState, 1);
       addTokens(input.runState, estimateTokens(input.refinedAsk) + 200);
@@ -135,10 +146,29 @@ export async function classifyTask(input: ClassifyTaskInput): Promise<ClassifyTa
               temperature: 0,
               signal: input.signal,
             }));
+      input.logger.info('externalAgent.adapter.inlineAgent.router.attempt.start', {
+        attempt: i + 1,
+        signalAborted: input.signal.aborted,
+        sinceClassifyStartMs: now() - classifyStartedAt,
+      });
       parsed = await attempt(model);
+      input.logger.info('externalAgent.adapter.inlineAgent.router.attempt.ok', {
+        attempt: i + 1,
+        durationMs: now() - attemptStart,
+        route: parsed.route,
+      });
       break;
     } catch (err) {
       lastError = err;
+      const errName = err instanceof Error ? err.constructor.name : typeof err;
+      const errMsg = err instanceof Error ? err.message : String(err);
+      input.logger.warn('externalAgent.adapter.inlineAgent.router.attempt.fail', {
+        attempt: i + 1,
+        durationMs: now() - attemptStart,
+        signalAborted: input.signal.aborted,
+        errName,
+        errMsg,
+      });
       if (input.signal.aborted) break;
     }
   }
@@ -197,4 +227,22 @@ function buildClassifierUserPrompt(
 
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
+}
+
+export function mergeInvokeConfig(
+  base: { signal: AbortSignal },
+  trace: InvokeTraceConfig | undefined,
+): {
+  signal: AbortSignal;
+  callbacks?: readonly unknown[];
+  metadata?: Readonly<Record<string, unknown>>;
+  tags?: readonly string[];
+} {
+  if (trace === undefined) return base;
+  return {
+    ...base,
+    ...(trace.callbacks !== undefined ? { callbacks: trace.callbacks } : {}),
+    ...(trace.metadata !== undefined ? { metadata: trace.metadata } : {}),
+    ...(trace.tags !== undefined ? { tags: trace.tags } : {}),
+  };
 }

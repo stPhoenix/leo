@@ -3807,6 +3807,350 @@
 .leo-ea-terminal,
 .leo-progress-lines,
 .leo-agent-tree,
-.leo-external-agent {
+.leo-external-agent,
+.leo-wiki-widget,
+.leo-wiki-status-widget {
   animation: leo-block-in 160ms ease both;
+}
+
+.leo-wiki-widget {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--background-modifier-border-hover);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+}
+
+.leo-wiki-widget[data-phase='preparing'],
+.leo-wiki-widget[data-phase='awaiting_clarify'] {
+  border-left-color: var(--interactive-accent);
+}
+.leo-wiki-widget[data-phase='fetching'],
+.leo-wiki-widget[data-phase='persisting'],
+.leo-wiki-widget[data-phase='planning'],
+.leo-wiki-widget[data-phase='extracting'],
+.leo-wiki-widget[data-phase='reducing'],
+.leo-wiki-widget[data-phase='writing'],
+.leo-wiki-widget[data-phase='scanning'],
+.leo-wiki-widget[data-phase='checking'],
+.leo-wiki-widget[data-phase='proposing'] {
+  border-left-color: var(--color-cyan, var(--interactive-accent));
+}
+.leo-wiki-widget[data-phase='awaiting_duplicate'],
+.leo-wiki-widget[data-phase='awaiting_confirm'] {
+  border-left-color: var(--color-yellow, var(--interactive-accent));
+}
+.leo-wiki-widget[data-phase='done'] {
+  border-left-color: var(--color-green);
+}
+.leo-wiki-widget[data-phase='cancelled'] {
+  border-left-color: var(--text-muted);
+}
+.leo-wiki-widget[data-phase='error'] {
+  border-left-color: var(--color-red, var(--text-error));
+}
+
+.leo-wiki-header {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+}
+
+.leo-wiki-title {
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+  text-transform: capitalize;
+}
+
+.leo-wiki-runid {
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  font-weight: normal;
+}
+
+.leo-wiki-phase {
+  margin-left: auto;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 0 var(--size-4-1);
+  text-transform: lowercase;
+  font-variant-numeric: tabular-nums;
+}
+
+.leo-wiki-status-line {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-wiki-error {
+  margin: 0;
+  padding: var(--size-4-2);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--color-red, var(--text-error)) 10%, transparent);
+  border: 1px solid
+    color-mix(in srgb, var(--color-red, var(--text-error)) 30%, var(--background-modifier-border));
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  word-break: break-word;
+}
+
+.leo-wiki-refine {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+  max-height: 240px;
+  overflow: auto;
+  background: var(--background-primary-alt, var(--background-primary));
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-2);
+}
+
+.leo-wiki-refine li {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+  word-break: break-word;
+}
+
+.leo-wiki-refine li[data-role='assistant'] strong {
+  color: var(--text-accent);
+}
+.leo-wiki-refine li[data-role='user'] strong {
+  color: var(--text-muted);
+}
+
+.leo-wiki-empty {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.leo-wiki-clarify {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+}
+
+.leo-wiki-clarify-q {
+  margin: 0;
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+.leo-wiki-clarify-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+}
+
+.leo-wiki-clarify-form textarea {
+  resize: vertical;
+  font-family: inherit;
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.leo-wiki-clarify-form button {
+  align-self: flex-end;
+}
+
+.leo-wiki-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+}
+
+.leo-wiki-progress-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.leo-wiki-progress-fill {
+  height: 100%;
+  background: var(--interactive-accent);
+  transition: width 200ms ease;
+}
+
+.leo-wiki-progress-line {
+  margin: 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+.leo-wiki-duplicate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2);
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--color-yellow) 8%, transparent);
+}
+
+.leo-wiki-duplicate p {
+  margin: 0;
+  color: var(--text-normal);
+}
+
+.leo-wiki-duplicate code,
+.leo-wiki-plan code,
+.leo-wiki-confirm code {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: 0 var(--size-4-1);
+}
+
+.leo-wiki-duplicate-actions,
+.leo-wiki-confirm-actions {
+  display: flex;
+  gap: var(--size-4-2);
+  flex-wrap: wrap;
+}
+
+.leo-wiki-plan {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+}
+
+.leo-wiki-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+}
+
+.leo-wiki-confirm-summary {
+  margin: 0;
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.leo-wiki-confirm ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+  max-height: 320px;
+  overflow: auto;
+}
+
+.leo-wiki-confirm li {
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  border-left: 2px solid var(--background-modifier-border);
+  background: var(--background-primary-alt, var(--background-primary));
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+  word-break: break-word;
+}
+.leo-wiki-confirm li[data-severity='warn'] {
+  border-left-color: var(--color-yellow);
+}
+.leo-wiki-confirm li[data-severity='error'] {
+  border-left-color: var(--color-red, var(--text-error));
+}
+.leo-wiki-confirm li[data-severity='info'] {
+  border-left-color: var(--color-blue, var(--interactive-accent));
+}
+
+.leo-wiki-confirm-schema {
+  margin: 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-warning, var(--text-accent));
+}
+
+.leo-wiki-scan,
+.leo-wiki-terminal {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--size-4-3);
+  row-gap: var(--size-4-1);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+  font-variant-numeric: tabular-nums;
+}
+
+.leo-wiki-status-widget {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l);
+  background: var(--background-primary-alt);
+  font-family: var(--font-interface);
+}
+
+.leo-wiki-status-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--size-4-2);
+}
+
+.leo-wiki-status-title {
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.leo-wiki-status-widget[data-mutex='ingest'] .leo-wiki-status-title::after,
+.leo-wiki-status-widget[data-mutex='lint'] .leo-wiki-status-title::after {
+  content: ' · busy';
+  color: var(--text-warning, var(--text-accent));
+  font-weight: normal;
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-wiki-status-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-wiki-status-table th {
+  text-align: left;
+  font-weight: normal;
+  color: var(--text-muted);
+  padding: var(--size-4-1) var(--size-4-2) var(--size-4-1) 0;
+  white-space: nowrap;
+}
+
+.leo-wiki-status-table td {
+  color: var(--text-normal);
+  padding: var(--size-4-1) 0;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
 }

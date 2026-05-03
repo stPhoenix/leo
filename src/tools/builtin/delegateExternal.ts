@@ -13,7 +13,6 @@ const ASK_HARD_LIMIT_CHARS = 16_384;
 
 export interface DelegateExternalArgs {
   readonly ask: string;
-  readonly preferredAdapterId?: string;
   readonly timeoutMs?: number;
   readonly refineBudget?: number;
 }
@@ -25,13 +24,7 @@ const DelegateExternalSchema: z.ZodType<DelegateExternalArgs> = z
       .min(1, 'ask must be a non-empty string')
       .max(ASK_HARD_LIMIT_CHARS, `ask exceeds hard limit (${ASK_HARD_LIMIT_CHARS} chars)`)
       .describe(
-        'The original user ask to escalate. The refine sub-agent will turn this into a final, self-contained prompt before sending to the external agent.',
-      ),
-    preferredAdapterId: z
-      .string()
-      .optional()
-      .describe(
-        'Optional adapter id (e.g. "claude-code"). When omitted, the user-configured default is used.',
+        'The original user ask to escalate. The refine sub-agent will turn this into a self-contained prompt before sending to the external agent. The adapter has no access to the vault, your tools, this conversation, or the local filesystem — describe the desired outcome and output shape, not the steps or commands to take.',
       ),
     timeoutMs: z
       .number()
@@ -65,12 +58,17 @@ export interface DelegateExternalDeps {
 }
 
 const DELEGATE_EXTERNAL_DESCRIPTION = [
-  'Escalate the user request to an external agent (e.g. Claude Code CLI, OpenAI-compatible HTTP).',
+  'Escalate the user request to an external agent (e.g. Claude Code CLI, OpenAI-compatible HTTP, inline LLM).',
   '',
   'Use this tool ONLY when:',
   '- no other registered tool fits the user request, AND',
   '- the task plausibly benefits from an external system: web research, deep research,',
   '  long-running computation, or invoking a third-party CLI/HTTP agent.',
+  '',
+  'The external agent is OPAQUE to you: it does not share your tools, the vault, the',
+  'conversation, or the local filesystem. Its capabilities (shell, network, git, file IO)',
+  'are unknown. Phrase the ask as an OUTCOME — what result you want and in what shape —',
+  'not as a procedure or a sequence of commands.',
   '',
   'Every call requires explicit user approval — there is no per-thread allowlist for this tool.',
   'If the user has not yet approved escalation, prefer asking them in chat first to avoid a',
@@ -78,7 +76,8 @@ const DELEGATE_EXTERNAL_DESCRIPTION = [
   '',
   'On approval, a refine sub-agent will turn the ask into a self-contained prompt (possibly',
   'asking the user clarifying questions in a widget) and stream the result through an',
-  'inline widget. The tool resolves with the final structured payload.',
+  'inline widget. The tool resolves with a final structured payload (text summary plus any',
+  'files the adapter emitted, written under the external-agent results folder).',
 ].join('\n');
 
 export function createDelegateExternalTool(
@@ -91,6 +90,7 @@ export function createDelegateExternalTool(
     parameters: jsonSchemaFromZod(DelegateExternalSchema),
     requiresConfirmation: false, // F06 owns its own per-call confirmation
     source: 'builtin',
+    shouldDefer: true,
     validate(raw): ToolResult<DelegateExternalArgs> {
       const parsed = DelegateExternalSchema.safeParse(raw);
       if (!parsed.success) {
@@ -134,9 +134,6 @@ export function createDelegateExternalTool(
         originalAsk: args.ask,
         ...(args.refineBudget !== undefined ? { refineBudget: args.refineBudget } : {}),
         ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
-        ...(args.preferredAdapterId !== undefined
-          ? { preferredAdapterId: args.preferredAdapterId }
-          : {}),
       });
 
       if (!start.ok) {
@@ -154,7 +151,23 @@ export function createDelegateExternalTool(
       }
 
       deps.onHandle?.(start.handle);
-      const onAbort = (): void => start.handle.cancel();
+      const invokedAt = Date.now();
+      const onAbort = (): void => {
+        ctx.logger?.warn('externalAgent.delegate.ctxSignal.aborted', {
+          thread: ctx.thread,
+          runId: start.handle.runId,
+          elapsedMs: Date.now() - invokedAt,
+          reason:
+            (ctx.signal as AbortSignal & { reason?: unknown }).reason instanceof Error
+              ? (
+                  (ctx.signal as AbortSignal & { reason?: { message: string } }).reason as {
+                    message: string;
+                  }
+                ).message
+              : String((ctx.signal as AbortSignal & { reason?: unknown }).reason ?? 'unknown'),
+        });
+        start.handle.cancel();
+      };
       ctx.signal.addEventListener('abort', onAbort, { once: true });
       try {
         const terminal = await start.terminal;

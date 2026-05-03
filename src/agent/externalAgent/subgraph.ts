@@ -33,6 +33,7 @@ export interface AdapterCallDeps {
     readonly timeoutMs: number;
     readonly config: unknown;
     readonly runId: string;
+    readonly threadId?: string;
   }): AsyncIterable<ExternalEvent>;
 }
 
@@ -95,6 +96,7 @@ export interface RunInput {
   readonly refineBudget?: number;
   readonly timeoutMs?: number;
   readonly selectedAdapterId?: string | null;
+  readonly resolvedConfig?: unknown;
 }
 
 export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunHandle {
@@ -102,6 +104,7 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
   const refineBudget = input.refineBudget ?? 3;
   const initialAdapterId = input.selectedAdapterId ?? null;
   const initialTimeoutMs = input.timeoutMs ?? defaultTimeoutFor(deps.registry, initialAdapterId);
+  const resolvedConfig = input.resolvedConfig;
 
   let state: ExternalAgentState = initialState({
     runId: input.runId,
@@ -311,14 +314,28 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
     const timeoutMs = state.timeoutMs;
     let timedOut = false;
     let abortTimedOut = false;
+    const adapterRunStartedAt = now();
     const timer =
       timeoutMs > 0
         ? setTimeout(() => {
             timedOut = true;
+            deps.logger?.warn('externalAgent.subgraph.adapterAbort.fire', {
+              runId: state.runId,
+              source: 'timeout',
+              timeoutMs,
+              elapsedMs: now() - adapterRunStartedAt,
+            });
             adapterAbort.abort();
           }, timeoutMs)
         : null;
-    const onCancel = (): void => adapterAbort.abort();
+    const onCancel = (): void => {
+      deps.logger?.warn('externalAgent.subgraph.adapterAbort.fire', {
+        runId: state.runId,
+        source: 'cancelController',
+        elapsedMs: now() - adapterRunStartedAt,
+      });
+      adapterAbort.abort();
+    };
     cancelController.signal.addEventListener('abort', onCancel, { once: true });
 
     let adapterError: { code: string; message: string } | null = null;
@@ -327,14 +344,17 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
     let iterator: AsyncIterator<ExternalEvent> | null = null;
 
     try {
+      const cfg =
+        resolvedConfig !== undefined ? await Promise.resolve(resolvedConfig) : pickConfig(adapter);
       const stream = deps.adapterCall.start({
         adapter,
         refinedAsk: state.refinedPrompt ?? state.originalAsk,
         systemPrompt: deps.systemPrompt,
         signal: adapterAbort.signal,
         timeoutMs,
-        config: pickConfig(adapter),
+        config: cfg,
         runId: state.runId,
+        threadId: state.threadId,
       });
       iterator = stream[Symbol.asyncIterator]();
       const graceMs = deps.abortGraceMs ?? 2_000;
@@ -477,7 +497,21 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
       fn(action);
     },
     cancel: () => {
-      if (cancelController.signal.aborted || isTerminal(state.phase)) return;
+      if (cancelController.signal.aborted || isTerminal(state.phase)) {
+        deps.logger?.info('externalAgent.subgraph.cancel.noop', {
+          runId: state.runId,
+          alreadyAborted: cancelController.signal.aborted,
+          phase: state.phase,
+        });
+        return;
+      }
+      const stack = new Error('cancel-callsite').stack ?? '';
+      deps.logger?.warn('externalAgent.subgraph.cancel.invoked', {
+        runId: state.runId,
+        threadId: state.threadId,
+        phase: state.phase,
+        stack: stack.split('\n').slice(0, 8).join('\n'),
+      });
       cancelController.abort();
     },
     done: () => terminalPromise,

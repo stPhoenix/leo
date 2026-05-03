@@ -4,9 +4,15 @@ import type { ToolCtx, ToolResult, ToolSpec } from './types';
 
 export type PlanModeView = 'normal' | 'plan';
 
+export interface DeferralContext {
+  readonly deferLoading: ReadonlySet<string>;
+  readonly nativeDefer: boolean;
+}
+
 export interface ToolListOptions {
   readonly allowedTools?: ReadonlySet<string>;
   readonly planMode?: PlanModeView;
+  readonly deferralCtx?: DeferralContext;
 }
 
 export interface ToolRegistryOptions {
@@ -55,14 +61,24 @@ export class ToolRegistry {
   }
 
   toOpenAITools(thread: string, opts: ToolListOptions = {}): readonly OpenAITool[] {
-    return this.listFor(thread, opts).map((spec) => ({
-      type: 'function' as const,
-      function: {
-        name: spec.id,
-        description: spec.description,
-        parameters: spec.parameters,
-      },
-    }));
+    const ctx = opts.deferralCtx;
+    const visible = this.listFor(thread, opts);
+    const out: OpenAITool[] = [];
+    for (const spec of visible) {
+      const isDeferred = ctx !== undefined && ctx.deferLoading.has(spec.id);
+      if (isDeferred && !ctx.nativeDefer) continue;
+      const tool: OpenAITool = {
+        type: 'function' as const,
+        function: {
+          name: spec.id,
+          description: spec.description,
+          parameters: spec.parameters,
+        },
+        ...(isDeferred && ctx.nativeDefer ? { defer_loading: true } : {}),
+      };
+      out.push(tool);
+    }
+    return out;
   }
 
   async invoke(id: string, argsJson: string, ctx: ToolCtx): Promise<ToolResult<unknown>> {
@@ -93,6 +109,7 @@ export class ToolRegistry {
         thread: ctx.thread,
         error: validated.error,
         stage: 'validate',
+        argsPreview: previewArgs(parsedArgs),
       });
       return validated;
     }
@@ -140,4 +157,16 @@ function now(): number {
   return typeof performance !== 'undefined' && typeof performance.now === 'function'
     ? performance.now()
     : Date.now();
+}
+
+const ARGS_PREVIEW_MAX = 800;
+
+function previewArgs(value: unknown): string {
+  try {
+    const json = JSON.stringify(value);
+    if (json === undefined) return String(value).slice(0, ARGS_PREVIEW_MAX);
+    return json.length > ARGS_PREVIEW_MAX ? `${json.slice(0, ARGS_PREVIEW_MAX)}…` : json;
+  } catch {
+    return '[unserializable]';
+  }
 }

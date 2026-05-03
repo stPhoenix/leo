@@ -127,7 +127,13 @@ export async function* runManualSynthesizeLoop(
     });
     addTokens(ctx.runState, step.usage);
     if (tokenStat.over) {
-      yield { kind: 'error', error: { code: 'token_limit', message: 'maxTokens exceeded' } };
+      yield {
+        kind: 'error',
+        error: {
+          code: 'token_limit',
+          message: `Inline agent token budget exhausted (synthesize): cumulative ${ctx.runState.cumulativeTokens} > maxTokens ${ctx.tokenLimit}. Increase \`budgets.maxTokens\` in plugin settings (default 100000).`,
+        },
+      };
       return;
     }
     if (step.text.length > 0) yield { kind: 'text', chunk: step.text };

@@ -8,6 +8,7 @@ import type { EditNoteBridge } from '@/tools/types';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
 import type { PlanModeController } from './planModeController';
+import type { ToolSearchSession } from './toolSearch/toolSearchSession';
 import type { ReadFileStateStore } from '@/tools/builtin/readFileState';
 import type { RagMode } from '@/settings/settingsStore';
 import { BUILTIN_COMPACTABLE_TOOLS } from './microcompact';
@@ -104,6 +105,9 @@ export interface AgentRunnerOptions {
   readonly microcompact?: MicrocompactAgentOptions;
   readonly autocompact?: GraphAutocompactOptions | null;
   readonly tracer?: AgentTracer;
+  readonly toolSearch?: ToolSearchSession;
+  readonly disableParallelToolCalls?: () => boolean;
+  readonly disableThinking?: () => boolean;
 }
 
 export interface MicrocompactAgentOptions {
@@ -157,6 +161,9 @@ export class AgentRunner {
   private readonly microcompactIsCompactable: ((toolName: string) => boolean) | undefined;
   private readonly autocompactOptions: GraphAutocompactOptions | null;
   private readonly tracer: AgentTracer | undefined;
+  private readonly toolSearch: ToolSearchSession | undefined;
+  private readonly disableParallelToolCalls: (() => boolean) | undefined;
+  private readonly disableThinking: (() => boolean) | undefined;
   private readonly slots: TurnSlot[] = [];
   private inflight: TurnSlot | null = null;
   private tail: Promise<void> = Promise.resolve();
@@ -192,6 +199,9 @@ export class AgentRunner {
     this.microcompactIsCompactable = mc.isCompactable;
     this.autocompactOptions = opts.autocompact ?? null;
     this.tracer = opts.tracer;
+    this.toolSearch = opts.toolSearch;
+    this.disableParallelToolCalls = opts.disableParallelToolCalls;
+    this.disableThinking = opts.disableThinking;
   }
 
   send(msg: AgentUserMessage, thread: ThreadId): AsyncIterable<StreamEvent> {
@@ -323,6 +333,11 @@ export class AgentRunner {
       autocompact: this.autocompactOptions,
       getHistory: (t): readonly AgentHistoryMessage[] => this.getHistory(t),
       appendHistory: (t, m): void => this.appendHistory(t, m),
+      ...(this.toolSearch !== undefined ? { toolSearch: this.toolSearch } : {}),
+      ...(this.disableParallelToolCalls !== undefined
+        ? { disableParallelToolCalls: this.disableParallelToolCalls }
+        : {}),
+      ...(this.disableThinking !== undefined ? { disableThinking: this.disableThinking } : {}),
     };
     const graph = buildAgentGraph(deps, turn);
     const config = {

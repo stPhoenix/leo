@@ -11,17 +11,21 @@ leo/
 │   │   ├── arch-alignment_plan_20260424-005915/
 │   │   ├── external-agent_slice_20260427-022536/  # Sliced feature planning workspace for external-agent delegation (F01–F13)
 │   │   ├── leo_slice_20260419-190449/   # Sliced feature planning workspace (per-feature docs)
-│   │   └── livestatus_plan_20260425-185758/
+│   │   ├── livestatus_plan_20260425-185758/
+│   │   └── wiki_slice_20260429-014102/  # Sliced feature planning workspace for wiki ingest/lint/search slice
 │   ├── scripts/
 │   │   └── precommit.md                 # Precommit runbook
 │   ├── srs/
 │   │   ├── compact.md
 │   │   ├── context.md
 │   │   ├── external-agent.md            # External-agent delegation SRS (subgraph + adapters + widget)
+│   │   ├── leo-wiki.md                  # Leo + wiki integration SRS
 │   │   ├── livestatus.md
 │   │   ├── plan.md
 │   │   ├── skill-doc.md
-│   │   └── srs.md                       # Software requirements spec
+│   │   ├── srs.md                       # Software requirements spec
+│   │   ├── toolsearch.md                # ToolSearch (deferred-tool fetcher) SRS
+│   │   └── wiki.md                      # Wiki slice SRS (ingest pipeline, lint, search, inbox)
 │   └── standards/
 │       ├── best-practices.md
 │       ├── code-style.md
@@ -50,6 +54,54 @@ leo/
 │   │   │   ├── subgraph.ts               # startExternalAgentRun(deps,input)→RunHandle — hand-rolled FSM driver, abort/timeout race, refine→ready→running→writing→terminal
 │   │   │   ├── terminalSnapshot.ts       # TerminalSnapshotSchema (Zod, schemaVersion:1) + buildTerminalSnapshot + filterSecretFields + tryParseTerminalSnapshot + EXTERNAL_AGENT_WIDGET_KIND
 │   │   │   └── widgetController.ts       # ExternalAgentWidgetController({runId,threadId,…}) — viewModel(), onSelectAdapter/SetTimeout/SetBudget/AnswerClarification/Send/Edit/Cancel; reload rehydration to error.code='reload'
+│   │   ├── toolSearch/                   # Deferred-tool fetcher — assemble fetch requests, model-gating, result→tool-list mapping, per-thread session
+│   │   │   ├── assembleToolRequest.ts
+│   │   │   ├── modelGating.ts
+│   │   │   ├── toolResultMapper.ts
+│   │   │   └── toolSearchSession.ts
+│   │   ├── wiki/                         # Wiki slice — ingest pipeline, lint, search, inbox; mutex-gated single-active-op; widget + status + paths + logging
+│   │   │   ├── inbox/
+│   │   │   │   └── parse.ts
+│   │   │   ├── ingest/                   # Hand-rolled FSM ingest pipeline: refine → fetch/persist → plan → extract → reduce → write
+│   │   │   │   ├── duplicateDetect.ts
+│   │   │   │   ├── duplicatePrompt.ts
+│   │   │   │   ├── fetchSource.ts
+│   │   │   │   ├── inboxBatch.ts
+│   │   │   │   ├── llmAdapter.ts          # createLlmJsonInvoker — bindTools(tool_choice:'auto') + RunnableLambda extract + .withRetry({stopAfterAttempt:4}); LM Studio qwen3.6 reasoning_content workaround
+│   │   │   │   ├── persistRaw.ts
+│   │   │   │   ├── processSource.ts
+│   │   │   │   ├── refine.ts
+│   │   │   │   ├── runBatched.ts          # Semaphore-bounded Promise.all worker (per-item failures don't abort batch)
+│   │   │   │   ├── schemas.ts             # PageOp, ExtractorOutput, ReducerOutput, PlannerOutput Zod schemas
+│   │   │   │   ├── semaphore.ts
+│   │   │   │   ├── sha256.ts
+│   │   │   │   ├── slug.ts
+│   │   │   │   ├── subagents.ts           # runPlanner/runExtractor/runReducer + invokeStructured (single try/catch — withRetry lives in llmAdapter chain)
+│   │   │   │   ├── subgraph.ts            # startIngestRun — hand-rolled FSM; abort/timeout race; mutex acquire/release
+│   │   │   │   ├── types.ts
+│   │   │   │   └── writer.ts
+│   │   │   ├── lint/                     # Wiki page lint pipeline (scan → check → propose → confirm → write)
+│   │   │   │   ├── checkers.ts            # runLlmChecker + tryProposeSchemaPatch (single-call invoke; retry inside llmAdapter chain)
+│   │   │   │   ├── scan.ts
+│   │   │   │   ├── schemas.ts
+│   │   │   │   └── subgraph.ts
+│   │   │   ├── seed/
+│   │   │   │   ├── introduction.ts
+│   │   │   │   └── schema.ts
+│   │   │   ├── bootstrap.ts
+│   │   │   ├── budgets.ts                 # WIKI_BUDGETS + resolveWikiBudgets (dynamic factory by contextWindow + maxOutputTokens) + WIKI_RUN_DEFAULTS
+│   │   │   ├── indexReader.ts
+│   │   │   ├── liveControllerRegistry.ts  # Map<runId, WikiWidgetController> bridging serialized live blocks ↔ controller
+│   │   │   ├── loggingNamespaces.ts       # WIKI_LOG namespace tree + WIKI_SENSITIVE_FIELD_KEYS (rawBody/extractorOutput/etc — no info+ logs)
+│   │   │   ├── mutex.ts                   # WikiMutex — per-vault single-op gate (ingest|lint), busy with activeOp/runId
+│   │   │   ├── mutexTypes.ts
+│   │   │   ├── paths.ts                   # WIKI_SCHEMA_PATH, WIKI_INDEX_PATH, WIKI_RAW_DIR, WIKI_PAGES_DIR, WIKI_SOURCES_DIR, WIKI_LOG_PATH
+│   │   │   ├── runIdRegistry.ts
+│   │   │   ├── searchWarning.ts
+│   │   │   ├── terminalSnapshot.ts        # Wiki terminal snapshot Zod schema + builder for reload rehydration
+│   │   │   ├── widgetController.ts        # WikiWidgetController(runId, threadId, op) — viewModel + setPhase/update/recordError/resolveDuplicate/answerClarification
+│   │   │   ├── widgetState.ts             # WikiPhase union + WikiViewModel + TERMINAL_WIKI_PHASES + isTerminal
+│   │   │   └── wikiStatus.ts              # Wiki status snapshot for /wiki widget
 │   │   ├── acceptRejectController.ts
 │   │   ├── agentRunner.ts
 │   │   ├── autocompact.ts
@@ -130,6 +182,7 @@ leo/
 │   │   ├── rotatingFileSink.ts
 │   │   └── tracer.ts                    # TracerService — per-thread Langfuse trace, per-turn span
 │   ├── providers/                       # LLM + embedding providers, langchain bridge, content normalization, manager, registry, trace config
+│   │   ├── anthropicFetchPatch.ts        # Fetch wrapper for ChatAnthropic — beta header/headers injection (cache-control, prompt-caching) + retry shaping
 │   │   ├── anthropicProvider.ts
 │   │   ├── connectionState.ts
 │   │   ├── contentNormalize.ts          # OpenAI-compatible normalizer: inline document blocks as text (images pass through; provider/server is vision authority)
@@ -192,10 +245,13 @@ leo/
 │   │   │   ├── createFolder.ts
 │   │   │   ├── createNote.ts
 │   │   │   ├── delegateExternal.ts       # delegate_external tool — schema enforces 1–16384 char ask, owns own confirmation (requiresConfirmation:false), wraps DelegateExternalToolResult in {ok:true,data:…} so structured payload survives serializer
+│   │   │   ├── delegateWikiIngest.ts     # delegate_wiki_ingest tool — kicks off wiki ingest run; mutex-gated; busy returns activeOp
+│   │   │   ├── delegateWikiLint.ts       # delegate_wiki_lint tool — kicks off wiki lint run; mutex-gated
 │   │   │   ├── deleteFolder.ts           # delete_folder tool — empty-only (errors `folder not empty` on non-empty), pre-confirm via AcceptRejectController (accept→rmdir, reject→no-op); blocked in plan mode
 │   │   │   ├── editNote.ts
 │   │   │   ├── globVault.ts             # glob_vault tool — minimatch-based vault file enumeration with cap + truncation
 │   │   │   ├── grepVault.ts             # grep_vault tool — regex search across vault with content/files/count modes + context lines
+│   │   │   ├── inboxAdd.ts               # inbox_add tool — append source ref to wiki inbox queue
 │   │   │   ├── listNotes.ts
 │   │   │   ├── openNote.ts              # open_note tool — open or reveal a note in an Obsidian leaf
 │   │   │   ├── readFile.ts              # Generic any-file reader with binary detection + offset/limit + maxBytes cap
@@ -204,8 +260,17 @@ leo/
 │   │   │   ├── readNote.ts
 │   │   │   ├── revealInNote.ts          # reveal_in_note tool — open + cursor/select + flash highlight
 │   │   │   ├── searchVault.ts
+│   │   │   ├── searchWiki.ts             # search_wiki tool — query wiki index for relevant pages
 │   │   │   ├── skillTool.ts
 │   │   │   └── writeGuard.ts            # ensureFreshRead — blocks write tools until target was read and mtime matches
+│   │   ├── toolSearch/                  # Deferred-tool fetcher tool wiring — discovery, search algorithm, render-text schemas, deferral rules
+│   │   │   ├── announcement.ts
+│   │   │   ├── deferralRules.ts
+│   │   │   ├── discovery.ts
+│   │   │   ├── renderTextSchemas.ts
+│   │   │   ├── searchAlgorithm.ts
+│   │   │   ├── toolSearchTool.ts
+│   │   │   └── types.ts
 │   │   ├── user/
 │   │   │   ├── userToolsLoader.ts
 │   │   │   └── wireUserTools.ts
@@ -241,14 +306,20 @@ leo/
 │   │   │   │   ├── ToolResultBlockView.tsx
 │   │   │   │   ├── ToolUseBlockView.stories.tsx
 │   │   │   │   ├── ToolUseBlockView.tsx
-│   │   │   │   └── toolUseStatus.tsx
+│   │   │   │   ├── toolUseStatus.tsx
+│   │   │   │   ├── WikiLiveBlock.tsx              # Renderer for WIKI_LIVE_KIND — looks up live WikiWidgetController by runId from liveControllerRegistry
+│   │   │   │   ├── WikiTerminalBlock.tsx          # Renderer for persisted WikiTerminalSnapshot post-reload
+│   │   │   │   ├── WikiWidget.stories.tsx
+│   │   │   │   └── WikiWidget.tsx                 # Live wiki widget — phase-dispatched (preparing/fetching/persisting/planning/extracting/reducing/writing/scanning/checking/proposing/done/cancelled/error); useSyncExternalStore
 │   │   │   ├── hooks/
 │   │   │   │   └── useBlink.ts
 │   │   │   ├── widgets/
 │   │   │   │   ├── ContextWidget.tsx
 │   │   │   │   ├── RagWidget.stories.tsx        # Storybook fixtures for RagWidget (idle/indexing/paused/errored/unavailable/empty/large-vault)
 │   │   │   │   ├── RagWidget.tsx                # `rag` widget — read-only RAG/index status panel rendered from RagSnapshot
-│   │   │   │   └── registry.ts
+│   │   │   │   ├── registry.ts
+│   │   │   │   ├── WikiStatusWidget.stories.tsx
+│   │   │   │   └── WikiStatusWidget.tsx         # `wiki` widget — read-only wiki status (mutex active op, last run, page counts) rendered from WikiStatus snapshot
 │   │   │   ├── AttachmentChip.stories.tsx
 │   │   │   ├── AttachmentChip.tsx                  # Composer staged-attachment chip (image thumb / doc icon, remove btn)
 │   │   │   ├── AttachmentRejectedNotice.stories.tsx
@@ -304,6 +375,7 @@ leo/
 │   │   ├── openChatView.ts
 │   │   ├── ragCommand.ts                # Abortable handle for /rag slash command (mirrors contextCommand)
 │   │   ├── responsiveCollapse.ts
+│   │   ├── wikiStatusCommand.ts         # Abortable handle for /wiki slash command (mirrors contextCommand/ragCommand)
 │   │   ├── toolIcons.ts
 │   │   ├── viewType.ts
 │   │   ├── visualStates.ts
@@ -338,8 +410,10 @@ leo/
 │       ├── _liveEnv.ts
 │       ├── agent.live.test.ts
 │       ├── embeddings.live.test.ts
+│       ├── inlineAgentCanonDownload.live.test.ts  # Live inline-agent canon-download autoresearch loop
 │       ├── provider.live.test.ts
-│       └── toolCalling.live.test.ts
+│       ├── toolCalling.live.test.ts
+│       └── wikiIngestCanon.live.test.ts           # Live wiki-ingest canon harness — claude-as-judge loop, state.md row writer
 ├── .agent/                              # Planning, standards, scripts (see top of tree)
 ├── .eslintignore
 ├── .eslintrc.cjs

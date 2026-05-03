@@ -10,7 +10,11 @@ import {
   type NoteRecord,
 } from '../runState';
 import { bridgeStream, type BridgeChunk } from '../eventBridge';
-import { tokenTick } from '../budgets';
+import {
+  DEFAULT_AUTOCOMPACT_THRESHOLD_PCT,
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
+  tokenTick,
+} from '../budgets';
 import type { ExternalEvent } from '../../base';
 import { createFetchUrlTool, type FetchUrlConfig } from '../tools/fetchUrl';
 import { createSearchWebTool, type SearchWebConfig } from '../tools/searchWeb';
@@ -19,10 +23,16 @@ import {
   createWriteFileTool,
   createListDirTool,
   createDeleteFileTool,
+  createAppendFileTool,
+  createGrepTool,
+  createGlobTool,
+  createDownloadToFileTool,
 } from '../tools/fileOps';
 import { createExtractNoteTool } from '../tools/extractNote';
+import { createTodoWriteTool } from '../tools/todoWrite';
 import { wrapToolResultForLLM } from '../tools/untrustedWrap';
 import { rewriteConsumedToolResults, type RewriteMessage } from './messageRewriter';
+import { compactMessages, decideCompaction } from '../compaction';
 import type { InlineToolHandle } from '../branches/simpleBranch';
 
 export interface ResearchStepCtx {
@@ -52,6 +62,8 @@ export interface ResearchLoopInput {
   readonly stepIndex: number;
   readonly tokenLimit: number;
   readonly messages: readonly RewriteMessage[];
+  readonly contextWindowTokens?: number;
+  readonly autocompactThresholdPct?: number;
 }
 
 export interface ResearchStepResult {
@@ -71,6 +83,7 @@ export function buildResearchStepTools(input: {
 }): readonly InlineToolHandle[] {
   const { config, sandbox, runState, logger, signal } = input;
   const tools: InlineToolHandle[] = [];
+  let fetchUrlTool: ReturnType<typeof createFetchUrlTool> | null = null;
   if (config.tools.fetchUrl.enabled) {
     const fetchCfg: FetchUrlConfig = {
       enabled: config.tools.fetchUrl.enabled,
@@ -78,8 +91,11 @@ export function buildResearchStepTools(input: {
       blocklist: config.tools.fetchUrl.blocklist,
       timeoutMs: config.tools.fetchUrl.timeoutMs,
       maxBytes: config.tools.fetchUrl.maxBytes,
+      requireDnsResolveCheck: config.tools.fetchUrl.requireDnsResolveCheck,
+      headerDenylist: config.tools.fetchUrl.headerDenylist,
     };
-    tools.push(createFetchUrlTool({ config: fetchCfg, signal, logger }));
+    fetchUrlTool = createFetchUrlTool({ config: fetchCfg, signal, logger });
+    tools.push(fetchUrlTool);
   }
   if (config.tools.searchWeb.enabled) {
     const searchCfg: SearchWebConfig = {
@@ -97,11 +113,18 @@ export function buildResearchStepTools(input: {
   if (config.tools.fileOps.enabled) {
     tools.push(createReadFileTool({ sandbox, signal, logger }));
     tools.push(createWriteFileTool({ sandbox, signal, logger }));
+    tools.push(createAppendFileTool({ sandbox, signal, logger }));
     tools.push(createListDirTool({ sandbox, signal, logger }));
     tools.push(createDeleteFileTool({ sandbox, signal, logger }));
+    tools.push(createGrepTool({ sandbox, signal, logger }));
+    tools.push(createGlobTool({ sandbox, signal, logger }));
+    if (fetchUrlTool !== null) {
+      tools.push(createDownloadToFileTool({ sandbox, signal, logger, fetchUrl: fetchUrlTool }));
+    }
   }
   // FR-IA-38: extract_note mandatory; publish_artifact excluded.
   tools.push(createExtractNoteTool({ runState, logger }));
+  tools.push(createTodoWriteTool({ runState, logger }));
   return tools;
 }
 
@@ -141,7 +164,13 @@ export async function* runManualResearchLoop(
     });
     addTokens(ctx.runState, step.usage);
     if (tokenStat.over) {
-      yield { kind: 'error', error: { code: 'token_limit', message: 'maxTokens exceeded' } };
+      yield {
+        kind: 'error',
+        error: {
+          code: 'token_limit',
+          message: `Inline agent token budget exhausted: cumulative ${ctx.runState.cumulativeTokens} > maxTokens ${ctx.tokenLimit}. Increase \`budgets.maxTokens\` in plugin settings (default 100000).`,
+        },
+      };
       return;
     }
     if (step.text.length > 0) yield { kind: 'text', chunk: step.text };
@@ -216,6 +245,27 @@ export async function* runManualResearchLoop(
         }
       } else if (call.name === 'fetch_url' || call.name === 'search_web') {
         lastToolCallByName.set(call.name, call.id);
+      }
+    }
+
+    const decision = decideCompaction(
+      messages,
+      ctx.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
+      ctx.autocompactThresholdPct ?? DEFAULT_AUTOCOMPACT_THRESHOLD_PCT,
+    );
+    if (decision.shouldCompact) {
+      const result = compactMessages(messages, ctx.runState);
+      if (result.droppedCount > 0) {
+        ctx.logger.info('externalAgent.adapter.inlineAgent.autocompact', {
+          route: 'multistep',
+          stepIndex: ctx.stepIndex,
+          droppedCount: result.droppedCount,
+          preTokens: result.preTokens,
+          postTokens: result.postTokens,
+          thresholdTokens: decision.thresholdTokens,
+        });
+        messages.length = 0;
+        for (const m of result.messages) messages.push(m);
       }
     }
   }

@@ -49,6 +49,49 @@ async function nextTick(): Promise<void> {
   await new Promise<void>((r) => setImmediate(r));
 }
 
+describe('startExternalAgentRun — resolvedConfig plumbing', () => {
+  it('passes resolvedConfig through to adapter (instead of Zod defaults)', async () => {
+    const adapter = new ScriptedAdapter({ events: [{ type: 'done' }] });
+    const registry = new AdapterRegistry({ enabledSource: () => ({ mock: true }) });
+    registry.register(adapter);
+    const deps = makeDeps({ registry });
+    const handle = startExternalAgentRun(deps, {
+      runId: 'run-cfg',
+      threadId: 't-cfg',
+      originalAsk: 'a',
+      selectedAdapterId: 'mock',
+      timeoutMs: 5_000,
+      resolvedConfig: { providerId: 'anthropic', model: 'claude-sonnet-4-6' },
+    });
+    while (handle.state().phase !== 'ready') await nextTick();
+    handle.applyReadyAction({ type: 'send' });
+    await handle.done();
+    expect(adapter.receivedInputs[0]?.config).toEqual({
+      providerId: 'anthropic',
+      model: 'claude-sonnet-4-6',
+    });
+  });
+
+  it('awaits a Promise<resolvedConfig> before invoking the adapter', async () => {
+    const adapter = new ScriptedAdapter({ events: [{ type: 'done' }] });
+    const registry = new AdapterRegistry({ enabledSource: () => ({ mock: true }) });
+    registry.register(adapter);
+    const deps = makeDeps({ registry });
+    const handle = startExternalAgentRun(deps, {
+      runId: 'run-cfg-p',
+      threadId: 't-cfg-p',
+      originalAsk: 'a',
+      selectedAdapterId: 'mock',
+      timeoutMs: 5_000,
+      resolvedConfig: Promise.resolve({ providerId: 'openai' }),
+    });
+    while (handle.state().phase !== 'ready') await nextTick();
+    handle.applyReadyAction({ type: 'send' });
+    await handle.done();
+    expect(adapter.receivedInputs[0]?.config).toEqual({ providerId: 'openai' });
+  });
+});
+
 describe('startExternalAgentRun — happy path', () => {
   it('walks preparing → ready → running → writing → done with mock adapter', async () => {
     const adapter = new ScriptedAdapter({

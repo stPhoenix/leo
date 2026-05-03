@@ -1,7 +1,8 @@
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { ExternalEvent } from '../base';
-import type { InlineAgentLogger, ProviderFactory } from './index';
+import type { InlineAgentLogger, InvokeTraceConfig, ProviderFactory } from './index';
 import { resolveSystemPrompt } from './index';
+import { getInlineAgentResearchPrompt, getInlineAgentSynthesizePrompt } from './systemPrompt';
 import { inlineAgentConfigSchema, type InlineAgentConfig } from './configSchema';
 import { Sandbox } from './sandbox';
 import { createInitialRunState, setPlan } from './runState';
@@ -31,11 +32,16 @@ export interface InlineAgentGraphDeps {
   readonly providerFactory: ProviderFactory;
   readonly logger: InlineAgentLogger;
   /** Optional override: convert a BaseChatModel into a ManualChatModelAdapter. */
-  readonly chatModelAdapter?: (model: BaseChatModel) => ManualChatModelAdapter;
+  readonly chatModelAdapter?: (
+    model: BaseChatModel,
+    traceConfig?: InvokeTraceConfig,
+  ) => ManualChatModelAdapter;
   /** Optional override of the wall-clock signal helper for tests. */
   readonly composeSignal?: typeof composeAbortSignal;
   /** Optional resolved Tavily api key (already walked from safeStorage:). */
   readonly resolveSearchWebApiKey?: (config: InlineAgentConfig) => string;
+  /** Optional Langfuse trace config attached to every LLM invoke. */
+  readonly traceConfig?: InvokeTraceConfig;
 }
 
 export interface InlineAgentGraphInput {
@@ -83,7 +89,25 @@ export async function* runInlineAgentGraph(
 
   const compose = deps.composeSignal ?? composeAbortSignal;
   const wallClockMs = Math.max(1, parsed.budgets.wallClockMs);
-  const composed = compose(input.signal, Math.min(input.timeoutMs || wallClockMs, wallClockMs));
+  const effectiveTimeoutMs = Math.min(input.timeoutMs || wallClockMs, wallClockMs);
+  const inlineRunStartedAt = Date.now();
+  const composed = compose(input.signal, effectiveTimeoutMs);
+  deps.logger.info('externalAgent.adapter.inlineAgent.composed.start', {
+    runId: input.runId,
+    inputTimeoutMs: input.timeoutMs ?? null,
+    wallClockMs,
+    effectiveTimeoutMs,
+    hostAlreadyAborted: input.signal.aborted,
+  });
+  const onComposedAbort = (): void => {
+    deps.logger.warn('externalAgent.adapter.inlineAgent.composed.abort', {
+      runId: input.runId,
+      reason: composed.reason() ?? 'unknown',
+      elapsedMs: Date.now() - inlineRunStartedAt,
+      hostAborted: input.signal.aborted,
+    });
+  };
+  composed.signal.addEventListener('abort', onComposedAbort, { once: true });
 
   const sandbox = new Sandbox({
     runId: input.runId,
@@ -172,7 +196,7 @@ export async function* runInlineAgentGraph(
 
     const manualAdapter =
       deps.chatModelAdapter !== undefined
-        ? deps.chatModelAdapter(chatModel)
+        ? deps.chatModelAdapter(chatModel, deps.traceConfig)
         : ((chatModel as unknown as { manualAdapter?: ManualChatModelAdapter }).manualAdapter ??
           null);
     if (manualAdapter === null) {
@@ -192,6 +216,7 @@ export async function* runInlineAgentGraph(
       runState,
       logger: deps.logger,
       chatModel,
+      ...(deps.traceConfig !== undefined ? { traceConfig: deps.traceConfig } : {}),
     });
     yield mapNodeComplete({
       node: 'classify_task',
@@ -215,6 +240,7 @@ export async function* runInlineAgentGraph(
         runState,
         logger: deps.logger,
         chatModel,
+        ...(deps.traceConfig !== undefined ? { traceConfig: deps.traceConfig } : {}),
       });
       if (planResult.ok) {
         plan = planResult.plan;
@@ -251,6 +277,8 @@ export async function* runInlineAgentGraph(
         runState,
         logger: deps.logger,
         tokenLimit: parsed.budgets.maxTokens,
+        contextWindowTokens: parsed.budgets.contextWindowTokens,
+        autocompactThresholdPct: parsed.budgets.autocompactThresholdPct,
       };
       for await (const ev of bridgeStream(runManualLoop(loopCtx, manualAdapter), {
         logger: deps.logger,
@@ -264,8 +292,12 @@ export async function* runInlineAgentGraph(
       }
     } else {
       const cap = selectMaxIterations('multistep', parsed.budgets);
+      const researchSystemPrompt = composeStagePrompt(
+        input.systemPrompt,
+        getInlineAgentResearchPrompt(),
+      );
       let messagesCarried: readonly RewriteMessage[] = [
-        { role: 'system', content: composedSystemPrompt },
+        { role: 'system', content: researchSystemPrompt },
         { role: 'user', content: input.refinedAsk },
       ];
       const remainingSteps = plan.length;
@@ -290,6 +322,8 @@ export async function* runInlineAgentGraph(
             stepIndex: i,
             tokenLimit: parsed.budgets.maxTokens,
             messages: messagesCarried,
+            contextWindowTokens: parsed.budgets.contextWindowTokens,
+            autocompactThresholdPct: parsed.budgets.autocompactThresholdPct,
           },
           manualAdapter,
         );
@@ -321,8 +355,7 @@ export async function* runInlineAgentGraph(
       const synthMessages: readonly RewriteMessage[] = [
         {
           role: 'system',
-          content:
-            'You are the inline-agent synthesizer. Use only the notes; do not call any tool other than publish_artifact.',
+          content: composeStagePrompt(input.systemPrompt, getInlineAgentSynthesizePrompt()),
         },
         {
           role: 'user',
@@ -361,14 +394,36 @@ export async function* runInlineAgentGraph(
     // `iteration_limit`).
     yield* flushPublishedArtifacts({ runState, sandbox, logger: deps.logger });
     if (deferredError !== null) {
-      yield deferredError;
+      yield enrichWallClockError(deferredError, composed, effectiveTimeoutMs);
       return;
     }
     yield { type: 'done' };
   } catch (err) {
-    yield mapAdapterError(err);
+    yield enrichWallClockError(mapAdapterError(err), composed, effectiveTimeoutMs);
   } finally {
     composed.cancel();
     await sandbox.cleanup();
   }
+}
+
+function enrichWallClockError(
+  ev: ExternalEvent,
+  composed: { reason: () => 'host' | 'timeout' | null },
+  effectiveTimeoutMs: number,
+): ExternalEvent {
+  if (ev.type !== 'error') return ev;
+  if (composed.reason() !== 'timeout') return ev;
+  const seconds = Math.round(effectiveTimeoutMs / 1000);
+  return {
+    type: 'error',
+    error: {
+      code: 'wall_clock_exceeded',
+      message: `Inline agent wall-clock budget exhausted (${effectiveTimeoutMs}ms / ~${seconds}s). Increase \`budgets.wallClockMs\` in plugin settings; current value is too short for the task. Underlying: ${ev.error.code} — ${ev.error.message}`,
+    },
+  };
+}
+
+function composeStagePrompt(hostPrompt: string, stagePrompt: string): string {
+  if (hostPrompt.length === 0) return stagePrompt;
+  return `${hostPrompt}\n\n${stagePrompt}`;
 }

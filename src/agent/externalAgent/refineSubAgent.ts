@@ -55,10 +55,15 @@ export interface RefineSubAgentOptions {
   readonly systemPromptOverride?: () => string;
   readonly finalPromptSoftLimitChars?: number;
   readonly finalPromptHardLimitChars?: number;
+  readonly maxTokens?: () => number;
 }
 
 const DEFAULT_SOFT_LIMIT = 4_096;
 const DEFAULT_HARD_LIMIT = 16_384;
+// Bound refine reasoning so chat-of-thought models (qwen3, deepseek) cannot
+// loop forever before emitting a tool call. 32k accommodates models that
+// produce a long reasoning trace before emitting the final tool call.
+const DEFAULT_MAX_TOKENS = 32_768;
 
 export function createRefineSubAgent(opts: RefineSubAgentOptions): RefineDeps {
   const logger = opts.logger;
@@ -82,6 +87,7 @@ export function createRefineSubAgent(opts: RefineSubAgentOptions): RefineDeps {
         model: opts.model(),
         messages,
         ...(opts.temperature !== undefined ? { temperature: opts.temperature() } : {}),
+        maxTokens: opts.maxTokens !== undefined ? opts.maxTokens() : DEFAULT_MAX_TOKENS,
         tools: REFINE_TOOLS,
       };
 
@@ -193,9 +199,21 @@ export function createRefineSubAgent(opts: RefineSubAgentOptions): RefineDeps {
       // final prompt to keep the loop progressing.
       const fallback = textBuffer.trim();
       if (fallback.length === 0) {
-        const err = new Error('refine_empty_response: provider returned no text or tool calls');
-        (err as Error & { code?: string }).code = 'refine_empty_response';
-        throw err;
+        // Reasoning-heavy models (qwen3, deepseek) sometimes exhaust their
+        // token budget inside `reasoning_content` without ever emitting a
+        // tool call or visible content. Rather than fail the run, fall back
+        // to passing the user's original ask through verbatim — refine adds
+        // value but is not load-bearing.
+        logger?.warn('externalAgent.refine.passthrough', {
+          runId: state.runId,
+          reason: 'empty_response',
+        });
+        return {
+          type: 'final_prompt',
+          text: state.originalAsk,
+          refinedPrompt: state.originalAsk,
+          ...(assistantMessage !== undefined ? { assistantMessage } : {}),
+        };
       }
       logger?.warn('externalAgent.refine.no-tool-call', { runId: state.runId });
       return {
