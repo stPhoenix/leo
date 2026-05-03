@@ -77,14 +77,14 @@ leo/
 │   │   │   │   ├── sha256.ts
 │   │   │   │   ├── slug.ts
 │   │   │   │   ├── subagents.ts           # runPlanner/runExtractor/runReducer + invokeStructured (single try/catch — withRetry lives in llmAdapter chain)
-│   │   │   │   ├── subgraph.ts            # startIngestRun — hand-rolled FSM; abort/timeout race; mutex acquire/release
+│   │   │   │   ├── subgraph.ts            # startIngestRun — LangGraph StateGraph (Annotation.Root, MemorySaver, interrupt for duplicate prompt); abort/timeout race; mutex acquire/release
 │   │   │   │   ├── types.ts
 │   │   │   │   └── writer.ts
 │   │   │   ├── lint/                     # Wiki page lint pipeline (scan → check → propose → confirm → write)
 │   │   │   │   ├── checkers.ts            # runLlmChecker + tryProposeSchemaPatch (single-call invoke; retry inside llmAdapter chain)
 │   │   │   │   ├── scan.ts
 │   │   │   │   ├── schemas.ts
-│   │   │   │   └── subgraph.ts
+│   │   │   │   └── subgraph.ts            # startLintRun — LangGraph StateGraph (Annotation.Root, MemorySaver, interrupt for confirm); abort/timeout race; mutex acquire/release
 │   │   │   ├── seed/
 │   │   │   │   ├── introduction.ts
 │   │   │   │   └── schema.ts

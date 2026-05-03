@@ -106,6 +106,12 @@ export class ProviderManager {
     }
   }
 
+  // Hybrid hand-rolled loop: outer retry + inner idle-bump. LangChain
+  // `Runnable.withRetry()` cannot replace the outer loop because it hardcodes
+  // `factor:2 / minTimeout:1000` (see `@langchain/core/utils/p-retry`) — the
+  // configurable `baseBackoffMs / maxBackoffMs` knobs would be lost. The inner
+  // idle-bump cannot use `AbortSignal.timeout(idleMs)` because that primitive
+  // is one-shot and cannot be extended on each event (NFR-PROV-03 watchdog).
   private async *attemptWithRetry(
     req: ProviderChatRequest,
     callerSignal: AbortSignal,
@@ -114,24 +120,22 @@ export class ProviderManager {
     for (let attempt = 0; attempt < max; attempt++) {
       if (callerSignal.aborted) return;
 
-      const attemptCtl = new AbortController();
-      const onCallerAbort = (): void => attemptCtl.abort(callerSignal.reason);
-      if (callerSignal.aborted) attemptCtl.abort(callerSignal.reason);
-      else callerSignal.addEventListener('abort', onCallerAbort);
+      const idleCtl = new AbortController();
+      const attemptSignal = AbortSignal.any([callerSignal, idleCtl.signal]);
       const firstMs = this.firstEventTimeoutMs;
       const idleMs = this.idleTimeoutMs;
-      let timer = setTimeout(() => attemptCtl.abort(new ProviderTimeoutError()), firstMs);
+      let timer = setTimeout(() => idleCtl.abort(new ProviderTimeoutError()), firstMs);
       const bumpTimer = (): void => {
         clearTimeout(timer);
-        timer = setTimeout(() => attemptCtl.abort(new ProviderTimeoutError()), idleMs);
+        timer = setTimeout(() => idleCtl.abort(new ProviderTimeoutError()), idleMs);
       };
 
       let started = false;
       this.opts.logger?.info('provider.request', { attempt: attempt + 1, model: req.model });
-      const iter = this.activeProvider.stream(req, attemptCtl.signal)[Symbol.asyncIterator]();
+      const iter = this.activeProvider.stream(req, attemptSignal)[Symbol.asyncIterator]();
       try {
         for (;;) {
-          const next = await raceAbort(iter.next(), attemptCtl.signal);
+          const next = await rejectOnAbort(iter.next(), attemptSignal);
           if (next.done === true) break;
           const ev = next.value;
           bumpTimer();
@@ -160,8 +164,8 @@ export class ProviderManager {
       } catch (err) {
         if (callerSignal.aborted) return;
         const timedOut =
-          attemptCtl.signal.aborted && attemptCtl.signal.reason instanceof ProviderTimeoutError;
-        const surfaced = timedOut ? (attemptCtl.signal.reason as Error) : toError(err);
+          idleCtl.signal.aborted && idleCtl.signal.reason instanceof ProviderTimeoutError;
+        const surfaced = timedOut ? (idleCtl.signal.reason as Error) : toError(err);
         const retryable = !timedOut && !started && err instanceof ProviderConnectError;
         if (!retryable) {
           this.opts.logger?.error('provider.failure', {
@@ -195,7 +199,6 @@ export class ProviderManager {
         }
       } finally {
         clearTimeout(timer);
-        callerSignal.removeEventListener('abort', onCallerAbort);
         if (iter.return !== undefined) {
           void iter.return().catch(() => undefined);
         }
@@ -255,14 +258,16 @@ function abortReason(signal: AbortSignal): Error {
   return new Error('aborted');
 }
 
-function raceAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+// Resolves with `p`, rejects if `signal` aborts first. The platform's
+// `AbortSignal.any` composes signals but does not bridge a signal to a
+// promise rejection — provider streams' iterators may not honour the
+// passed signal (e.g. ChatOpenAI hangs after fetch abort), so we race
+// the iterator against the signal here.
+function rejectOnAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(abortReason(signal));
   return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => {
-      signal.removeEventListener('abort', onAbort);
-      reject(abortReason(signal));
-    };
-    signal.addEventListener('abort', onAbort);
+    const onAbort = (): void => reject(abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
     p.then(
       (v) => {
         signal.removeEventListener('abort', onAbort);

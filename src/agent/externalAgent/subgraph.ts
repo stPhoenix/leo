@@ -99,6 +99,20 @@ export interface RunInput {
   readonly resolvedConfig?: unknown;
 }
 
+// Hand-rolled FSM driver instead of LangGraph `entrypoint()` + `interrupt()`. The
+// LangGraph functional API re-runs the entrypoint callback from start on every
+// `Command({ resume })`, with previous `task()` results memoized and `interrupt()`
+// returning the resume value on replay. That model conflicts with two load-bearing
+// invariants here:
+//   1. Mid-execution `setState` mutations (per-event textBuffer, per-phase
+//      transitionTo) drive the per-mutation `StateListener` fan-out the widget UI
+//      subscribes to. Replays would re-fire listeners for already-emitted phases.
+//   2. Closure-captured `state` accumulates between user-input gates (clarify,
+//      ready). Re-running pre-interrupt code on resume either re-applies mutations
+//      (e.g. refineIterations doubles) or loses them (if cleared on re-init).
+// JS-native Promise + AbortSignal continuations are the correct framework
+// primitive at this seam — `clarifyResolver` / `readyResolver` are equivalent to
+// `interrupt()` semantically without the replay penalty.
 export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunHandle {
   const now = deps.now ?? ((): number => Date.now());
   const refineBudget = input.refineBudget ?? 3;

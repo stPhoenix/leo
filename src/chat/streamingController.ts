@@ -1,3 +1,7 @@
+// UI-layer streaming/turn FSM (streaming → cancelling → done/error/cancelled). Owns
+// per-block buffering + rAF-paced flushing into the React message store. Distinct from
+// the agent-layer LangGraph state — runs in the renderer event loop and exists to keep
+// token-by-token reveal smooth without re-rendering on every delta.
 import type { ChatMessageStore } from './messageStore';
 import type {
   ContentBlock,

@@ -1,3 +1,15 @@
+import {
+  Annotation,
+  Command,
+  END,
+  INTERRUPT,
+  MemorySaver,
+  START,
+  StateGraph,
+  interrupt,
+  isInterrupted,
+  type LangGraphRunnableConfig,
+} from '@langchain/langgraph';
 import type { Logger } from '@/platform/Logger';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import { WIKI_LOG } from '@/agent/wiki/loggingNamespaces';
@@ -11,7 +23,9 @@ import type { WikiPhase } from '@/agent/wiki/widgetState';
 import { WikiWidgetController } from '@/agent/wiki/widgetController';
 import { WIKI_RUN_DEFAULTS, resolveWikiBudgets, type WikiBudgets } from '@/agent/wiki/budgets';
 import { WIKI_INDEX_PATH, WIKI_RAW_DIR, WIKI_SCHEMA_PATH } from '@/agent/wiki/paths';
-import { processSourceFetchPersist, type ProcessSourceDeps } from './processSource';
+import { fetchIngestSource, type AttachmentResolver, type FetchUrlConfig } from './fetchSource';
+import { findDuplicateRawBySha } from './duplicateDetect';
+import { computeFetchedSha256, persistRaw } from './persistRaw';
 import { runPlanner, runExtractor, runReducer, type LlmJsonInvoker } from './subagents';
 import { createSemaphore } from './semaphore';
 import { runBatched } from './runBatched';
@@ -36,13 +50,18 @@ export interface IngestRunInput {
   readonly providerOverride?: ProviderOverride;
 }
 
+export interface ProcessSourceFetchDeps {
+  readonly attachments?: AttachmentResolver;
+  readonly url?: FetchUrlConfig;
+}
+
 export interface IngestRunDeps {
   readonly vault: VaultAdapter;
   readonly mutex: WikiMutex;
   readonly logger?: Logger;
   readonly now?: () => Date;
   readonly llm: LlmJsonInvoker;
-  readonly fetch: Pick<ProcessSourceDeps, 'attachments' | 'url'>;
+  readonly fetch: ProcessSourceFetchDeps;
   readonly extractorConcurrency?: number;
   readonly reducerConcurrency?: number;
   /**
@@ -117,15 +136,466 @@ export type IngestStartResult =
   | { readonly ok: true; readonly handle: IngestRunHandle }
   | { readonly ok: false; readonly busy: WikiMutexAcquireBusy };
 
-const _PHASE_ORDER: WikiPhase[] = [
-  'preparing',
-  'fetching',
-  'persisting',
-  'planning',
-  'extracting',
-  'reducing',
-  'writing',
-];
+export interface IngestDuplicateInterrupt {
+  readonly kind: 'wiki_ingest_duplicate';
+  readonly sourceRef: string;
+  readonly match: DuplicateMatch;
+}
+
+class IngestPipelineError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'IngestPipelineError';
+  }
+}
+
+const IngestGraphState = Annotation.Root({
+  inputSources: Annotation<readonly IngestSource[]>({
+    reducer: (_p, n) => n,
+    default: () => [],
+  }),
+  originalAsk: Annotation<string>({
+    reducer: (_p, n) => n,
+    default: () => '',
+  }),
+  note: Annotation<string | undefined>({
+    reducer: (_p, n) => n,
+    default: () => undefined,
+  }),
+  refinedSources: Annotation<readonly IngestSource[]>({
+    reducer: (_p, n) => n,
+    default: () => [],
+  }),
+  processedIdx: Annotation<number>({
+    reducer: (_p, n) => n,
+    default: () => 0,
+  }),
+  sourceRecords: Annotation<readonly SourceTerminalRecord[]>({
+    reducer: (prev, next) => [...prev, ...next],
+    default: () => [],
+  }),
+  candidatePagesByRaw: Annotation<Record<string, readonly string[]>>({
+    reducer: (_p, n) => n,
+    default: () => ({}),
+  }),
+  schemaMd: Annotation<string>({
+    reducer: (_p, n) => n,
+    default: () => '',
+  }),
+  indexExcerpt: Annotation<string>({
+    reducer: (_p, n) => n,
+    default: () => '',
+  }),
+  extractorOutputs: Annotation<readonly ExtractorOutput[]>({
+    reducer: (_p, n) => n,
+    default: () => [],
+  }),
+  reducerOutputs: Annotation<readonly ReducerOutput[]>({
+    reducer: (_p, n) => n,
+    default: () => [],
+  }),
+  pagesCreated: Annotation<number>({
+    reducer: (_p, n) => n,
+    default: () => 0,
+  }),
+  pagesEdited: Annotation<number>({
+    reducer: (_p, n) => n,
+    default: () => 0,
+  }),
+});
+
+type IngestGraphStateT = typeof IngestGraphState.State;
+
+interface NodeBindings {
+  readonly runId: string;
+  readonly controller: WikiWidgetController;
+  readonly partial: IngestRunPartial;
+  readonly setLastPhase: (phase: WikiPhase) => void;
+  readonly deps: IngestRunDeps;
+  readonly budgets: WikiBudgets | undefined;
+}
+
+function buildIngestGraph(b: NodeBindings) {
+  const { deps, controller, partial, setLastPhase, runId, budgets } = b;
+
+  const checkpoint = (
+    phase: WikiPhase,
+    extra: Partial<Parameters<WikiWidgetController['update']>[0]> = {},
+  ): void => {
+    setLastPhase(phase);
+    controller.setPhase(phase, extra as Parameters<WikiWidgetController['update']>[0]);
+    deps.logger?.debug(WIKI_LOG.ingest.transition, { phase, runId });
+  };
+
+  const refiningNode = async (state: IngestGraphStateT): Promise<Partial<IngestGraphStateT>> => {
+    checkpoint('preparing');
+    const refined = await runRefine(
+      {
+        originalAsk: state.originalAsk,
+        sources: state.inputSources,
+        ...(state.note !== undefined ? { note: state.note } : {}),
+      },
+      { invoke: deps.llm, ...(deps.logger !== undefined ? { logger: deps.logger } : {}) },
+    );
+    if (!refined.ok) {
+      controller.recordError('refine_failed', refined.error);
+      throw new IngestPipelineError('refine_failed', refined.error);
+    }
+    checkpoint('fetching', { fetchProgress: { total: refined.sources.length, completed: 0 } });
+    return { refinedSources: refined.sources };
+  };
+
+  const fetchingNode = async (
+    state: IngestGraphStateT,
+    config: LangGraphRunnableConfig,
+  ): Promise<Partial<IngestGraphStateT>> => {
+    const idx = state.processedIdx;
+    const source = state.refinedSources[idx]!;
+    const signal = config.signal ?? new AbortController().signal;
+    controller.update({
+      fetchProgress: {
+        total: state.refinedSources.length,
+        completed: idx,
+        current: describeSource(source),
+      },
+    });
+
+    const fetchResult = await fetchIngestSource(
+      source,
+      {
+        vault: deps.vault,
+        ...(deps.fetch.attachments !== undefined ? { attachments: deps.fetch.attachments } : {}),
+        ...(deps.fetch.url !== undefined ? { url: deps.fetch.url } : {}),
+        ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+      },
+      signal,
+    );
+    if (!fetchResult.ok) {
+      deps.logger?.debug(WIKI_LOG.ingest.fetch.failed, {
+        kind: source.kind,
+        code: fetchResult.error.code,
+        ref: describeRef(source),
+        message: fetchResult.error.message,
+      });
+      const record: SourceTerminalRecord = {
+        sourceRef: describeRef(source),
+        status: 'error',
+        rawPath: null,
+        error: `${fetchResult.error.code}: ${fetchResult.error.message}`,
+      };
+      return { sourceRecords: [record], processedIdx: idx + 1 };
+    }
+    const fetched = fetchResult.fetched;
+    const sha256 = await computeFetchedSha256(fetched);
+    const dup = await findDuplicateRawBySha(deps.vault, sha256);
+
+    let choice: DuplicateChoice | null = null;
+    if (dup !== null) {
+      deps.logger?.debug(WIKI_LOG.ingest.persist.duplicate, {
+        rawPath: dup.rawPath,
+        sourceRef: fetched.sourceRef,
+      });
+      choice = interrupt<IngestDuplicateInterrupt, DuplicateChoice>({
+        kind: 'wiki_ingest_duplicate',
+        sourceRef: fetched.sourceRef,
+        match: dup,
+      });
+    }
+
+    const persistDeps = {
+      vault: deps.vault,
+      ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+      ...(deps.now !== undefined ? { now: deps.now } : {}),
+    };
+
+    if (dup !== null && choice === 'skip') {
+      const record: SourceTerminalRecord = {
+        sourceRef: fetched.sourceRef,
+        status: 'skipped',
+        rawPath: dup.rawPath,
+      };
+      return { sourceRecords: [record], processedIdx: idx + 1 };
+    }
+    if (dup !== null && choice === 'reprocess') {
+      const record: SourceTerminalRecord = {
+        sourceRef: fetched.sourceRef,
+        status: 'reprocessed',
+        rawPath: dup.rawPath,
+      };
+      partial.sourcesPersisted += 1;
+      return { sourceRecords: [record], processedIdx: idx + 1 };
+    }
+    try {
+      const persistOpts =
+        dup !== null && choice === 'replace'
+          ? { fetched, overwriteRawPath: dup.rawPath }
+          : { fetched };
+      const persisted = await persistRaw(persistOpts, persistDeps);
+      const record: SourceTerminalRecord = {
+        sourceRef: fetched.sourceRef,
+        status: dup !== null ? 'replaced' : 'persisted',
+        rawPath: dup !== null ? dup.rawPath : persisted.rawPath,
+      };
+      partial.sourcesPersisted += 1;
+      return { sourceRecords: [record], processedIdx: idx + 1 };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      deps.logger?.debug(WIKI_LOG.ingest.persist.failed, {
+        sourceRef: fetched.sourceRef,
+        message,
+      });
+      const record: SourceTerminalRecord = {
+        sourceRef: fetched.sourceRef,
+        status: 'error',
+        rawPath: dup?.rawPath ?? null,
+        error: `persist_failed: ${message}`,
+      };
+      return { sourceRecords: [record], processedIdx: idx + 1 };
+    }
+  };
+
+  const planningNode = async (
+    state: IngestGraphStateT,
+    config: LangGraphRunnableConfig,
+  ): Promise<Partial<IngestGraphStateT>> => {
+    controller.update({
+      fetchProgress: {
+        total: state.refinedSources.length,
+        completed: state.refinedSources.length,
+      },
+    });
+    checkpoint('persisting', {
+      persistProgress: {
+        total: state.refinedSources.length,
+        completed: state.refinedSources.length,
+      },
+    });
+
+    if (state.sourceRecords.every((r) => r.status === 'error')) {
+      controller.recordError('fetch_all_failed', 'every source failed to fetch');
+      throw new IngestPipelineError('fetch_all_failed', 'every source failed to fetch');
+    }
+
+    checkpoint('planning');
+    const schemaMd = (await deps.vault.exists(WIKI_SCHEMA_PATH))
+      ? await deps.vault.read(WIKI_SCHEMA_PATH)
+      : '';
+    const indexExcerpt = (await deps.vault.exists(WIKI_INDEX_PATH))
+      ? truncate(await deps.vault.read(WIKI_INDEX_PATH), 4000)
+      : '';
+    const persisted = state.sourceRecords.filter(
+      (r) =>
+        r.rawPath !== null &&
+        (r.status === 'persisted' || r.status === 'replaced' || r.status === 'reprocessed'),
+    );
+    const plannerSources = await loadPlannerSourceInputs(deps.vault, persisted);
+    const signal = config.signal ?? new AbortController().signal;
+    const planResult = await runPlanner(
+      { ingestId: runId, schemaMd, indexExcerpt, perSource: plannerSources },
+      {
+        invoke: deps.llm,
+        ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+        ...(budgets !== undefined ? { budgets } : {}),
+      },
+      signal,
+    );
+    if (!planResult.ok) {
+      controller.recordError('plan_invalid', planResult.error);
+      throw new IngestPipelineError('plan_invalid', planResult.error);
+    }
+    const candidatePagesByRaw: Record<string, readonly string[]> = {};
+    for (const ps of planResult.data.perSource) {
+      candidatePagesByRaw[ps.rawPath] = ps.candidatePages;
+    }
+    return { candidatePagesByRaw, schemaMd, indexExcerpt };
+  };
+
+  const extractingNode = async (
+    state: IngestGraphStateT,
+    config: LangGraphRunnableConfig,
+  ): Promise<Partial<IngestGraphStateT>> => {
+    const persisted = state.sourceRecords.filter(
+      (r) =>
+        r.rawPath !== null &&
+        (r.status === 'persisted' || r.status === 'replaced' || r.status === 'reprocessed'),
+    );
+    const extractedRaws: { rawPath: string; body: string }[] = [];
+    for (const r of persisted) {
+      const body = (await deps.vault.exists(r.rawPath!)) ? await deps.vault.read(r.rawPath!) : '';
+      extractedRaws.push({ rawPath: r.rawPath!, body });
+    }
+    const extractorSemaphore = createSemaphore({
+      maxConcurrency: clampInt(
+        deps.extractorConcurrency ?? WIKI_RUN_DEFAULTS.extractorConcurrency,
+        1,
+        WIKI_RUN_DEFAULTS.extractorConcurrencyMax,
+      ),
+    });
+    checkpoint('extracting', {
+      extractProgress: { total: persisted.length, completed: 0, failed: 0 },
+    });
+    let extractCompleted = 0;
+    let extractFailed = 0;
+    const extractorOutputs: ExtractorOutput[] = [];
+    const signal = config.signal ?? new AbortController().signal;
+    await runBatched(
+      extractedRaws,
+      extractorSemaphore,
+      async (raw, sigInner) => {
+        const out = await runExtractor(
+          {
+            rawPath: raw.rawPath,
+            rawBody: stripFrontmatter(raw.body),
+            schemaMd: state.schemaMd,
+            candidatePages: state.candidatePagesByRaw[raw.rawPath] ?? [],
+            indexExcerpt: state.indexExcerpt,
+          },
+          {
+            invoke: deps.llm,
+            ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+            ...(budgets !== undefined ? { budgets } : {}),
+          },
+          sigInner,
+        );
+        if (out.ok) extractorOutputs.push(out.data);
+        else extractFailed += 1;
+        extractCompleted += 1;
+        controller.update({
+          extractProgress: {
+            total: extractedRaws.length,
+            completed: extractCompleted,
+            failed: extractFailed,
+          },
+        });
+        return out;
+      },
+      signal,
+    );
+    return { extractorOutputs };
+  };
+
+  const reducingNode = async (
+    state: IngestGraphStateT,
+    config: LangGraphRunnableConfig,
+  ): Promise<Partial<IngestGraphStateT>> => {
+    const opsBySlug = new Map<string, PageOp[]>();
+    for (const out of state.extractorOutputs) {
+      for (const op of out.pageOps) {
+        const key = op.slug;
+        const list = opsBySlug.get(key);
+        if (list === undefined) opsBySlug.set(key, [op]);
+        else list.push(op);
+      }
+    }
+    const slugs = [...opsBySlug.keys()].sort();
+    const reducerSemaphore = createSemaphore({
+      maxConcurrency: clampInt(
+        deps.reducerConcurrency ?? WIKI_RUN_DEFAULTS.reducerConcurrency,
+        1,
+        WIKI_RUN_DEFAULTS.extractorConcurrencyMax,
+      ),
+    });
+    checkpoint('reducing', {
+      reduceProgress: { total: slugs.length, completed: 0, failed: 0 },
+    });
+    let reduceCompleted = 0;
+    let reduceFailed = 0;
+    const reducerOutputs: ReducerOutput[] = [];
+    const signal = config.signal ?? new AbortController().signal;
+    await runBatched(
+      slugs,
+      reducerSemaphore,
+      async (slug, sigInner) => {
+        const ops = opsBySlug.get(slug) ?? [];
+        const pagePath = `wiki/pages/${slug}.md`;
+        const currentBody = (await deps.vault.exists(pagePath))
+          ? await deps.vault.read(pagePath)
+          : null;
+        const out = await runReducer(
+          { pageSlug: slug, currentBody, schemaMd: state.schemaMd, pageOps: ops },
+          {
+            invoke: deps.llm,
+            ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+            ...(budgets !== undefined ? { budgets } : {}),
+          },
+          sigInner,
+        );
+        if (out.ok) reducerOutputs.push(out.data);
+        else reduceFailed += 1;
+        reduceCompleted += 1;
+        controller.update({
+          reduceProgress: {
+            total: slugs.length,
+            completed: reduceCompleted,
+            failed: reduceFailed,
+          },
+        });
+        return out;
+      },
+      signal,
+    );
+    return { reducerOutputs };
+  };
+
+  const writingNode = async (
+    state: IngestGraphStateT,
+    config: LangGraphRunnableConfig,
+  ): Promise<Partial<IngestGraphStateT>> => {
+    checkpoint('writing', {
+      writeProgress: { total: state.reducerOutputs.length, completed: 0 },
+    });
+    const creates = state.reducerOutputs.filter((r) => r.action === 'create');
+    const edits = state.reducerOutputs.filter((r) => r.action === 'edit');
+    const persisted = state.sourceRecords.filter(
+      (r) =>
+        r.rawPath !== null &&
+        (r.status === 'persisted' || r.status === 'replaced' || r.status === 'reprocessed'),
+    );
+    const summaries: PersistedRawSummary[] = await buildSourceSummaries(deps.vault, persisted);
+    const signal = config.signal ?? new AbortController().signal;
+    const cancelledMidWrite = signal.aborted;
+    const writeResult = await writeIngest(
+      {
+        runId,
+        creates,
+        edits,
+        sourceSummaries: summaries,
+        ...(cancelledMidWrite ? { cancelledMidWrite: true } : {}),
+      },
+      {
+        vault: deps.vault,
+        ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+      },
+    );
+    partial.pagesCreated = writeResult.pagesCreated;
+    partial.pagesEdited = writeResult.pagesEdited;
+    return { pagesCreated: writeResult.pagesCreated, pagesEdited: writeResult.pagesEdited };
+  };
+
+  const routeAfterFetch = (state: IngestGraphStateT): 'fetching' | 'planning' => {
+    return state.processedIdx < state.refinedSources.length ? 'fetching' : 'planning';
+  };
+
+  return new StateGraph(IngestGraphState)
+    .addNode('refining', refiningNode)
+    .addNode('fetching', fetchingNode)
+    .addNode('planning', planningNode)
+    .addNode('extracting', extractingNode)
+    .addNode('reducing', reducingNode)
+    .addNode('writing', writingNode)
+    .addEdge(START, 'refining')
+    .addEdge('refining', 'fetching')
+    .addConditionalEdges('fetching', routeAfterFetch, ['fetching', 'planning'])
+    .addEdge('planning', 'extracting')
+    .addEdge('extracting', 'reducing')
+    .addEdge('reducing', 'writing')
+    .addEdge('writing', END);
+}
 
 export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): IngestStartResult {
   const runId =
@@ -147,6 +617,9 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
 
   const partial: IngestRunPartial = { pagesCreated: 0, pagesEdited: 0, sourcesPersisted: 0 };
   let lastPhase: WikiPhase = 'idle';
+  const setLastPhase = (p: WikiPhase): void => {
+    lastPhase = p;
+  };
 
   const budgets: WikiBudgets | undefined =
     deps.contextWindow !== undefined && deps.contextWindow > 0
@@ -158,16 +631,6 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
 
   const terminal = (async (): Promise<IngestTerminalResult> => {
     const startedAt = (deps.now ?? ((): Date => new Date()))().getTime();
-    let inFlightWriting = false;
-
-    const checkpoint = (
-      phase: WikiPhase,
-      extra: Partial<Parameters<WikiWidgetController['update']>[0]> = {},
-    ): void => {
-      lastPhase = phase;
-      controller.setPhase(phase, extra as Parameters<WikiWidgetController['update']>[0]);
-      deps.logger?.debug(WIKI_LOG.ingest.transition, { phase, runId });
-    };
 
     const abortError = (): IngestTerminalResult => ({
       ok: false,
@@ -175,281 +638,90 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
       phase: lastPhase,
       partial: { ...partial },
     });
-
     const errorTerminal = (code: string, message: string): IngestTerminalResult => ({
       ok: false,
       error: { code, message },
       partial: { ...partial },
     });
 
+    const graph = buildIngestGraph({
+      runId,
+      controller,
+      partial,
+      setLastPhase,
+      deps,
+      budgets,
+    }).compile({ checkpointer: new MemorySaver() });
+    const config: LangGraphRunnableConfig = {
+      configurable: { thread_id: runId },
+      signal: ac.signal,
+      // Per-source nodes count against recursion limit; raise well above
+      // VAULT_FOLDER_FANOUT_MAX (50 sources × 1 fetching node + ~5 other nodes).
+      recursionLimit: 1000,
+    };
+
     try {
-      // PREPARING
-      checkpoint('preparing');
       if (ac.signal.aborted) return abortError();
-      const refined = await runRefine(
+      let result = (await graph.invoke(
         {
+          inputSources: input.sources,
           originalAsk: input.originalAsk,
-          sources: input.sources,
-          ...(input.note !== undefined ? { note: input.note } : {}),
+          note: input.note,
         },
-        { invoke: deps.llm, ...(deps.logger !== undefined ? { logger: deps.logger } : {}) },
-      );
-      if (!refined.ok) {
-        controller.recordError('refine_failed', refined.error);
-        return errorTerminal('refine_failed', refined.error);
-      }
+        config,
+      )) as Record<string, unknown>;
 
-      // FETCHING + PERSISTING
-      const sources = refined.sources;
-      const sourceRecords: SourceTerminalRecord[] = [];
-      checkpoint('fetching', { fetchProgress: { total: sources.length, completed: 0 } });
-      for (let i = 0; i < sources.length; i += 1) {
+      while (isInterrupted<IngestDuplicateInterrupt>(result)) {
         if (ac.signal.aborted) return abortError();
-        controller.update({
-          fetchProgress: {
-            total: sources.length,
-            completed: i,
-            current: describeSource(sources[i]!),
-          },
-        });
-        const record = await processSourceFetchPersist(
-          sources[i]!,
-          {
-            vault: deps.vault,
-            ...(deps.fetch.attachments !== undefined
-              ? { attachments: deps.fetch.attachments }
-              : {}),
-            ...(deps.fetch.url !== undefined ? { url: deps.fetch.url } : {}),
-            ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-            ...(deps.now !== undefined ? { now: deps.now } : {}),
-            requestDuplicateChoice: (m) => deps.requestDuplicateChoice(runId, m),
-          },
-          ac.signal,
-        );
-        sourceRecords.push(record);
-        if (record.status === 'persisted' || record.status === 'replaced') {
-          partial.sourcesPersisted += 1;
+        const interrupts = result[INTERRUPT] as { value?: IngestDuplicateInterrupt }[];
+        const intr = interrupts[0];
+        const value = intr?.value;
+        if (value === undefined) {
+          return errorTerminal('graph_no_interrupt_value', 'missing payload');
         }
-      }
-      controller.update({ fetchProgress: { total: sources.length, completed: sources.length } });
-      checkpoint('persisting', {
-        persistProgress: { total: sources.length, completed: sources.length },
-      });
-
-      // Halt if every source errored — no point planning over zero data.
-      if (sourceRecords.every((r) => r.status === 'error')) {
-        controller.recordError('fetch_all_failed', 'every source failed to fetch');
-        return errorTerminal('fetch_all_failed', 'every source failed to fetch');
-      }
-
-      // PLANNING
-      if (ac.signal.aborted) return abortError();
-      checkpoint('planning');
-      const schemaMd = (await deps.vault.exists(WIKI_SCHEMA_PATH))
-        ? await deps.vault.read(WIKI_SCHEMA_PATH)
-        : '';
-      const indexExcerpt = (await deps.vault.exists(WIKI_INDEX_PATH))
-        ? truncate(await deps.vault.read(WIKI_INDEX_PATH), 4000)
-        : '';
-      const persisted = sourceRecords.filter(
-        (r) =>
-          r.rawPath !== null &&
-          (r.status === 'persisted' || r.status === 'replaced' || r.status === 'reprocessed'),
-      );
-      const plannerSources = await loadPlannerSourceInputs(deps.vault, persisted);
-      const planResult = await runPlanner(
-        {
-          ingestId: runId,
-          schemaMd,
-          indexExcerpt,
-          perSource: plannerSources,
-        },
-        {
-          invoke: deps.llm,
-          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-          ...(budgets !== undefined ? { budgets } : {}),
-        },
-        ac.signal,
-      );
-      if (!planResult.ok) {
-        controller.recordError('plan_invalid', planResult.error);
-        return errorTerminal('plan_invalid', planResult.error);
-      }
-      const candidatePagesByRaw = new Map<string, readonly string[]>();
-      for (const ps of planResult.data.perSource) {
-        candidatePagesByRaw.set(ps.rawPath, ps.candidatePages);
-      }
-
-      // EXTRACTING
-      if (ac.signal.aborted) return abortError();
-      const extractorSemaphore = createSemaphore({
-        maxConcurrency: clampInt(
-          deps.extractorConcurrency ?? WIKI_RUN_DEFAULTS.extractorConcurrency,
-          1,
-          WIKI_RUN_DEFAULTS.extractorConcurrencyMax,
-        ),
-      });
-      checkpoint('extracting', {
-        extractProgress: { total: persisted.length, completed: 0, failed: 0 },
-      });
-      let extractCompleted = 0;
-      let extractFailed = 0;
-      const extractorOutputs: ExtractorOutput[] = [];
-      const extractedRaws: { rawPath: string; body: string }[] = [];
-      for (const r of persisted) {
-        const body = (await deps.vault.exists(r.rawPath!)) ? await deps.vault.read(r.rawPath!) : '';
-        extractedRaws.push({ rawPath: r.rawPath!, body });
-      }
-      await runBatched(
-        extractedRaws,
-        extractorSemaphore,
-        async (raw, signal) => {
-          const out = await runExtractor(
-            {
-              rawPath: raw.rawPath,
-              rawBody: stripFrontmatter(raw.body),
-              schemaMd,
-              candidatePages: candidatePagesByRaw.get(raw.rawPath) ?? [],
-              indexExcerpt,
-            },
-            {
-              invoke: deps.llm,
-              ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-              ...(budgets !== undefined ? { budgets } : {}),
-            },
-            signal,
-          );
-          if (out.ok) extractorOutputs.push(out.data);
-          else extractFailed += 1;
-          extractCompleted += 1;
-          controller.update({
-            extractProgress: {
-              total: extractedRaws.length,
-              completed: extractCompleted,
-              failed: extractFailed,
-            },
-          });
-          return out;
-        },
-        ac.signal,
-      );
-
-      // REDUCING — group page ops by slug.
-      if (ac.signal.aborted) return abortError();
-      const reducerSemaphore = createSemaphore({
-        maxConcurrency: clampInt(
-          deps.reducerConcurrency ?? WIKI_RUN_DEFAULTS.reducerConcurrency,
-          1,
-          WIKI_RUN_DEFAULTS.extractorConcurrencyMax,
-        ),
-      });
-      const opsBySlug = new Map<string, PageOp[]>();
-      for (const out of extractorOutputs) {
-        for (const op of out.pageOps) {
-          const key = op.slug;
-          const list = opsBySlug.get(key);
-          if (list === undefined) opsBySlug.set(key, [op]);
-          else list.push(op);
+        let resumeChoice: DuplicateChoice;
+        try {
+          const decision = await deps.requestDuplicateChoice(runId, value.match);
+          resumeChoice = decision ?? 'skip';
+        } catch {
+          resumeChoice = 'skip';
         }
+        if (ac.signal.aborted) return abortError();
+        result = (await graph.invoke(new Command({ resume: resumeChoice }), config)) as Record<
+          string,
+          unknown
+        >;
       }
-      const slugs = [...opsBySlug.keys()].sort();
-      checkpoint('reducing', {
-        reduceProgress: { total: slugs.length, completed: 0, failed: 0 },
-      });
-      let reduceCompleted = 0;
-      let reduceFailed = 0;
-      const reducerOutputs: ReducerOutput[] = [];
-      await runBatched(
-        slugs,
-        reducerSemaphore,
-        async (slug, signal) => {
-          const ops = opsBySlug.get(slug) ?? [];
-          const pagePath = `wiki/pages/${slug}.md`;
-          const currentBody = (await deps.vault.exists(pagePath))
-            ? await deps.vault.read(pagePath)
-            : null;
-          const out = await runReducer(
-            {
-              pageSlug: slug,
-              currentBody,
-              schemaMd,
-              pageOps: ops,
-            },
-            {
-              invoke: deps.llm,
-              ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-              ...(budgets !== undefined ? { budgets } : {}),
-            },
-            signal,
-          );
-          if (out.ok) reducerOutputs.push(out.data);
-          else reduceFailed += 1;
-          reduceCompleted += 1;
-          controller.update({
-            reduceProgress: {
-              total: slugs.length,
-              completed: reduceCompleted,
-              failed: reduceFailed,
-            },
-          });
-          return out;
-        },
-        ac.signal,
-      );
-
-      // WRITING — once we enter this phase, mid-write semantics apply.
-      if (ac.signal.aborted) return abortError();
-      checkpoint('writing', {
-        writeProgress: { total: reducerOutputs.length, completed: 0 },
-      });
-      inFlightWriting = true;
-      const creates = reducerOutputs.filter((r) => r.action === 'create');
-      const edits = reducerOutputs.filter((r) => r.action === 'edit');
-      const summaries: PersistedRawSummary[] = await buildSourceSummaries(deps.vault, persisted);
-      const cancelledMidWrite = ac.signal.aborted;
-      const writeResult = await writeIngest(
-        {
-          runId,
-          creates,
-          edits,
-          sourceSummaries: summaries,
-          ...(cancelledMidWrite ? { cancelledMidWrite: true } : {}),
-        },
-        {
-          vault: deps.vault,
-          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-          ...(deps.now !== undefined ? { now: deps.now } : {}),
-        },
-      );
-      partial.pagesCreated = writeResult.pagesCreated;
-      partial.pagesEdited = writeResult.pagesEdited;
-      inFlightWriting = false;
 
       if (ac.signal.aborted) {
-        controller.setPhase('cancelled', {
-          writtenFiles:
-            writeResult.errors.length === 0 ? slugs.map((s) => `wiki/pages/${s}.md`) : [],
-        });
+        controller.setPhase('cancelled');
         return abortError();
       }
 
+      const sourceRecordsFinal = (result.sourceRecords ?? []) as readonly SourceTerminalRecord[];
+      const pagesCreated = (result.pagesCreated ?? 0) as number;
+      const pagesEdited = (result.pagesEdited ?? 0) as number;
+      const reducerOutputsFinal = (result.reducerOutputs ?? []) as readonly ReducerOutput[];
+      const writtenSlugs = reducerOutputsFinal.map((r) => r.pageSlug);
       const endedAt = (deps.now ?? ((): Date => new Date()))().getTime();
+
       controller.setPhase('done', {
-        pagesCreated: writeResult.pagesCreated,
-        pagesEdited: writeResult.pagesEdited,
-        perSourceStatuses: sourceRecords.map((r) => ({
+        pagesCreated,
+        pagesEdited,
+        perSourceStatuses: sourceRecordsFinal.map((r) => ({
           rawPath: r.rawPath ?? '',
           status: mapPerSourceStatus(r.status),
           ...(r.error !== undefined ? { error: r.error } : {}),
         })),
       });
+      void writtenSlugs;
       return {
         ok: true,
         data: {
           ingestId: runId,
-          sources: sourceRecords,
-          pagesCreated: writeResult.pagesCreated,
-          pagesEdited: writeResult.pagesEdited,
+          sources: sourceRecordsFinal,
+          pagesCreated,
+          pagesEdited,
           durationMs: endedAt - startedAt,
         },
       };
@@ -459,6 +731,9 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
         controller.setPhase('cancelled');
         return abortError();
       }
+      if (err instanceof IngestPipelineError) {
+        return errorTerminal(err.code, err.message);
+      }
       if (err instanceof SandboxViolation) {
         controller.recordError('sandbox_violation', message);
         return errorTerminal('sandbox_violation', message);
@@ -466,7 +741,6 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
       controller.recordError('unhandled', message);
       return errorTerminal('unhandled', message);
     } finally {
-      void inFlightWriting; // noted: writing race already handled above
       acquired.release();
       releaseWikiLiveController(runId);
     }
@@ -490,6 +764,21 @@ function describeSource(s: IngestSource): string {
       return s.url;
     case 'vaultPath':
       return s.path;
+    case 'attachment':
+      return `attachment:${s.attachmentId}`;
+    case 'conversation':
+      return `conversation:${s.threadId}:${s.turnIndex}`;
+    case 'inbox':
+      return 'inbox';
+  }
+}
+
+function describeRef(s: IngestSource): string {
+  switch (s.kind) {
+    case 'url':
+      return s.url;
+    case 'vaultPath':
+      return `vault:${s.path}`;
     case 'attachment':
       return `attachment:${s.attachmentId}`;
     case 'conversation':

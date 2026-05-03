@@ -140,6 +140,48 @@ describe('startLintRun — cancel', () => {
   });
 });
 
+describe('startLintRun — interrupt → Command(resume) round-trip', () => {
+  it('passes findings + schemaPatch to requestConfirmation and threads decision back into terminal', async () => {
+    const vault = new FakeVault();
+    seed(vault);
+    const mutex = new WikiMutex();
+    let receivedRunId: string | null = null;
+    let receivedFindings: ReadonlyArray<{ id: string }> | null = null;
+    let receivedSchemaPatch: unknown = undefined;
+    const start = startLintRun(
+      { threadId: 't1', scope: { kind: 'orphans' } },
+      {
+        vault,
+        mutex,
+        llm: emptyLlm,
+        requestConfirmation: async (runId, findings, schemaPatch) => {
+          receivedRunId = runId;
+          receivedFindings = findings;
+          receivedSchemaPatch = schemaPatch;
+          return {
+            accepted: findings.map((f) => f.id),
+            rejected: [],
+            applySchema: false,
+          };
+        },
+        now: () => new Date('2026-04-29T11:00:00Z'),
+      },
+    );
+    expect(start.ok).toBe(true);
+    if (!start.ok) return;
+    const term = await start.handle.terminal;
+    expect(receivedRunId).toBe(start.handle.runId);
+    expect(receivedFindings).not.toBeNull();
+    expect(receivedFindings!.length).toBeGreaterThan(0);
+    expect(receivedSchemaPatch).toBeNull();
+    expect(term.ok).toBe(true);
+    if (!term.ok) return;
+    expect(term.data.findings.accepted).toBe(receivedFindings!.length);
+    expect(term.data.findings.rejected).toBe(0);
+    expect(mutex.active()).toEqual({ kind: 'idle' });
+  });
+});
+
 describe('startLintRun — outermost finally', () => {
   it('LLM throw routes to ERROR + mutex released', async () => {
     const vault = new FakeVault();

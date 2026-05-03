@@ -1,3 +1,15 @@
+import {
+  Annotation,
+  Command,
+  END,
+  INTERRUPT,
+  MemorySaver,
+  START,
+  StateGraph,
+  interrupt,
+  isInterrupted,
+  type LangGraphRunnableConfig,
+} from '@langchain/langgraph';
 import type { Logger } from '@/platform/Logger';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { WikiMutex, WikiMutexAcquireBusy } from '@/agent/wiki/mutex';
@@ -105,6 +117,225 @@ export type LintStartResult =
   | { readonly ok: true; readonly handle: LintRunHandle }
   | { readonly ok: false; readonly busy: WikiMutexAcquireBusy };
 
+export interface LintConfirmInterrupt {
+  readonly kind: 'wiki_lint_confirm';
+  readonly findings: readonly LintFinding[];
+  readonly schemaPatch: LintSchemaPatch | null;
+}
+
+const LintGraphState = Annotation.Root({
+  scope: Annotation<LintRunInput['scope']>({
+    reducer: (_p, n) => n,
+    default: () => undefined,
+  }),
+  scan: Annotation<LintScanResult | null>({
+    reducer: (_p, n) => n,
+    default: () => null,
+  }),
+  concerns: Annotation<readonly LintConcern[]>({
+    reducer: (_p, n) => n,
+    default: () => [],
+  }),
+  rawFindings: Annotation<readonly LintFinding[]>({
+    reducer: (_p, n) => n,
+    default: () => [],
+  }),
+  perConcernFailed: Annotation<number>({
+    reducer: (_p, n) => n,
+    default: () => 0,
+  }),
+  proposedFindings: Annotation<readonly LintFinding[]>({
+    reducer: (_p, n) => n,
+    default: () => [],
+  }),
+  schemaPatch: Annotation<LintSchemaPatch | null>({
+    reducer: (_p, n) => n,
+    default: () => null,
+  }),
+  decision: Annotation<LintConfirmDecision | null>({
+    reducer: (_p, n) => n,
+    default: () => null,
+  }),
+  pagesEdited: Annotation<number>({
+    reducer: (_p, n) => n,
+    default: () => 0,
+  }),
+  schemaEdited: Annotation<boolean>({
+    reducer: (_p, n) => n,
+    default: () => false,
+  }),
+});
+
+type LintGraphStateT = typeof LintGraphState.State;
+
+interface NodeBindings {
+  readonly runId: string;
+  readonly controller: WikiWidgetController;
+  readonly partial: LintRunPartial;
+  readonly setLastPhase: (phase: WikiPhase) => void;
+  readonly deps: LintRunDeps;
+}
+
+function buildLintGraph(b: NodeBindings) {
+  const { deps, controller, partial, setLastPhase, runId } = b;
+
+  const checkpoint = (
+    phase: WikiPhase,
+    extra: Partial<Parameters<WikiWidgetController['update']>[0]> = {},
+  ): void => {
+    setLastPhase(phase);
+    controller.setPhase(phase, extra as Parameters<WikiWidgetController['update']>[0]);
+    deps.logger?.debug(WIKI_LOG.lint.transition, { phase, runId });
+  };
+
+  const scanningNode = async (state: LintGraphStateT): Promise<Partial<LintGraphStateT>> => {
+    checkpoint('scanning');
+    const scan = await scanWiki({
+      vault: deps.vault,
+      ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+    });
+    controller.update({
+      scanSummary: {
+        pages: scan.pages.length,
+        sources: scan.sources.length,
+        orphanPages: scan.orphanPages.length,
+        orphanRaw: scan.orphanRawPaths.length,
+      },
+    });
+    return { scan, concerns: filterConcerns(deps.concerns ?? LINT_CONCERNS, state.scope) };
+  };
+
+  const checkingNode = async (
+    state: LintGraphStateT,
+    config: LangGraphRunnableConfig,
+  ): Promise<Partial<LintGraphStateT>> => {
+    const concerns = state.concerns;
+    checkpoint('checking', {
+      checkProgress: { total: concerns.length, completed: 0, failed: 0 },
+    });
+    const lintBudgets: WikiBudgets | undefined =
+      deps.contextWindow !== undefined && deps.contextWindow > 0
+        ? resolveWikiBudgets({
+            contextWindow: deps.contextWindow,
+            ...(deps.maxOutputTokens !== undefined
+              ? { maxOutputTokens: deps.maxOutputTokens }
+              : {}),
+          })
+        : undefined;
+    const checkerDeps = {
+      invoke: deps.llm,
+      ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+      ...(deps.checkerConcurrency !== undefined ? { concurrency: deps.checkerConcurrency } : {}),
+      ...(lintBudgets !== undefined ? { budgets: lintBudgets } : {}),
+    };
+    const signal = config.signal ?? new AbortController().signal;
+    const { findings: rawFindings, perConcern } = await runCheckers(
+      state.scan!,
+      concerns,
+      checkerDeps,
+      signal,
+    );
+    const failed = Object.values(perConcern).filter((r) => !r.ok).length;
+    controller.update({
+      checkProgress: { total: concerns.length, completed: concerns.length, failed },
+    });
+    return { rawFindings, perConcernFailed: failed };
+  };
+
+  const proposingNode = async (
+    state: LintGraphStateT,
+    config: LangGraphRunnableConfig,
+  ): Promise<Partial<LintGraphStateT>> => {
+    checkpoint('proposing');
+    const signal = config.signal ?? new AbortController().signal;
+    const proposed = await runProposing(
+      state.rawFindings,
+      state.scan!,
+      { invoke: deps.llm, ...(deps.logger !== undefined ? { logger: deps.logger } : {}) },
+      signal,
+    );
+    partial.findingsTotal = proposed.findings.length;
+    controller.update({
+      findings: proposed.findings.map((f) => ({
+        id: f.id,
+        page: f.page ?? f.rawPath ?? '',
+        action: f.concern,
+        severity: f.severity,
+        rationale: f.rationale,
+        accepted: null,
+      })),
+      schemaPatchPending: proposed.schemaPatch !== null,
+    });
+    return { proposedFindings: proposed.findings, schemaPatch: proposed.schemaPatch };
+  };
+
+  const awaitConfirmNode = async (state: LintGraphStateT): Promise<Partial<LintGraphStateT>> => {
+    checkpoint('awaiting_confirm');
+    const payload: LintConfirmInterrupt = {
+      kind: 'wiki_lint_confirm',
+      findings: state.proposedFindings,
+      schemaPatch: state.schemaPatch,
+    };
+    const decision = interrupt<LintConfirmInterrupt, LintConfirmDecision>(payload);
+    partial.findingsAccepted = decision.accepted.length;
+    partial.findingsRejected = decision.rejected.length;
+    return { decision };
+  };
+
+  const writingNode = async (state: LintGraphStateT): Promise<Partial<LintGraphStateT>> => {
+    checkpoint('writing');
+    const decision = state.decision!;
+    const acceptedFindings = state.proposedFindings.filter((f) => decision.accepted.includes(f.id));
+    const reducerOutputs = acceptedFindings
+      .filter((f) => f.patch !== null && f.page !== null)
+      .map((f) => ({
+        pageSlug: pageSlugFromPath(f.page!),
+        action: 'edit' as const,
+        body: f.patch !== null && f.patch.kind === 'replace_body' ? f.patch.body : '',
+        frontmatter: { tags: [], last_updated: new Date().toISOString(), source_count: 0 },
+        sources: [],
+      }));
+    const writeResult = await writeIngest(
+      { runId, creates: [], edits: reducerOutputs, sourceSummaries: [] },
+      {
+        vault: deps.vault,
+        ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+      },
+    );
+    partial.pagesEdited = writeResult.pagesEdited;
+
+    let schemaEdited = false;
+    if (decision.applySchema && state.schemaPatch !== null) {
+      try {
+        await applySchemaPatch(deps.vault, state.schemaPatch);
+        schemaEdited = true;
+        partial.schemaEdited = true;
+      } catch (err) {
+        deps.logger?.warn(WIKI_LOG.lint.write.failed, {
+          runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return { pagesEdited: writeResult.pagesEdited, schemaEdited };
+  };
+
+  return new StateGraph(LintGraphState)
+    .addNode('scanning', scanningNode)
+    .addNode('checking', checkingNode)
+    .addNode('proposing', proposingNode)
+    .addNode('awaitConfirm', awaitConfirmNode)
+    .addNode('writing', writingNode)
+    .addEdge(START, 'scanning')
+    .addEdge('scanning', 'checking')
+    .addEdge('checking', 'proposing')
+    .addEdge('proposing', 'awaitConfirm')
+    .addEdge('awaitConfirm', 'writing')
+    .addEdge('writing', END);
+}
+
 export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartResult {
   const runId =
     deps.existingRunId ??
@@ -129,18 +360,12 @@ export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartR
     findingsRejected: 0,
   };
   let lastPhase: WikiPhase = 'idle';
+  const setLastPhase = (p: WikiPhase): void => {
+    lastPhase = p;
+  };
 
   const terminal = (async (): Promise<LintTerminalResult> => {
     const startedAt = (deps.now ?? ((): Date => new Date()))().getTime();
-
-    const checkpoint = (
-      phase: WikiPhase,
-      extra: Partial<Parameters<WikiWidgetController['update']>[0]> = {},
-    ): void => {
-      lastPhase = phase;
-      controller.setPhase(phase, extra as Parameters<WikiWidgetController['update']>[0]);
-      deps.logger?.debug(WIKI_LOG.lint.transition, { phase, runId });
-    };
 
     const abortError = (): LintTerminalResult => ({
       ok: false,
@@ -154,148 +379,58 @@ export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartR
       partial: { ...partial },
     });
 
-    let scan: LintScanResult;
+    const graph = buildLintGraph({ runId, controller, partial, setLastPhase, deps }).compile({
+      checkpointer: new MemorySaver(),
+    });
+    const config = { configurable: { thread_id: runId }, signal: ac.signal };
+
     try {
-      // SCANNING
-      checkpoint('scanning');
-      if (ac.signal.aborted) return abortError();
-      scan = await scanWiki({
-        vault: deps.vault,
-        ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-      });
-      controller.update({
-        scanSummary: {
-          pages: scan.pages.length,
-          sources: scan.sources.length,
-          orphanPages: scan.orphanPages.length,
-          orphanRaw: scan.orphanRawPaths.length,
-        },
-      });
-
-      // CHECKING
-      if (ac.signal.aborted) return abortError();
-      const concerns = filterConcerns(deps.concerns ?? LINT_CONCERNS, input.scope);
-      checkpoint('checking', {
-        checkProgress: { total: concerns.length, completed: 0, failed: 0 },
-      });
-      const lintBudgets: WikiBudgets | undefined =
-        deps.contextWindow !== undefined && deps.contextWindow > 0
-          ? resolveWikiBudgets({
-              contextWindow: deps.contextWindow,
-              ...(deps.maxOutputTokens !== undefined
-                ? { maxOutputTokens: deps.maxOutputTokens }
-                : {}),
-            })
-          : undefined;
-      const checkerDeps = {
-        invoke: deps.llm,
-        ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-        ...(deps.checkerConcurrency !== undefined ? { concurrency: deps.checkerConcurrency } : {}),
-        ...(lintBudgets !== undefined ? { budgets: lintBudgets } : {}),
-      };
-      const { findings: rawFindings, perConcern } = await runCheckers(
-        scan,
-        concerns,
-        checkerDeps,
-        ac.signal,
-      );
-      controller.update({
-        checkProgress: {
-          total: concerns.length,
-          completed: concerns.length,
-          failed: Object.values(perConcern).filter((r) => !r.ok).length,
-        },
-      });
-      if (ac.signal.aborted) return abortError();
-
-      // PROPOSING
-      checkpoint('proposing');
-      const proposed = await runProposing(
-        rawFindings,
-        scan,
-        { invoke: deps.llm, ...(deps.logger !== undefined ? { logger: deps.logger } : {}) },
-        ac.signal,
-      );
-      partial.findingsTotal = proposed.findings.length;
-      controller.update({
-        findings: proposed.findings.map((f) => ({
-          id: f.id,
-          page: f.page ?? f.rawPath ?? '',
-          action: f.concern,
-          severity: f.severity,
-          rationale: f.rationale,
-          accepted: null,
-        })),
-        schemaPatchPending: proposed.schemaPatch !== null,
-      });
-
-      // CONFIRMING
-      if (ac.signal.aborted) return abortError();
-      checkpoint('awaiting_confirm');
-      const decision = await deps.requestConfirmation(
-        runId,
-        proposed.findings,
-        proposed.schemaPatch,
-      );
-      if (decision === null) return abortError();
-      if (ac.signal.aborted) return abortError();
-      partial.findingsAccepted = decision.accepted.length;
-      partial.findingsRejected = decision.rejected.length;
-
-      // WRITING
-      checkpoint('writing');
-      const acceptedFindings = proposed.findings.filter((f) => decision.accepted.includes(f.id));
-      const reducerOutputs = acceptedFindings
-        .filter((f) => f.patch !== null && f.page !== null)
-        .map((f) => ({
-          pageSlug: pageSlugFromPath(f.page!),
-          action: 'edit' as const,
-          body: f.patch !== null && f.patch.kind === 'replace_body' ? f.patch.body : '',
-          frontmatter: { tags: [], last_updated: new Date().toISOString(), source_count: 0 },
-          sources: [],
-        }));
-      const writeResult = await writeIngest(
-        {
-          runId,
-          creates: [],
-          edits: reducerOutputs,
-          sourceSummaries: [],
-        },
-        {
-          vault: deps.vault,
-          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-          ...(deps.now !== undefined ? { now: deps.now } : {}),
-        },
-      );
-      partial.pagesEdited = writeResult.pagesEdited;
-
-      // Apply schema patch when explicitly accepted.
-      if (decision.applySchema && proposed.schemaPatch !== null) {
-        try {
-          await applySchemaPatch(deps.vault, proposed.schemaPatch);
-          partial.schemaEdited = true;
-        } catch (err) {
-          deps.logger?.warn(WIKI_LOG.lint.write.failed, {
-            runId,
-            error: err instanceof Error ? err.message : String(err),
-          });
+      let result = (await graph.invoke({ scope: input.scope }, config)) as Record<string, unknown>;
+      if (isInterrupted<LintConfirmInterrupt>(result)) {
+        if (ac.signal.aborted) return abortError();
+        const interrupts = result[INTERRUPT] as { value?: LintConfirmInterrupt }[];
+        const intr = interrupts[0];
+        const value = intr?.value;
+        if (value === undefined)
+          return errorTerminal('graph_no_interrupt_value', 'missing payload');
+        const decision = await deps.requestConfirmation(runId, value.findings, value.schemaPatch);
+        if (decision === null) {
+          ac.abort();
+          controller.setPhase('cancelled');
+          return abortError();
         }
+        if (ac.signal.aborted) return abortError();
+        result = (await graph.invoke(new Command({ resume: decision }), config)) as Record<
+          string,
+          unknown
+        >;
       }
+
+      if (ac.signal.aborted) {
+        controller.setPhase('cancelled');
+        return abortError();
+      }
+
+      const proposedFindings = (result.proposedFindings ?? []) as readonly LintFinding[];
+      const decisionFinal = result.decision as LintConfirmDecision | null;
+      const pagesEdited = (result.pagesEdited ?? 0) as number;
+      const schemaEdited = (result.schemaEdited ?? false) as boolean;
 
       const endedAt = (deps.now ?? ((): Date => new Date()))().getTime();
       controller.setPhase('done', {
-        pagesEdited: writeResult.pagesEdited,
-        findings: proposed.findings.map((f) => ({
+        pagesEdited,
+        findings: proposedFindings.map((f) => ({
           id: f.id,
           page: f.page ?? f.rawPath ?? '',
           action: f.concern,
           severity: f.severity,
           rationale: f.rationale,
-          accepted: decision.accepted.includes(f.id)
-            ? true
-            : decision.rejected.includes(f.id)
-              ? false
-              : null,
+          accepted:
+            decisionFinal !== null && decisionFinal.accepted.includes(f.id)
+              ? true
+              : decisionFinal !== null && decisionFinal.rejected.includes(f.id)
+                ? false
+                : null,
         })),
       });
       return {
@@ -307,8 +442,8 @@ export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartR
             accepted: partial.findingsAccepted,
             rejected: partial.findingsRejected,
           },
-          pagesEdited: writeResult.pagesEdited,
-          schemaEdited: partial.schemaEdited,
+          pagesEdited,
+          schemaEdited,
           durationMs: endedAt - startedAt,
         },
       };

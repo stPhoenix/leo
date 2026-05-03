@@ -1,3 +1,9 @@
+/**
+ * Promise-chain FIFO queue — preserves enqueue order with O(1) tail append.
+ * Not built on `createSemaphore({maxConcurrency:1})` because callers do not need
+ * abort-cancel of queued slots (provider streams use AbortController on the
+ * underlying request, not on the queue position).
+ */
 export class FifoQueue {
   private tail: Promise<void> = Promise.resolve();
 

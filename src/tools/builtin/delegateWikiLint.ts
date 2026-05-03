@@ -72,6 +72,9 @@ const DESCRIPTION = [
   'On confirm, the lint subgraph runs (scan → check → propose → confirm → write). Live progress streams into the same widget; the tool resolves with the final structured payload.',
 ].join('\n');
 
+// Flat JSON Schema is hand-rolled because `z.discriminatedUnion('kind', …)` (above)
+// generates `oneOf`, which several LM Studio GGUF models reject or mis-route. Keep in
+// sync with `DelegateWikiLintSchema`.
 const DELEGATE_WIKI_LINT_PARAMETERS: JsonSchema = {
   type: 'object',
   additionalProperties: false,

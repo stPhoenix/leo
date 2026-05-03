@@ -26,6 +26,9 @@ export interface WikiMutexOptions {
   readonly logger?: Logger;
 }
 
+// Single-holder mutex carrying activeOp + activeRunId for widget UI surfacing on
+// busy-attempt. `createSemaphore({maxConcurrency:1})` would gate correctly but loses
+// those fields, which the picker dialog and `delegate_wiki_*` tool errors return verbatim.
 export class WikiMutex implements WikiMutexLike {
   private holder: ActiveHolder | null = null;
   private readonly logger: Logger | undefined;

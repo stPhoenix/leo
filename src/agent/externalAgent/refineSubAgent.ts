@@ -91,6 +91,15 @@ export function createRefineSubAgent(opts: RefineSubAgentOptions): RefineDeps {
         tools: REFINE_TOOLS,
       };
 
+      // Stream-event tool-call parser. Not replaced by LangChain's
+      // `ChatModel.bindTools(...).invoke(...).tool_calls` because that path
+      // bypasses Leo's `ProviderManager` abstraction (uniform OpenAI-compat +
+      // Anthropic + LM Studio wiring with shared connection-state tracking,
+      // retry policy, FIFO queue, telemetry). The parser handles both
+      // OpenAI-style (`tool_call` events) and Anthropic-style streams
+      // (`block_start[tool_use]` → `block_delta[input_json_delta]` → `block_stop`)
+      // because `ProviderManager.stream()` normalises across providers but
+      // surfaces the provider-native event shape verbatim.
       let textBuffer = '';
       const toolCalls: Array<{ name: string; argsJson: string }> = [];
       const toolBufs = new Map<number, { id: string; name: string; args: string }>();

@@ -1,3 +1,5 @@
+// Block-typed token tally built on `estimateTokens` (chars/4). Rationale for not using
+// `BaseChatModel.getNumTokens()` lives in `src/agent/tokenCount.ts` (bundle-size cap).
 export type TokenBlock =
   | { readonly type: 'text'; readonly text: string }
   | { readonly type: 'image' }

@@ -121,6 +121,9 @@ const DESCRIPTION = [
   'On confirm, an ingest subgraph runs (refine → fetch → persist → plan → extract → reduce → write). For the conversation kind, fetching is skipped — the supplied body is persisted directly. Live progress streams into the same widget; the tool resolves with the final structured payload.',
 ].join('\n');
 
+// Flat JSON Schema is hand-rolled because `z.discriminatedUnion('kind', …)` (above)
+// generates `oneOf`, which several LM Studio GGUF models (qwen3-coder, gpt-oss) reject
+// or mis-route into reasoning_content. Keep in sync with `DelegateWikiIngestSchema`.
 const DELEGATE_WIKI_INGEST_PARAMETERS: JsonSchema = {
   type: 'object',
   required: ['kind'],

@@ -54,6 +54,10 @@ import {
 import type { StreamEvent } from './streamEvents';
 import { isSkillInvocationEnvelope } from '@/tools/builtin/skillTool';
 
+// Push/pull async-iterable bridge. `node:stream` (`PassThrough`) is unavailable in the
+// Obsidian renderer (no Node built-ins). LangGraph `.streamEvents()` covers most pipes,
+// but the auto-compact + interrupt re-entry path needs out-of-band pushes from outside
+// the graph driver — this channel is the merge point.
 export class EventChannel<T> {
   private readonly pending: T[] = [];
   private readonly resolvers: Array<(r: IteratorResult<T>) => void> = [];

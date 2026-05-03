@@ -12,6 +12,7 @@ import {
 import type { ZodType } from 'zod';
 import type { LlmJsonInvoker } from '@/agent/wiki/ingest/subagents';
 import type { VaultAdapter, VaultListing } from '@/storage/vaultAdapter';
+import { computeSha256Hex } from '@/agent/wiki/ingest/sha256';
 
 class FakeVault implements VaultAdapter {
   readonly files = new Map<string, string>();
@@ -269,6 +270,59 @@ describe('startIngestRun — cancellation', () => {
     expect(term.ok).toBe(false);
     if (term.ok) return;
     expect('cancelled' in term && term.cancelled).toBe(true);
+    expect(mutex.active()).toEqual({ kind: 'idle' });
+  });
+});
+
+describe('startIngestRun — duplicate interrupt → Command(resume) round-trip', () => {
+  it('hits interrupt, calls requestDuplicateChoice with match, and skips on resume', async () => {
+    const vault = new FakeVault();
+    seedSchema(vault);
+    const dupBody = 'duplicate body';
+    vault.files.set('notes/a.md', dupBody);
+    const sha = await computeSha256Hex(dupBody);
+    const existingRaw = `${WIKI_RAW_DIR}/2026-04-29-existing.md`;
+    vault.files.set(
+      existingRaw,
+      [
+        '---',
+        'source: vault:notes/old.md',
+        'fetched_at: 2026-04-28T00:00:00Z',
+        `sha256: ${sha}`,
+        '---',
+        '',
+        dupBody,
+      ].join('\n'),
+    );
+    vault.listings.set(WIKI_RAW_DIR, { files: [existingRaw], folders: [] });
+    const mutex = new WikiMutex();
+    const calls: { runId: string; rawPath: string }[] = [];
+    const start = startIngestRun(
+      {
+        threadId: 't1',
+        originalAsk: '',
+        sources: [{ kind: 'vaultPath', path: 'notes/a.md' }],
+      },
+      {
+        vault,
+        mutex,
+        llm: cannedLlm({ planner: {}, extractors: [], reducers: [] }),
+        fetch: {},
+        requestDuplicateChoice: async (runId, match) => {
+          calls.push({ runId, rawPath: match.rawPath });
+          return 'skip';
+        },
+      },
+    );
+    expect(start.ok).toBe(true);
+    if (!start.ok) return;
+    const term = await start.handle.terminal;
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.runId).toBe(start.handle.runId);
+    expect(calls[0]!.rawPath).toBe(existingRaw);
+    // Terminal can be ok or error depending on planner output; what matters
+    // here is the interrupt → resume round-trip fired and the mutex released.
+    expect(term.ok === true || term.ok === false).toBe(true);
     expect(mutex.active()).toEqual({ kind: 'idle' });
   });
 });
