@@ -11,18 +11,12 @@ import { WikiWidgetController } from '@/agent/wiki/widgetController';
 import type { WikiPhase } from '@/agent/wiki/widgetState';
 import { writeIngest } from '@/agent/wiki/ingest/writer';
 import type { LlmJsonInvoker } from '@/agent/wiki/ingest/subagents';
+import type { ProviderOverride } from '@/agent/wiki/ingest/types';
+import { SandboxViolation } from '@/agent/wiki/restrictedVaultAdapter';
 import { resolveWikiBudgets, type WikiBudgets } from '@/agent/wiki/budgets';
 import { scanWiki, type LintScanResult } from './scan';
-import {
-  runCheckers,
-  runProposing,
-} from './checkers';
-import {
-  LINT_CONCERNS,
-  type LintConcern,
-  type LintFinding,
-  type LintSchemaPatch,
-} from './schemas';
+import { runCheckers, runProposing } from './checkers';
+import { LINT_CONCERNS, type LintConcern, type LintFinding, type LintSchemaPatch } from './schemas';
 
 export interface LintRunInput {
   readonly threadId: string;
@@ -30,6 +24,8 @@ export interface LintRunInput {
     | { readonly kind: 'all' }
     | { readonly kind: 'orphans' }
     | { readonly kind: 'pages'; readonly glob: string };
+  /** Per-call provider+model override; falls back to global wiki invoker. */
+  readonly providerOverride?: ProviderOverride;
 }
 
 export interface LintRunDeps {
@@ -55,6 +51,9 @@ export interface LintRunDeps {
    */
   readonly contextWindow?: number;
   readonly maxOutputTokens?: number;
+  /** See IngestRunDeps.existingRunId — same semantics. */
+  readonly existingRunId?: string;
+  readonly existingController?: WikiWidgetController;
 }
 
 export interface LintConfirmDecision {
@@ -107,12 +106,18 @@ export type LintStartResult =
   | { readonly ok: false; readonly busy: WikiMutexAcquireBusy };
 
 export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartResult {
-  const runId = generateWikiRunId({ now: deps.now !== undefined ? () => deps.now!() : undefined });
+  const runId =
+    deps.existingRunId ??
+    generateWikiRunId({ now: deps.now !== undefined ? () => deps.now!() : undefined });
   const acquired = deps.mutex.acquire('lint', runId);
   if (!acquired.ok) return { ok: false, busy: acquired };
 
-  const controller = new WikiWidgetController({ runId, threadId: input.threadId, op: 'lint' });
-  registerWikiLiveController(runId, controller);
+  const controller =
+    deps.existingController ??
+    new WikiWidgetController({ runId, threadId: input.threadId, op: 'lint' });
+  if (deps.existingController === undefined) {
+    registerWikiLiveController(runId, controller);
+  }
   const ac = new AbortController();
   const externalAbort = (): void => ac.abort();
 
@@ -154,7 +159,10 @@ export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartR
       // SCANNING
       checkpoint('scanning');
       if (ac.signal.aborted) return abortError();
-      scan = await scanWiki({ vault: deps.vault, ...(deps.logger !== undefined ? { logger: deps.logger } : {}) });
+      scan = await scanWiki({
+        vault: deps.vault,
+        ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+      });
       controller.update({
         scanSummary: {
           pages: scan.pages.length,
@@ -182,9 +190,7 @@ export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartR
       const checkerDeps = {
         invoke: deps.llm,
         ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-        ...(deps.checkerConcurrency !== undefined
-          ? { concurrency: deps.checkerConcurrency }
-          : {}),
+        ...(deps.checkerConcurrency !== undefined ? { concurrency: deps.checkerConcurrency } : {}),
         ...(lintBudgets !== undefined ? { budgets: lintBudgets } : {}),
       };
       const { findings: rawFindings, perConcern } = await runCheckers(
@@ -226,7 +232,11 @@ export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartR
       // CONFIRMING
       if (ac.signal.aborted) return abortError();
       checkpoint('awaiting_confirm');
-      const decision = await deps.requestConfirmation(runId, proposed.findings, proposed.schemaPatch);
+      const decision = await deps.requestConfirmation(
+        runId,
+        proposed.findings,
+        proposed.schemaPatch,
+      );
       if (decision === null) return abortError();
       if (ac.signal.aborted) return abortError();
       partial.findingsAccepted = decision.accepted.length;
@@ -240,8 +250,7 @@ export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartR
         .map((f) => ({
           pageSlug: pageSlugFromPath(f.page!),
           action: 'edit' as const,
-          body:
-            f.patch !== null && f.patch.kind === 'replace_body' ? f.patch.body : '',
+          body: f.patch !== null && f.patch.kind === 'replace_body' ? f.patch.body : '',
           frontmatter: { tags: [], last_updated: new Date().toISOString(), source_count: 0 },
           sources: [],
         }));
@@ -309,6 +318,10 @@ export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartR
         return abortError();
       }
       const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof SandboxViolation) {
+        controller.recordError('sandbox_violation', message);
+        return errorTerminal('sandbox_violation', message);
+      }
       controller.recordError('unhandled', message);
       return errorTerminal('unhandled', message);
     } finally {
@@ -339,17 +352,19 @@ function pageSlugFromPath(path: string): string {
 
 async function applySchemaPatch(vault: VaultAdapter, patch: LintSchemaPatch): Promise<void> {
   const { WIKI_SCHEMA_PATH } = await import('@/agent/wiki/paths');
-  const current = (await vault.exists(WIKI_SCHEMA_PATH))
-    ? await vault.read(WIKI_SCHEMA_PATH)
-    : '';
+  const current = (await vault.exists(WIKI_SCHEMA_PATH)) ? await vault.read(WIKI_SCHEMA_PATH) : '';
   let next: string;
   if (patch.patch.kind === 'replace_body') {
     next = patch.patch.body;
   } else if (patch.patch.kind === 'append') {
-    next = current.endsWith('\n') ? `${current}${patch.patch.body}\n` : `${current}\n${patch.patch.body}\n`;
+    next = current.endsWith('\n')
+      ? `${current}${patch.patch.body}\n`
+      : `${current}\n${patch.patch.body}\n`;
   } else {
     // replace_section: best-effort — fall back to append if section not found.
-    next = current.endsWith('\n') ? `${current}${patch.patch.body}\n` : `${current}\n${patch.patch.body}\n`;
+    next = current.endsWith('\n')
+      ? `${current}${patch.patch.body}\n`
+      : `${current}\n${patch.patch.body}\n`;
   }
   await vault.write(WIKI_SCHEMA_PATH, next);
 }

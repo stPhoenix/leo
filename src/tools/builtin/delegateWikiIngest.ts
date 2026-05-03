@@ -1,18 +1,16 @@
 import { z } from 'zod';
-import type { ConfirmationController } from '@/agent/confirmationController';
-import { prettifyArgs } from '@/agent/confirmationController';
-import type { ToolResult, ToolSpec } from '../types';
-import { jsonSchemaFromZod } from '../zodAdapter';
+import type { JsonSchema, ToolResult, ToolSpec } from '../types';
 import type {
   IngestRunHandle,
   IngestRunInput,
   IngestStartResult,
   IngestTerminalResult,
 } from '@/agent/wiki/ingest/subgraph';
-import type { IngestSource } from '@/agent/wiki/ingest/types';
+import type { IngestSource, ProviderOverride } from '@/agent/wiki/ingest/types';
 import { runInboxBatch, type InboxBatchResult } from '@/agent/wiki/ingest/inboxBatch';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { Logger } from '@/platform/Logger';
+import type { WikiWidgetController } from '@/agent/wiki/widgetController';
 
 export const DELEGATE_WIKI_INGEST_TOOL_ID = 'delegate_wiki_ingest';
 
@@ -81,9 +79,25 @@ export type DelegateWikiIngestData =
       readonly error?: { readonly code: string; readonly message: string };
     };
 
+export interface PickerOutcome {
+  readonly override: ProviderOverride;
+  readonly runId: string;
+  readonly controller: WikiWidgetController;
+}
+
 export interface DelegateWikiIngestDeps {
-  readonly confirmation: ConfirmationController;
-  readonly startRun: (input: IngestRunInput) => IngestStartResult;
+  readonly vault: VaultAdapter;
+  readonly beginPickerFlow: (args: {
+    readonly threadId: string;
+    readonly originalAsk: string;
+    readonly sourcesSummary: string;
+  }) => Promise<PickerOutcome | null>;
+  readonly startRun: (
+    input: IngestRunInput,
+    runId: string,
+    controller: WikiWidgetController,
+  ) => IngestStartResult;
+  readonly isAllowedVaultPath: (path: string) => boolean;
   readonly onHandle?: (handle: IngestRunHandle) => void;
   readonly inbox?: {
     readonly vault: VaultAdapter;
@@ -91,17 +105,72 @@ export interface DelegateWikiIngestDeps {
   };
 }
 
+export const VAULT_FOLDER_FANOUT_MAX = 50;
+
 const DESCRIPTION = [
-  'File a knowledge source into the local wiki at `wiki/`. Use for: URL, vault path, chat attachment, or a current-conversation answer/analysis.',
+  'File a knowledge source into the local wiki at `wiki/`. Use for: URL, vault path (file or folder), chat attachment, or a current-conversation answer/analysis.',
   '',
   'When to call:',
   '- The user asks to ingest a page, doc, or knowledge source into the wiki.',
   '- The conversation has produced factual content worth saving as a wiki page; use `kind:"conversation"` with the answer body and a short title to file the result back into the wiki without asking the user to re-paste.',
   '',
-  'Every call requires explicit user approval; nothing is fetched or written without confirmation.',
+  `For \`kind:"vaultPath"\`, the path may be a single file or a folder. Folders fan out to every \`.md\` file inside them recursively, capped at ${VAULT_FOLDER_FANOUT_MAX} files per run.`,
   '',
-  'On approval, an ingest subgraph runs (refine → fetch → persist → plan → extract → reduce → write). For the conversation kind, fetching is skipped — the supplied body is persisted directly. Live progress streams into an inline widget; the tool resolves with the final structured payload.',
+  'Every call opens a per-run picker widget where the user confirms provider+model and explicitly starts the run. The override applies to this run only and never mutates global settings. Vault-path sources outside `wiki/` are rejected.',
+  '',
+  'On confirm, an ingest subgraph runs (refine → fetch → persist → plan → extract → reduce → write). For the conversation kind, fetching is skipped — the supplied body is persisted directly. Live progress streams into the same widget; the tool resolves with the final structured payload.',
 ].join('\n');
+
+const DELEGATE_WIKI_INGEST_PARAMETERS: JsonSchema = {
+  type: 'object',
+  required: ['kind'],
+  additionalProperties: false,
+  properties: {
+    kind: {
+      type: 'string',
+      enum: VALID_KINDS,
+      description: KIND_DESCRIPTION,
+    },
+    url: {
+      type: 'string',
+      description: 'For kind="url": absolute http(s) URL to fetch and ingest.',
+    },
+    path: {
+      type: 'string',
+      description:
+        'For kind="vaultPath": vault-relative path (file or folder). Must be inside wiki/ or externalAgentResults/. Folders fan out to every `.md` file inside them recursively.',
+    },
+    attachmentId: {
+      type: 'string',
+      description: 'For kind="attachment": attachment id from the current conversation.',
+    },
+    title: {
+      type: 'string',
+      description: 'For kind="conversation": short title to file the answer under.',
+    },
+    body: {
+      type: 'string',
+      description: 'For kind="conversation": the answer/analysis body to persist.',
+    },
+    citedSources: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'For kind="conversation": optional list of cited URLs or vault paths.',
+    },
+    threadId: {
+      type: 'string',
+      description: 'For kind="conversation": current thread id.',
+    },
+    turnIndex: {
+      type: 'integer',
+      description: 'For kind="conversation": index of the turn the answer comes from.',
+    },
+    note: {
+      type: 'string',
+      description: 'Optional free-text note attached to the source (max 2000 chars).',
+    },
+  },
+};
 
 export function createDelegateWikiIngestTool(
   deps: DelegateWikiIngestDeps,
@@ -110,8 +179,8 @@ export function createDelegateWikiIngestTool(
     id: DELEGATE_WIKI_INGEST_TOOL_ID,
     description: DESCRIPTION,
     schema: DelegateWikiIngestSchema as unknown as z.ZodType<DelegateWikiIngestArgs>,
-    parameters: jsonSchemaFromZod(DelegateWikiIngestSchema as unknown as z.ZodType<unknown>),
-    requiresConfirmation: false, // owns own confirmation surface below
+    parameters: DELEGATE_WIKI_INGEST_PARAMETERS,
+    requiresConfirmation: false,
     source: 'builtin',
     shouldDefer: true,
     validate(raw): ToolResult<DelegateWikiIngestArgs> {
@@ -142,20 +211,47 @@ export function createDelegateWikiIngestTool(
               : 'invalid input',
         };
       }
+      if (parsed.data.kind === 'vaultPath' && !deps.isAllowedVaultPath(parsed.data.path)) {
+        return {
+          ok: false,
+          error: `path: "${parsed.data.path}" outside wiki sandbox — vault paths must be inside wiki/ or externalAgentResults/`,
+        };
+      }
       return { ok: true, data: parsed.data };
     },
     async invoke(args, ctx): Promise<ToolResult<DelegateWikiIngestData>> {
-      const argsJson = JSON.stringify(args);
-      const decision = await deps.confirmation.request({
-        toolId: DELEGATE_WIKI_INGEST_TOOL_ID,
-        thread: ctx.thread,
-        argsJson,
-        argsPretty: prettifyArgs(argsJson),
-        category: 'write',
-        actionLabels: { allow: 'Prepare wiki ingest', deny: 'Deny' },
-        disableAllowForThread: true,
+      let preparedSources: readonly IngestSource[] | null = null;
+      let preparedOriginalAsk: string | null = null;
+      let preparedSummary: string | null = null;
+      if (args.kind === 'vaultPath') {
+        const expanded = await expandVaultPathSources(deps.vault, args);
+        if (!expanded.ok) {
+          return {
+            ok: true,
+            data: {
+              ok: false,
+              error: { code: 'fetch_vault_empty_folder', message: expanded.error },
+            },
+          };
+        }
+        preparedSources = expanded.sources;
+        preparedOriginalAsk =
+          expanded.fileCount > 1
+            ? `Ingest folder into wiki: ${args.path} (${expanded.fileCount} files)`
+            : `Ingest vault path into wiki: ${args.path}`;
+        preparedSummary =
+          expanded.fileCount > 1 ? `${args.path} (${expanded.fileCount} files)` : args.path;
+      }
+
+      const originalAsk = preparedOriginalAsk ?? describeArgsAsAsk(args);
+      const sourcesSummary = preparedSummary ?? describeArgsAsSummary(args);
+
+      const outcome = await deps.beginPickerFlow({
+        threadId: ctx.thread,
+        originalAsk,
+        sourcesSummary,
       });
-      if (decision === 'deny') {
+      if (outcome === null) {
         ctx.logger?.info('wiki.ingest.tool.denied', { thread: ctx.thread });
         return { ok: true, data: { ok: false, denied: true } };
       }
@@ -170,22 +266,32 @@ export function createDelegateWikiIngestTool(
             },
           };
         }
-        const batch = await runInboxBatch(ctx.thread, ctx.signal, {
-          vault: deps.inbox.vault,
-          ...(deps.inbox.logger !== undefined ? { logger: deps.inbox.logger } : {}),
-          startRun: deps.startRun,
-          ...(deps.onHandle !== undefined ? { onHandle: deps.onHandle } : {}),
-        });
+        const batch = await runInboxBatch(
+          ctx.thread,
+          ctx.signal,
+          {
+            vault: deps.inbox.vault,
+            ...(deps.inbox.logger !== undefined ? { logger: deps.inbox.logger } : {}),
+            startRun: (input) => deps.startRun(input, outcome.runId, outcome.controller),
+            ...(deps.onHandle !== undefined ? { onHandle: deps.onHandle } : {}),
+          },
+          outcome.override,
+        );
         return { ok: true, data: { ok: true, data: { mode: 'inbox', batch } } };
       }
 
-      const sources: readonly IngestSource[] = [argsToSource(args)];
-      const start = deps.startRun({
-        threadId: ctx.thread,
-        originalAsk: describeArgsAsAsk(args),
-        sources,
-        ...(args.note !== undefined ? { note: args.note } : {}),
-      });
+      const sources: readonly IngestSource[] = preparedSources ?? [argsToSource(args)];
+      const start = deps.startRun(
+        {
+          threadId: ctx.thread,
+          originalAsk,
+          sources,
+          ...(args.note !== undefined ? { note: args.note } : {}),
+          providerOverride: outcome.override,
+        },
+        outcome.runId,
+        outcome.controller,
+      );
       if (!start.ok) {
         ctx.logger?.info('wiki.ingest.tool.busy', {
           thread: ctx.thread,
@@ -213,6 +319,62 @@ export function createDelegateWikiIngestTool(
       }
     },
   };
+}
+
+type ExpandResult =
+  | { readonly ok: true; readonly sources: readonly IngestSource[]; readonly fileCount: number }
+  | { readonly ok: false; readonly error: string };
+
+async function expandVaultPathSources(
+  vault: VaultAdapter,
+  args: { readonly path: string; readonly note?: string },
+): Promise<ExpandResult> {
+  const stat = await vault.stat(args.path);
+  if (stat === null || stat.kind !== 'folder') {
+    return {
+      ok: true,
+      sources: [
+        {
+          kind: 'vaultPath',
+          path: args.path,
+          ...(args.note !== undefined ? { note: args.note } : {}),
+        },
+      ],
+      fileCount: 1,
+    };
+  }
+  const files: string[] = [];
+  await collectMarkdownFiles(vault, args.path, files);
+  if (files.length === 0) {
+    return {
+      ok: false,
+      error: `vault path ${args.path} is a folder containing no .md files`,
+    };
+  }
+  files.sort();
+  const sources: IngestSource[] = files.map((p) => ({
+    kind: 'vaultPath',
+    path: p,
+    ...(args.note !== undefined ? { note: args.note } : {}),
+  }));
+  return { ok: true, sources, fileCount: files.length };
+}
+
+async function collectMarkdownFiles(
+  vault: VaultAdapter,
+  dir: string,
+  out: string[],
+): Promise<void> {
+  if (out.length >= VAULT_FOLDER_FANOUT_MAX) return;
+  const listing = await vault.list(dir);
+  for (const f of listing.files) {
+    if (out.length >= VAULT_FOLDER_FANOUT_MAX) return;
+    if (f.toLowerCase().endsWith('.md')) out.push(f);
+  }
+  for (const sub of listing.folders) {
+    if (out.length >= VAULT_FOLDER_FANOUT_MAX) return;
+    await collectMarkdownFiles(vault, sub, out);
+  }
 }
 
 function argsToSource(args: DelegateWikiIngestArgs): IngestSource {
@@ -246,7 +408,6 @@ function argsToSource(args: DelegateWikiIngestArgs): IngestSource {
         ...(args.note !== undefined ? { note: args.note } : {}),
       };
     case 'inbox':
-      // Should never reach here — inbox is routed before argsToSource.
       throw new Error('inbox routed via runInboxBatch, not argsToSource');
   }
 }
@@ -263,5 +424,20 @@ function describeArgsAsAsk(args: DelegateWikiIngestArgs): string {
       return `File conversation answer/analysis into wiki: ${args.title}`;
     case 'inbox':
       return 'Drain wiki-inbox.md sequentially';
+  }
+}
+
+function describeArgsAsSummary(args: DelegateWikiIngestArgs): string {
+  switch (args.kind) {
+    case 'url':
+      return args.url;
+    case 'vaultPath':
+      return args.path;
+    case 'attachment':
+      return `attachment:${args.attachmentId}`;
+    case 'conversation':
+      return `conversation: ${args.title}`;
+    case 'inbox':
+      return 'inbox queue (all open rows)';
   }
 }

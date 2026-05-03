@@ -58,7 +58,9 @@ export async function bootstrapWiki(opts: WikiBootstrapOptions): Promise<WikiBoo
     seeded.push(path);
   }
 
-  const excludeRegistered = excludeStore.ensureDefaultPrefix(WIKI_DIR_PREFIX);
+  const dirRegistered = excludeStore.ensureDefaultPrefix(WIKI_DIR_PREFIX);
+  const inboxRegistered = excludeStore.ensureDefaultPattern(WIKI_INBOX_PATH);
+  const excludeRegistered = dirRegistered || inboxRegistered;
 
   logger?.info('wiki.bootstrap.done', {
     created: created.length,

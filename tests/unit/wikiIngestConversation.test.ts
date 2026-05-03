@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ConfirmationController } from '@/agent/confirmationController';
-import { createDelegateWikiIngestTool } from '@/tools/builtin/delegateWikiIngest';
+import {
+  createDelegateWikiIngestTool,
+  type PickerOutcome,
+} from '@/tools/builtin/delegateWikiIngest';
 import { processSourceFetchPersist } from '@/agent/wiki/ingest/processSource';
 import * as fetchSourceMod from '@/agent/wiki/ingest/fetchSource';
 import { WIKI_RAW_DIR } from '@/agent/wiki/paths';
@@ -12,6 +14,12 @@ import type {
 } from '@/agent/wiki/ingest/subgraph';
 import type { VaultAdapter, VaultListing } from '@/storage/vaultAdapter';
 import { WikiWidgetController } from '@/agent/wiki/widgetController';
+
+const OUTCOME = (): PickerOutcome => ({
+  override: { providerId: 'lmstudio', model: 'qwen3' },
+  runId: 'rConv',
+  controller: new WikiWidgetController({ runId: 'rConv', threadId: 't1', op: 'ingest' }),
+});
 
 class StubVault implements VaultAdapter {
   readonly files = new Map<string, string>();
@@ -65,7 +73,9 @@ function makeHandle(terminal: IngestTerminalResult): IngestRunHandle {
 describe('delegate_wiki_ingest — conversation kind', () => {
   it('schema accepts {kind:"conversation", title, body, threadId, turnIndex}', () => {
     const tool = createDelegateWikiIngestTool({
-      confirmation: new ConfirmationController(),
+      vault: new StubVault(),
+      beginPickerFlow: async () => OUTCOME(),
+      isAllowedVaultPath: () => true,
       startRun: () => ({
         ok: true,
         handle: makeHandle({
@@ -86,7 +96,9 @@ describe('delegate_wiki_ingest — conversation kind', () => {
 
   it('description mentions conversation as a valid use case (FR-15 / AC4)', () => {
     const tool = createDelegateWikiIngestTool({
-      confirmation: new ConfirmationController(),
+      vault: new StubVault(),
+      beginPickerFlow: async () => OUTCOME(),
+      isAllowedVaultPath: () => true,
       startRun: () => ({
         ok: true,
         handle: makeHandle({
@@ -99,7 +111,6 @@ describe('delegate_wiki_ingest — conversation kind', () => {
   });
 
   it('forwards conversation source to startRun', async () => {
-    const conf = new ConfirmationController();
     const startRun = vi.fn(
       () =>
         ({
@@ -111,10 +122,11 @@ describe('delegate_wiki_ingest — conversation kind', () => {
         }) satisfies IngestStartResult,
     );
     const tool = createDelegateWikiIngestTool({
-      confirmation: conf,
+      vault: new StubVault(),
+      beginPickerFlow: async () => OUTCOME(),
+      isAllowedVaultPath: () => true,
       startRun,
     });
-    setTimeout(() => conf.resolve('allow-once'), 0);
     await tool.invoke(
       {
         kind: 'conversation',

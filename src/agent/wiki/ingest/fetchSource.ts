@@ -171,6 +171,16 @@ async function fetchVaultPath(path: string, deps: FetchSourceDeps): Promise<Fetc
       error: { code: 'fetch_vault_missing', message: `vault path ${path} not found` },
     };
   }
+  const stat = await deps.vault.stat(path);
+  if (stat !== null && stat.kind === 'folder') {
+    return {
+      ok: false,
+      error: {
+        code: 'fetch_vault_not_file',
+        message: `vault path ${path} is a folder; specify a file inside it (e.g. ${path}/<file>.md)`,
+      },
+    };
+  }
   let body: string;
   try {
     body = await deps.vault.read(path);

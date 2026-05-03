@@ -3842,7 +3842,8 @@
   border-left-color: var(--color-cyan, var(--interactive-accent));
 }
 .leo-wiki-widget[data-phase='awaiting_duplicate'],
-.leo-wiki-widget[data-phase='awaiting_confirm'] {
+.leo-wiki-widget[data-phase='awaiting_confirm'],
+.leo-wiki-widget[data-phase='awaiting_config'] {
   border-left-color: var(--color-yellow, var(--interactive-accent));
 }
 .leo-wiki-widget[data-phase='done'] {
@@ -4088,6 +4089,115 @@
   margin: 0;
   font-size: var(--font-ui-smaller);
   color: var(--text-warning, var(--text-accent));
+}
+
+.leo-wiki-config {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2);
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--color-yellow, var(--interactive-accent)) 6%, transparent);
+}
+
+.leo-wiki-config-ask,
+.leo-wiki-config-sources {
+  margin: 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+  word-break: break-word;
+}
+
+.leo-wiki-config-ask strong,
+.leo-wiki-config-sources strong {
+  color: var(--text-muted);
+  margin-right: var(--size-4-1);
+}
+
+.leo-wiki-config-row {
+  display: grid;
+  grid-template-columns: 80px 1fr auto;
+  align-items: center;
+  gap: var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+}
+
+.leo-wiki-config-row > span:first-child {
+  color: var(--text-muted);
+  font-weight: var(--font-semibold);
+}
+
+.leo-wiki-config-row select {
+  width: 100%;
+  font-family: inherit;
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-4-1) var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.leo-wiki-config-default {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-family: var(--font-monospace);
+  white-space: nowrap;
+}
+
+.leo-wiki-config-loading {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.leo-wiki-config-error {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  color: var(--text-error);
+  word-break: break-word;
+}
+
+.leo-wiki-config-empty {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.leo-wiki-config-apikey {
+  margin: 0;
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--color-red, var(--text-error)) 8%, transparent);
+  border: 1px solid
+    color-mix(in srgb, var(--color-red, var(--text-error)) 25%, var(--background-modifier-border));
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-wiki-config-validation {
+  margin: 0;
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+}
+
+.leo-wiki-config-actions {
+  display: flex;
+  gap: var(--size-4-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.leo-wiki-config-actions button[data-slot='wiki-config-start'] {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.leo-wiki-config-actions button[data-slot='wiki-config-start']:disabled {
+  background: var(--background-modifier-border);
+  color: var(--text-faint);
+  cursor: not-allowed;
 }
 
 .leo-wiki-scan,

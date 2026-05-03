@@ -96,12 +96,26 @@ import { WIKI_MUTEX_IDLE } from '@/agent/wiki/mutexTypes';
 import { WikiMutex } from '@/agent/wiki/mutex';
 import { createWikiBusyNotifier } from '@/agent/wiki/searchWarning';
 import { startIngestRun } from '@/agent/wiki/ingest/subgraph';
-import { createDelegateWikiIngestTool } from '@/tools/builtin/delegateWikiIngest';
+import {
+  createDelegateWikiIngestTool,
+  type PickerOutcome,
+} from '@/tools/builtin/delegateWikiIngest';
 import { createInboxAddTool } from '@/tools/builtin/inboxAdd';
-import { WIKI_LIVE_KIND } from '@/agent/wiki/liveControllerRegistry';
+import {
+  WIKI_LIVE_KIND,
+  registerWikiLiveController,
+  releaseWikiLiveController,
+} from '@/agent/wiki/liveControllerRegistry';
 import { createLlmJsonInvoker } from '@/agent/wiki/ingest/llmAdapter';
 import { startLintRun } from '@/agent/wiki/lint/subgraph';
 import { createDelegateWikiLintTool } from '@/tools/builtin/delegateWikiLint';
+import { createWikiSandbox, restrictedVaultAdapter } from '@/agent/wiki/restrictedVaultAdapter';
+import { generateWikiRunId } from '@/agent/wiki/runIdRegistry';
+import { WikiWidgetController, type WikiPickerDeps } from '@/agent/wiki/widgetController';
+import type { ProviderOverride } from '@/agent/wiki/ingest/types';
+import { PROVIDER_KINDS, type ProviderKind } from '@/settings/settingsStore';
+import { kindRequiresApiKey } from '@/providers/registry';
+import type { ProviderModel } from '@/providers/types';
 import { IndexerStatusTap } from '@/indexer/indexerStatusTap';
 import { createRagSnapshotCollector, type RagSnapshotCollector } from '@/rag/ragSnapshot';
 import { RAG_PALETTE_COMMAND_ID, RAG_PALETTE_COMMAND_NAME } from '@/ui/ragCommand';
@@ -793,40 +807,112 @@ export default class LeoPlugin extends Plugin {
       });
     };
     const wikiMaxOutputTokens = (): number => this.store.get().provider.maxTokens;
+
+    const wikiSandbox = createWikiSandbox();
+    const wikiVault = restrictedVaultAdapter(vaultAdapter, wikiSandbox.allow);
+
+    const buildWikiOverrideInvoker = (override: ProviderOverride) =>
+      createLlmJsonInvoker({
+        chatModel: () => {
+          const s = this.store.get();
+          return buildInlineChatModel({
+            providerId: override.providerId,
+            model: override.model,
+            endpoint: resolveInlineEndpoint(override.providerId, this.store),
+            apiKey: this.inlineProviderKeys[override.providerId] ?? '',
+            ...(s.provider.temperature !== undefined
+              ? { temperature: s.provider.temperature }
+              : {}),
+            disableThinking: s.provider.disableThinking,
+          });
+        },
+      });
+
+    const listModelsForProvider = async (
+      providerId: ProviderKind,
+      signal: AbortSignal,
+    ): Promise<readonly ProviderModel[]> => {
+      const provider = createProviderForKind(providerId, {
+        endpoint: () => resolveInlineEndpoint(providerId, this.store),
+        apiKey: () => this.inlineProviderKeys[providerId] ?? '',
+      });
+      return provider.listModels(signal);
+    };
+
+    const wikiPickerDeps: WikiPickerDeps = {
+      listModelsForProvider,
+      requiresApiKey: (providerId) => kindRequiresApiKey(providerId),
+      hasApiKey: (providerId) => (this.inlineProviderKeys[providerId] ?? '').length > 0,
+    };
+
+    const beginWikiPickerFlow = async (args: {
+      readonly threadId: string;
+      readonly originalAsk: string;
+      readonly sourcesSummary: string;
+      readonly op: 'ingest' | 'lint';
+    }): Promise<PickerOutcome | null> => {
+      const runId = generateWikiRunId({});
+      const controller = new WikiWidgetController({
+        runId,
+        threadId: args.threadId,
+        op: args.op,
+      });
+      registerWikiLiveController(runId, controller);
+      try {
+        this.chatMessageStore.append({
+          id: `wiki-${args.op}-${runId}`,
+          role: 'widget',
+          content: '',
+          createdAt: new Date().toISOString(),
+          widget: {
+            kind: WIKI_LIVE_KIND,
+            props: { runId, threadId: args.threadId, op: args.op },
+          },
+        });
+      } catch (err) {
+        this.logger.warn(`wiki.${args.op}.live.append-failed`, {
+          runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      const s = this.store.get();
+      const override = await controller.startConfigPhase(wikiPickerDeps, {
+        providers: PROVIDER_KINDS,
+        defaultProviderId: s.provider.kind,
+        defaultModel: s.provider.chatModel,
+        originalAsk: args.originalAsk,
+        sourcesSummary: args.sourcesSummary,
+      });
+      if (override === null) {
+        controller.setPhase('cancelled');
+        releaseWikiLiveController(runId);
+        return null;
+      }
+      return { override, runId, controller };
+    };
+
     this.toolRegistry.register(
       createDelegateWikiIngestTool({
-        confirmation: this.confirmationController,
-        inbox: { vault: vaultAdapter, logger: this.logger },
-        startRun: (input) =>
+        vault: wikiVault,
+        beginPickerFlow: (args) => beginWikiPickerFlow({ ...args, op: 'ingest' }),
+        isAllowedVaultPath: wikiSandbox.allow,
+        inbox: { vault: wikiVault, logger: this.logger },
+        startRun: (input, runId, controller) =>
           startIngestRun(input, {
-            vault: vaultAdapter,
+            vault: wikiVault,
             mutex: this.wikiMutex!,
             logger: this.logger,
-            llm: wikiLlmInvoker,
+            llm:
+              input.providerOverride !== undefined
+                ? buildWikiOverrideInvoker(input.providerOverride)
+                : wikiLlmInvoker,
             fetch: {},
             requestDuplicateChoice: async () => 'skip',
             contextWindow: wikiContextWindow(),
             maxOutputTokens: wikiMaxOutputTokens(),
+            existingRunId: runId,
+            existingController: controller,
           }),
-        onHandle: (handle) => {
-          try {
-            this.chatMessageStore.append({
-              id: `wiki-${handle.runId}`,
-              role: 'widget',
-              content: '',
-              createdAt: new Date().toISOString(),
-              widget: {
-                kind: WIKI_LIVE_KIND,
-                props: { runId: handle.runId, threadId: handle.threadId, op: 'ingest' },
-              },
-            });
-          } catch (err) {
-            this.logger.warn('wiki.ingest.live.append-failed', {
-              runId: handle.runId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        },
       }) as unknown as ToolSpec<unknown, unknown>,
     );
 
@@ -836,36 +922,22 @@ export default class LeoPlugin extends Plugin {
 
     this.toolRegistry.register(
       createDelegateWikiLintTool({
-        confirmation: this.confirmationController,
-        startRun: (input, requestConfirmation) =>
+        beginPickerFlow: (args) => beginWikiPickerFlow({ ...args, op: 'lint' }),
+        startRun: (input, runId, controller, requestConfirmation) =>
           startLintRun(input, {
-            vault: vaultAdapter,
+            vault: wikiVault,
             mutex: this.wikiMutex!,
-            llm: wikiLlmInvoker,
+            llm:
+              input.providerOverride !== undefined
+                ? buildWikiOverrideInvoker(input.providerOverride)
+                : wikiLlmInvoker,
             logger: this.logger,
             requestConfirmation,
             contextWindow: wikiContextWindow(),
             maxOutputTokens: wikiMaxOutputTokens(),
+            existingRunId: runId,
+            existingController: controller,
           }),
-        onHandle: (handle) => {
-          try {
-            this.chatMessageStore.append({
-              id: `wiki-lint-${handle.runId}`,
-              role: 'widget',
-              content: '',
-              createdAt: new Date().toISOString(),
-              widget: {
-                kind: WIKI_LIVE_KIND,
-                props: { runId: handle.runId, threadId: handle.threadId, op: 'lint' },
-              },
-            });
-          } catch (err) {
-            this.logger.warn('wiki.lint.live.append-failed', {
-              runId: handle.runId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        },
       }) as unknown as ToolSpec<unknown, unknown>,
     );
 

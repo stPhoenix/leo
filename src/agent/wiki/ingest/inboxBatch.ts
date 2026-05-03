@@ -1,11 +1,6 @@
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { Logger } from '@/platform/Logger';
-import {
-  annotateErrorOnRef,
-  parseInbox,
-  tickRef,
-  type InboxRow,
-} from '@/agent/wiki/inbox/parse';
+import { annotateErrorOnRef, parseInbox, tickRef, type InboxRow } from '@/agent/wiki/inbox/parse';
 import { WIKI_INBOX_PATH } from '@/agent/wiki/paths';
 import type {
   IngestRunHandle,
@@ -13,7 +8,7 @@ import type {
   IngestStartResult,
   IngestTerminalResult,
 } from './subgraph';
-import type { IngestSource } from './types';
+import type { IngestSource, ProviderOverride } from './types';
 
 export interface InboxBatchPerItemResult {
   readonly ref: string;
@@ -42,6 +37,7 @@ export async function runInboxBatch(
   threadId: string,
   signal: AbortSignal,
   deps: InboxBatchDeps,
+  providerOverride?: ProviderOverride,
 ): Promise<InboxBatchResult> {
   if (!(await deps.vault.exists(WIKI_INBOX_PATH))) {
     return { drained: 0, ticked: 0, annotated: 0, perItem: [], cancelled: signal.aborted };
@@ -78,6 +74,7 @@ export async function runInboxBatch(
       originalAsk: `Inbox drain: ${row.ref}`,
       sources: [source],
       ...(row.note !== null ? { note: row.note } : {}),
+      ...(providerOverride !== undefined ? { providerOverride } : {}),
     });
     if (!start.ok) {
       perItem.push({

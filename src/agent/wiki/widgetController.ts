@@ -1,4 +1,7 @@
 import type { WikiOp } from '@/agent/wiki/mutexTypes';
+import type { ProviderKind } from '@/settings/settingsStore';
+import type { ProviderModel } from '@/providers/types';
+import type { ProviderOverride } from '@/agent/wiki/ingest/types';
 import {
   buildWikiTerminalSnapshot,
   type WikiTerminalSnapshot,
@@ -6,8 +9,26 @@ import {
 import {
   isTerminal,
   makeInitialViewModel,
+  type WikiConfigDraft,
   type WikiViewModel,
 } from '@/agent/wiki/widgetState';
+
+export interface WikiPickerDeps {
+  readonly listModelsForProvider: (
+    providerId: ProviderKind,
+    signal: AbortSignal,
+  ) => Promise<readonly ProviderModel[]>;
+  readonly requiresApiKey: (providerId: ProviderKind) => boolean;
+  readonly hasApiKey: (providerId: ProviderKind) => boolean;
+}
+
+export interface WikiConfigInit {
+  readonly providers: readonly ProviderKind[];
+  readonly defaultProviderId: ProviderKind;
+  readonly defaultModel: string;
+  readonly originalAsk: string;
+  readonly sourcesSummary: string;
+}
 
 export interface WikiWidgetActions {
   answerClarification?(text: string): void;
@@ -39,6 +60,12 @@ export class WikiWidgetController {
   private readonly listeners = new Set<WikiWidgetListener>();
   private actions: WikiWidgetActions;
   private disposed = false;
+
+  // Picker state — only set while phase === 'awaiting_config'.
+  private picker: WikiPickerDeps | null = null;
+  private pickerResolve: ((v: ProviderOverride | null) => void) | null = null;
+  private modelsCache = new Map<ProviderKind, readonly ProviderModel[]>();
+  private modelsAbort: AbortController | null = null;
 
   constructor(opts: WikiWidgetControllerOptions) {
     this.vm =
@@ -94,8 +121,7 @@ export class WikiWidgetController {
 
   setPhase(phase: WikiViewModel['phase'], extra: Partial<WikiViewModel> = {}): void {
     const now = Date.now();
-    const startedAt =
-      this.vm.startedAt === null && phase !== 'idle' ? now : this.vm.startedAt;
+    const startedAt = this.vm.startedAt === null && phase !== 'idle' ? now : this.vm.startedAt;
     const endedAt = isTerminal(phase) ? now : this.vm.endedAt;
     this.update({ ...extra, phase, startedAt, endedAt });
   }
@@ -133,6 +159,131 @@ export class WikiWidgetController {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.modelsAbort?.abort();
+    this.modelsAbort = null;
+    this.pickerResolve?.(null);
+    this.pickerResolve = null;
+    this.picker = null;
     this.listeners.clear();
+  }
+
+  /**
+   * Begin the awaiting_config phase. Resolves when the user confirms (with
+   * override) or cancels (null). The picker drives async model-list loads via
+   * `picker`. Disposing the controller resolves the promise with `null`.
+   */
+  startConfigPhase(picker: WikiPickerDeps, init: WikiConfigInit): Promise<ProviderOverride | null> {
+    if (this.disposed) return Promise.resolve(null);
+    this.picker = picker;
+    const apiKeyMissing =
+      picker.requiresApiKey(init.defaultProviderId) && !picker.hasApiKey(init.defaultProviderId);
+    const draft: WikiConfigDraft = {
+      providers: init.providers,
+      draftProviderId: init.defaultProviderId,
+      draftModel: init.defaultModel,
+      models: { state: 'idle' },
+      defaultProviderId: init.defaultProviderId,
+      defaultModel: init.defaultModel,
+      apiKeyMissing,
+      validationError: null,
+      originalAsk: init.originalAsk,
+      sourcesSummary: init.sourcesSummary,
+    };
+    this.setPhase('awaiting_config', { config: draft });
+    void this.loadModels(init.defaultProviderId);
+    return new Promise<ProviderOverride | null>((resolve) => {
+      this.pickerResolve = resolve;
+    });
+  }
+
+  onSelectProvider(providerId: ProviderKind): void {
+    const cfg = this.vm.config;
+    if (cfg === undefined || this.picker === null) return;
+    const apiKeyMissing =
+      this.picker.requiresApiKey(providerId) && !this.picker.hasApiKey(providerId);
+    const cached = this.modelsCache.get(providerId);
+    const nextDraftModel =
+      cached !== undefined && cached.length > 0
+        ? (cached.find((m) => m.id === cfg.draftModel)?.id ?? cached[0]!.id)
+        : '';
+    this.update({
+      config: {
+        ...cfg,
+        draftProviderId: providerId,
+        draftModel: nextDraftModel,
+        apiKeyMissing,
+        models: cached !== undefined ? { state: 'ok', items: cached } : { state: 'idle' },
+        validationError: null,
+      },
+    });
+    if (cached === undefined) void this.loadModels(providerId);
+  }
+
+  onSelectModel(model: string): void {
+    const cfg = this.vm.config;
+    if (cfg === undefined) return;
+    this.update({ config: { ...cfg, draftModel: model, validationError: null } });
+  }
+
+  onRetryLoadModels(): void {
+    const cfg = this.vm.config;
+    if (cfg === undefined) return;
+    void this.loadModels(cfg.draftProviderId);
+  }
+
+  onConfirm(): void {
+    const cfg = this.vm.config;
+    const resolve = this.pickerResolve;
+    if (cfg === undefined || resolve === null) return;
+    if (cfg.apiKeyMissing) {
+      this.update({ config: { ...cfg, validationError: 'API key required for this provider' } });
+      return;
+    }
+    if (cfg.draftModel.length === 0) {
+      this.update({ config: { ...cfg, validationError: 'Pick a model to continue' } });
+      return;
+    }
+    this.pickerResolve = null;
+    this.modelsAbort?.abort();
+    this.modelsAbort = null;
+    resolve({ providerId: cfg.draftProviderId, model: cfg.draftModel });
+  }
+
+  onCancel(): void {
+    const resolve = this.pickerResolve;
+    this.pickerResolve = null;
+    this.modelsAbort?.abort();
+    this.modelsAbort = null;
+    if (resolve !== null) resolve(null);
+    this.actions.cancel?.();
+  }
+
+  private async loadModels(providerId: ProviderKind): Promise<void> {
+    if (this.picker === null) return;
+    this.modelsAbort?.abort();
+    const ac = new AbortController();
+    this.modelsAbort = ac;
+    const cfg = this.vm.config;
+    if (cfg !== undefined && cfg.draftProviderId === providerId) {
+      this.update({ config: { ...cfg, models: { state: 'loading' } } });
+    }
+    try {
+      const items = await this.picker.listModelsForProvider(providerId, ac.signal);
+      if (ac.signal.aborted || this.disposed) return;
+      this.modelsCache.set(providerId, items);
+      const cur = this.vm.config;
+      if (cur === undefined || cur.draftProviderId !== providerId) return;
+      const draftModel =
+        items.length > 0 ? (items.find((m) => m.id === cur.draftModel)?.id ?? items[0]!.id) : '';
+      this.update({
+        config: { ...cur, models: { state: 'ok', items }, draftModel },
+      });
+    } catch (err) {
+      if (ac.signal.aborted || this.disposed) return;
+      const message = err instanceof Error ? err.message : String(err);
+      const cur = this.vm.config;
+      if (cur === undefined || cur.draftProviderId !== providerId) return;
+      this.update({ config: { ...cur, models: { state: 'error', error: message } } });
+    }
   }
 }

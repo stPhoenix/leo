@@ -1,7 +1,10 @@
 import type { WikiOp } from '@/agent/wiki/mutexTypes';
+import type { ProviderKind } from '@/settings/settingsStore';
+import type { ProviderModel } from '@/providers/types';
 
 export type WikiPhase =
   | 'idle'
+  | 'awaiting_config'
   | 'preparing'
   | 'awaiting_clarify'
   | 'fetching'
@@ -19,11 +22,26 @@ export type WikiPhase =
   | 'cancelled'
   | 'error';
 
-export const TERMINAL_WIKI_PHASES: ReadonlySet<WikiPhase> = new Set([
-  'done',
-  'cancelled',
-  'error',
-]);
+export type WikiModelsState =
+  | { readonly state: 'idle' }
+  | { readonly state: 'loading' }
+  | { readonly state: 'ok'; readonly items: readonly ProviderModel[] }
+  | { readonly state: 'error'; readonly error: string };
+
+export interface WikiConfigDraft {
+  readonly providers: readonly ProviderKind[];
+  readonly draftProviderId: ProviderKind;
+  readonly draftModel: string;
+  readonly models: WikiModelsState;
+  readonly defaultProviderId: ProviderKind;
+  readonly defaultModel: string;
+  readonly apiKeyMissing: boolean;
+  readonly validationError: string | null;
+  readonly originalAsk: string;
+  readonly sourcesSummary: string;
+}
+
+export const TERMINAL_WIKI_PHASES: ReadonlySet<WikiPhase> = new Set(['done', 'cancelled', 'error']);
 
 export interface RefineTurn {
   readonly role: 'assistant' | 'user';
@@ -72,6 +90,9 @@ export interface WikiViewModel {
   readonly logCount: number;
   readonly logLine: string | null;
   readonly error: { readonly code: string; readonly message: string } | null;
+
+  // AWAITING_CONFIG
+  readonly config?: WikiConfigDraft;
 
   // PREPARING / awaiting_clarify
   readonly refineTranscript?: readonly RefineTurn[];

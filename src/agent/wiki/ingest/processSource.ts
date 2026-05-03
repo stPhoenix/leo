@@ -5,12 +5,7 @@ import { fetchIngestSource, type AttachmentResolver, type FetchUrlConfig } from 
 import { findDuplicateRawBySha } from './duplicateDetect';
 import { resolveDuplicateChoice } from './duplicatePrompt';
 import { computeFetchedSha256, persistRaw } from './persistRaw';
-import type {
-  DuplicateChoice,
-  DuplicateMatch,
-  IngestSource,
-  SourceTerminalRecord,
-} from './types';
+import type { DuplicateChoice, DuplicateMatch, IngestSource, SourceTerminalRecord } from './types';
 
 export interface ProcessSourceDeps {
   readonly vault: VaultAdapter;
@@ -32,6 +27,8 @@ export async function processSourceFetchPersist(
     deps.logger?.debug(WIKI_LOG.ingest.fetch.failed, {
       kind: source.kind,
       code: fetchResult.error.code,
+      ref: describeRef(source),
+      message: fetchResult.error.message,
     });
     return {
       sourceRef: describeRef(source),
@@ -66,7 +63,11 @@ export async function processSourceFetchPersist(
     try {
       await persistRaw(
         { fetched, overwriteRawPath: dup.rawPath },
-        { vault: deps.vault, ...(deps.logger !== undefined ? { logger: deps.logger } : {}), ...(deps.now !== undefined ? { now: deps.now } : {}) },
+        {
+          vault: deps.vault,
+          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+          ...(deps.now !== undefined ? { now: deps.now } : {}),
+        },
       );
       return { sourceRef: fetched.sourceRef, status: 'replaced', rawPath: dup.rawPath };
     } catch (err) {
@@ -83,7 +84,11 @@ export async function processSourceFetchPersist(
   try {
     const persisted = await persistRaw(
       { fetched },
-      { vault: deps.vault, ...(deps.logger !== undefined ? { logger: deps.logger } : {}), ...(deps.now !== undefined ? { now: deps.now } : {}) },
+      {
+        vault: deps.vault,
+        ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+      },
     );
     return {
       sourceRef: fetched.sourceRef,

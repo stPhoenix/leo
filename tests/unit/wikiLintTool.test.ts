@@ -1,20 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ConfirmationController } from '@/agent/confirmationController';
 import {
   createDelegateWikiLintTool,
   DELEGATE_WIKI_LINT_TOOL_ID,
 } from '@/tools/builtin/delegateWikiLint';
+import type { PickerOutcome } from '@/tools/builtin/delegateWikiIngest';
 import type { ToolCtx } from '@/tools/types';
 import type {
   LintRunHandle,
   LintStartResult,
   LintTerminalResult,
-  LintRunInput,
-  LintConfirmDecision,
 } from '@/agent/wiki/lint/subgraph';
-import type { LintFinding, LintSchemaPatch } from '@/agent/wiki/lint/schemas';
 import type { VaultAdapter, VaultListing } from '@/storage/vaultAdapter';
 import { WikiWidgetController } from '@/agent/wiki/widgetController';
+import type { ProviderOverride } from '@/agent/wiki/ingest/types';
 
 class StubVault implements VaultAdapter {
   async exists(): Promise<boolean> {
@@ -58,10 +56,17 @@ function makeHandle(terminal: LintTerminalResult): LintRunHandle {
   };
 }
 
+const OVERRIDE: ProviderOverride = { providerId: 'lmstudio', model: 'qwen3' };
+
+function makeOutcome(): PickerOutcome {
+  const controller = new WikiWidgetController({ runId: 'rL', threadId: 't1', op: 'lint' });
+  return { override: OVERRIDE, runId: 'rL', controller };
+}
+
 describe('delegate_wiki_lint tool', () => {
   it('exposes provider-compatible JSON Schema (type:object, additionalProperties:false)', () => {
     const tool = createDelegateWikiLintTool({
-      confirmation: new ConfirmationController(),
+      beginPickerFlow: async () => makeOutcome(),
       startRun: () => ({
         ok: true,
         handle: makeHandle({
@@ -83,7 +88,7 @@ describe('delegate_wiki_lint tool', () => {
 
   it('registered with strict scope union; rejects unknown scope kind', () => {
     const tool = createDelegateWikiLintTool({
-      confirmation: new ConfirmationController(),
+      beginPickerFlow: async () => makeOutcome(),
       startRun: () => ({
         ok: true,
         handle: makeHandle({
@@ -105,21 +110,12 @@ describe('delegate_wiki_lint tool', () => {
     expect(tool.validate({ scope: { kind: 'orphans' } }).ok).toBe(true);
   });
 
-  it('Deny → ok-wrapped {denied: true}; subgraph never started', async () => {
-    const conf = new ConfirmationController();
+  it('Picker cancel → ok-wrapped {denied: true}; subgraph never started', async () => {
     const startRun = vi.fn();
     const tool = createDelegateWikiLintTool({
-      confirmation: conf,
-      startRun: startRun as unknown as (
-        input: LintRunInput,
-        rc: (
-          runId: string,
-          findings: readonly LintFinding[],
-          schemaPatch: LintSchemaPatch | null,
-        ) => Promise<LintConfirmDecision | null>,
-      ) => LintStartResult,
+      beginPickerFlow: async () => null,
+      startRun: startRun as unknown as () => LintStartResult,
     });
-    setTimeout(() => conf.resolve('deny'), 0);
     const r = await tool.invoke({}, ctx());
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -128,16 +124,14 @@ describe('delegate_wiki_lint tool', () => {
     expect(startRun).not.toHaveBeenCalled();
   });
 
-  it('Allow + busy → ok-wrapped {busy:true}', async () => {
-    const conf = new ConfirmationController();
+  it('Picker confirm + busy → ok-wrapped {busy:true}', async () => {
     const tool = createDelegateWikiLintTool({
-      confirmation: conf,
+      beginPickerFlow: async () => makeOutcome(),
       startRun: () => ({
         ok: false,
         busy: { ok: false, error: 'busy', activeRunId: 'r-other', activeOp: 'ingest' },
       }),
     });
-    setTimeout(() => conf.resolve('allow-once'), 0);
     const r = await tool.invoke({ scope: { kind: 'orphans' } }, ctx());
     expect(r.ok).toBe(true);
     if (!r.ok || r.data.ok) return;
@@ -145,8 +139,7 @@ describe('delegate_wiki_lint tool', () => {
     expect(r.data.activeRunId).toBe('r-other');
   });
 
-  it('Allow + happy path → terminal data forwarded; controller actions wired', async () => {
-    const conf = new ConfirmationController();
+  it('Picker confirm + happy path → terminal forwarded; providerOverride threaded', async () => {
     const onHandle = vi.fn();
     const handle = makeHandle({
       ok: true,
@@ -158,16 +151,25 @@ describe('delegate_wiki_lint tool', () => {
         durationMs: 5,
       },
     });
+    const startRun = vi.fn(
+      (_input: unknown, _runId: unknown, _controller: unknown, _rc: unknown): LintStartResult => ({
+        ok: true,
+        handle,
+      }),
+    );
     const tool = createDelegateWikiLintTool({
-      confirmation: conf,
-      startRun: () => ({ ok: true, handle }),
+      beginPickerFlow: async () => makeOutcome(),
+      startRun,
       onHandle,
     });
-    setTimeout(() => conf.resolve('allow-once'), 0);
     const r = await tool.invoke({}, ctx());
     expect(r.ok).toBe(true);
     if (!r.ok || !r.data.ok) return;
     expect(r.data.data.ok).toBe(true);
     expect(onHandle).toHaveBeenCalledOnce();
+    expect(startRun).toHaveBeenCalledOnce();
+    const args = startRun.mock.calls[0]!;
+    expect((args[0] as { providerOverride?: ProviderOverride }).providerOverride).toEqual(OVERRIDE);
+    expect(args[1]).toBe('rL');
   });
 });

@@ -53,6 +53,8 @@ function PhaseBody({ vm, controller }: ViewProps): JSX.Element | null {
   switch (vm.phase) {
     case 'idle':
       return <p className="leo-wiki-status-line">Preparing run…</p>;
+    case 'awaiting_config':
+      return <ConfigBody vm={vm} controller={controller} />;
     case 'preparing':
       return <RefineBody vm={vm} />;
     case 'awaiting_clarify':
@@ -283,6 +285,108 @@ function ScanBody({ vm }: { vm: WikiViewModel }): JSX.Element {
       <li>Orphan pages: {s.orphanPages}</li>
       <li>Orphan raw: {s.orphanRaw}</li>
     </ul>
+  );
+}
+
+function ConfigBody({ vm, controller }: ViewProps): JSX.Element {
+  const cfg = vm.config;
+  if (cfg === undefined) {
+    return <p className="leo-wiki-status-line">Loading run config…</p>;
+  }
+  const onProvider = (e: React.ChangeEvent<HTMLSelectElement>): void => {
+    controller.onSelectProvider(e.target.value as typeof cfg.draftProviderId);
+  };
+  const onModel = (e: React.ChangeEvent<HTMLSelectElement>): void => {
+    controller.onSelectModel(e.target.value);
+  };
+  const startDisabled =
+    cfg.apiKeyMissing ||
+    cfg.models.state !== 'ok' ||
+    (cfg.models.state === 'ok' && cfg.models.items.length === 0) ||
+    cfg.draftModel.length === 0;
+  return (
+    <div className="leo-wiki-config" data-slot="wiki-config">
+      <p className="leo-wiki-config-ask" data-slot="wiki-config-ask">
+        <strong>Ask:</strong> {cfg.originalAsk}
+      </p>
+      <p className="leo-wiki-config-sources" data-slot="wiki-config-sources">
+        <strong>Source:</strong> {cfg.sourcesSummary}
+      </p>
+      <label className="leo-wiki-config-row">
+        <span>Provider</span>
+        <select
+          value={cfg.draftProviderId}
+          onChange={onProvider}
+          data-slot="wiki-config-provider"
+          aria-label="Provider"
+        >
+          {cfg.providers.map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
+        <span className="leo-wiki-config-default">default: {cfg.defaultProviderId}</span>
+      </label>
+      <label className="leo-wiki-config-row">
+        <span>Model</span>
+        {cfg.models.state === 'loading' ? (
+          <span className="leo-wiki-config-loading" data-slot="wiki-config-models-loading">
+            Loading models…
+          </span>
+        ) : cfg.models.state === 'error' ? (
+          <span className="leo-wiki-config-error" data-slot="wiki-config-models-error">
+            {cfg.models.error}
+            <button
+              type="button"
+              onClick={() => controller.onRetryLoadModels()}
+              data-slot="wiki-config-models-retry"
+            >
+              Retry
+            </button>
+          </span>
+        ) : cfg.models.state === 'ok' && cfg.models.items.length > 0 ? (
+          <select
+            value={cfg.draftModel}
+            onChange={onModel}
+            data-slot="wiki-config-model"
+            aria-label="Model"
+          >
+            {cfg.models.items.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.id}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="leo-wiki-config-empty">No models discovered.</span>
+        )}
+        <span className="leo-wiki-config-default">default: {cfg.defaultModel}</span>
+      </label>
+      {cfg.apiKeyMissing ? (
+        <p className="leo-wiki-config-apikey" data-slot="wiki-config-apikey">
+          API key required for this provider — set it in Settings, then retry.
+        </p>
+      ) : null}
+      {cfg.validationError !== null ? (
+        <p className="leo-wiki-config-validation" data-slot="wiki-config-validation">
+          {cfg.validationError}
+        </p>
+      ) : null}
+      <div className="leo-wiki-config-actions">
+        <button
+          type="button"
+          onClick={() => controller.onConfirm()}
+          disabled={startDisabled}
+          data-slot="wiki-config-start"
+        >
+          Start
+        </button>
+        <button type="button" onClick={() => controller.onCancel()} data-slot="wiki-config-cancel">
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 

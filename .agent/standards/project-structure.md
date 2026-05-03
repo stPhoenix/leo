@@ -65,11 +65,11 @@ leo/
 │   │   │   ├── ingest/                   # Hand-rolled FSM ingest pipeline: refine → fetch/persist → plan → extract → reduce → write
 │   │   │   │   ├── duplicateDetect.ts
 │   │   │   │   ├── duplicatePrompt.ts
-│   │   │   │   ├── fetchSource.ts
-│   │   │   │   ├── inboxBatch.ts
+│   │   │   │   ├── fetchSource.ts          # fetchIngestSource entrypoint + per-kind fetchers (url/vaultPath/attachment/conversation/inbox); folder paths return distinct `fetch_vault_not_file`; missing → `fetch_vault_missing`
+│   │   │   │   ├── inboxBatch.ts            # runInboxBatch(threadId, signal, deps, providerOverride?) — drain wiki-inbox.md sources sequentially with shared override
 │   │   │   │   ├── llmAdapter.ts          # createLlmJsonInvoker — bindTools(tool_choice:'auto') + RunnableLambda extract + .withRetry({stopAfterAttempt:4}); LM Studio qwen3.6 reasoning_content workaround
 │   │   │   │   ├── persistRaw.ts
-│   │   │   │   ├── processSource.ts
+│   │   │   │   ├── processSource.ts        # processSourceFetchPersist — fetch → dedupe → persist; logs `wiki.ingest.fetch.failed` with kind+code+ref+message for diagnostics
 │   │   │   │   ├── refine.ts
 │   │   │   │   ├── runBatched.ts          # Semaphore-bounded Promise.all worker (per-item failures don't abort batch)
 │   │   │   │   ├── schemas.ts             # PageOp, ExtractorOutput, ReducerOutput, PlannerOutput Zod schemas
@@ -88,7 +88,7 @@ leo/
 │   │   │   ├── seed/
 │   │   │   │   ├── introduction.ts
 │   │   │   │   └── schema.ts
-│   │   │   ├── bootstrap.ts
+│   │   │   ├── bootstrap.ts                 # bootstrapWiki — seeds wiki/ tree + wiki-inbox.md, registers default RAG excludes (`wiki/**` via ensureDefaultPrefix + literal `wiki-inbox.md` via ensureDefaultPattern); idempotent
 │   │   │   ├── budgets.ts                 # WIKI_BUDGETS + resolveWikiBudgets (dynamic factory by contextWindow + maxOutputTokens) + WIKI_RUN_DEFAULTS
 │   │   │   ├── indexReader.ts
 │   │   │   ├── liveControllerRegistry.ts  # Map<runId, WikiWidgetController> bridging serialized live blocks ↔ controller
@@ -99,8 +99,9 @@ leo/
 │   │   │   ├── runIdRegistry.ts
 │   │   │   ├── searchWarning.ts
 │   │   │   ├── terminalSnapshot.ts        # Wiki terminal snapshot Zod schema + builder for reload rehydration
-│   │   │   ├── widgetController.ts        # WikiWidgetController(runId, threadId, op) — viewModel + setPhase/update/recordError/resolveDuplicate/answerClarification
-│   │   │   ├── widgetState.ts             # WikiPhase union + WikiViewModel + TERMINAL_WIKI_PHASES + isTerminal
+│   │   │   ├── restrictedVaultAdapter.ts  # Path-restricted VaultAdapter wrapper for wiki workflows — SandboxViolation, normalizePath, createWikiSandbox (allowlist `wiki/**` + `externalAgentResults/**` + `wiki-inbox.md`), restrictedVaultAdapter proxy (rename/copy dual-check, list filter)
+│   │   │   ├── widgetController.ts        # WikiWidgetController(runId, threadId, op) — viewModel + setPhase/update/recordError/resolveDuplicate/answerClarification + startConfigPhase (provider/model picker pre-run) → onSelectProvider/onSelectModel/onConfirm/onCancel/onRetryLoadModels
+│   │   │   ├── widgetState.ts             # WikiPhase union (incl. `awaiting_config`) + WikiViewModel + WikiConfigDraft + WikiModelsState + TERMINAL_WIKI_PHASES + isTerminal
 │   │   │   └── wikiStatus.ts              # Wiki status snapshot for /wiki widget
 │   │   ├── acceptRejectController.ts
 │   │   ├── agentRunner.ts
@@ -204,7 +205,7 @@ leo/
 │   │   └── tagMatcher.ts
 │   ├── settings/                        # Settings tab, wizard, commands, exclude store, external-agents section
 │   │   ├── commands.ts
-│   │   ├── excludeListStore.ts
+│   │   ├── excludeListStore.ts            # ExcludeListStore — user patterns + runtime defaults (Set<string>); ensureDefaultPrefix(prefix) appends `<prefix>/**`, ensureDefaultPattern(pattern) adds literal (e.g. `wiki-inbox.md`); defaults survive set() merges
 │   │   ├── externalAgentResolver.ts      # effectiveDefaultAdapterId + resolveAdapterConfig (walks `safeStorage:` indirection) + describeConfigSchema (Zod 4 introspection: string/secret/number/boolean/array/object)
 │   │   ├── ExternalAgentsSection.tsx     # Settings UI: header + global-default dropdown (enabled-only) + per-adapter blocks with enable toggle + auto-generated form (SecretField writes via SafeStorage)
 │   │   ├── settingsStore.ts
@@ -236,7 +237,7 @@ leo/
 │   │   ├── planStore.ts                  # Slug-per-sessionId Map<sessionId,slug>; currentSlug/writePlan/readPlan/resetSlug/setSlug all take sessionId; path-traversal guard on configuredDir; default `.leo/plans`
 │   │   ├── safeStorage.ts
 │   │   ├── threadsStore.ts
-│   │   ├── vaultAdapter.ts
+│   │   ├── vaultAdapter.ts                # VaultAdapter contract + Obsidian wrapper; VaultStat = {mtimeMs, size, kind?: 'file'|'folder'} (kind passed through from raw `Stat.type`)
 │   │   └── vectorStore.ts
 │   ├── tools/                           # Tool registry + builtin + user tool loader + zod adapter
 │   │   ├── builtin/
@@ -245,8 +246,8 @@ leo/
 │   │   │   ├── createFolder.ts
 │   │   │   ├── createNote.ts
 │   │   │   ├── delegateExternal.ts       # delegate_external tool — schema enforces 1–16384 char ask, owns own confirmation (requiresConfirmation:false), wraps DelegateExternalToolResult in {ok:true,data:…} so structured payload survives serializer
-│   │   │   ├── delegateWikiIngest.ts     # delegate_wiki_ingest tool — kicks off wiki ingest run; mutex-gated; busy returns activeOp
-│   │   │   ├── delegateWikiLint.ts       # delegate_wiki_lint tool — kicks off wiki lint run; mutex-gated
+│   │   │   ├── delegateWikiIngest.ts     # delegate_wiki_ingest tool — flat hand-authored JSON Schema (required `kind` enum + flat per-kind fields, no oneOf/anyOf); pre-picker folder fan-out (vault.stat → recursive .md walk capped at VAULT_FOLDER_FANOUT_MAX=50, sorted) returns N sources via single startRun; sandbox-validated vaultPath; busy returns activeOp
+│   │   │   ├── delegateWikiLint.ts       # delegate_wiki_lint tool — flat hand-authored JSON Schema (optional scope object with required kind enum `all|pages|orphans` + optional glob); mutex-gated
 │   │   │   ├── deleteFolder.ts           # delete_folder tool — empty-only (errors `folder not empty` on non-empty), pre-confirm via AcceptRejectController (accept→rmdir, reject→no-op); blocked in plan mode
 │   │   │   ├── editNote.ts
 │   │   │   ├── globVault.ts             # glob_vault tool — minimatch-based vault file enumeration with cap + truncation
@@ -310,7 +311,7 @@ leo/
 │   │   │   │   ├── WikiLiveBlock.tsx              # Renderer for WIKI_LIVE_KIND — looks up live WikiWidgetController by runId from liveControllerRegistry
 │   │   │   │   ├── WikiTerminalBlock.tsx          # Renderer for persisted WikiTerminalSnapshot post-reload
 │   │   │   │   ├── WikiWidget.stories.tsx
-│   │   │   │   └── WikiWidget.tsx                 # Live wiki widget — phase-dispatched (preparing/fetching/persisting/planning/extracting/reducing/writing/scanning/checking/proposing/done/cancelled/error); useSyncExternalStore
+│   │   │   │   └── WikiWidget.tsx                 # Live wiki widget — phase-dispatched (awaiting_config/preparing/fetching/persisting/planning/extracting/reducing/writing/scanning/checking/proposing/done/cancelled/error); ConfigBody (provider/model selects, loading/error/retry, api-key gate, Start/Cancel); useSyncExternalStore
 │   │   │   ├── hooks/
 │   │   │   │   └── useBlink.ts
 │   │   │   ├── widgets/
@@ -434,7 +435,7 @@ leo/
 ├── pnpm-lock.yaml
 ├── scripts/
 │   └── checkBundle.mjs                  # Bundle-size guard — reads main.js size, compares against .agent/budgets/bundle-baseline.json, fails when delta > maxDeltaBytes (invoked via `pnpm check:bundle`)
-├── styles.css                           # Plugin styles — chat block collapse uses `.leo-*-body-wrap` grid-template-rows 1fr↔0fr trick (180ms); blocks fade in via `@keyframes leo-block-in` (160ms); message actions reveal via opacity + pointer-events on `.leo-bubble:hover` (140ms)
+├── styles.css                           # Plugin styles — chat block collapse uses `.leo-*-body-wrap` grid-template-rows 1fr↔0fr trick (180ms); blocks fade in via `@keyframes leo-block-in` (160ms); message actions reveal via opacity + pointer-events on `.leo-bubble:hover` (140ms); `.leo-wiki-config*` styles ConfigBody (dashed yellow-tinted container, two-column row layout, api-key/validation panels, Start button uses `--interactive-accent`)
 ├── tsconfig.json
 ├── vitest.config.ts                     # Default vitest config
 └── vitest.llm.config.ts                 # Live-LLM vitest config

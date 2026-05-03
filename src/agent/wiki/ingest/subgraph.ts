@@ -9,16 +9,9 @@ import { generateWikiRunId } from '@/agent/wiki/runIdRegistry';
 import type { WikiMutex, WikiMutexAcquireBusy } from '@/agent/wiki/mutex';
 import type { WikiPhase } from '@/agent/wiki/widgetState';
 import { WikiWidgetController } from '@/agent/wiki/widgetController';
-import {
-  WIKI_RUN_DEFAULTS,
-  resolveWikiBudgets,
-  type WikiBudgets,
-} from '@/agent/wiki/budgets';
+import { WIKI_RUN_DEFAULTS, resolveWikiBudgets, type WikiBudgets } from '@/agent/wiki/budgets';
 import { WIKI_INDEX_PATH, WIKI_RAW_DIR, WIKI_SCHEMA_PATH } from '@/agent/wiki/paths';
-import {
-  processSourceFetchPersist,
-  type ProcessSourceDeps,
-} from './processSource';
+import { processSourceFetchPersist, type ProcessSourceDeps } from './processSource';
 import { runPlanner, runExtractor, runReducer, type LlmJsonInvoker } from './subagents';
 import { createSemaphore } from './semaphore';
 import { runBatched } from './runBatched';
@@ -27,8 +20,10 @@ import type {
   DuplicateChoice,
   DuplicateMatch,
   IngestSource,
+  ProviderOverride,
   SourceTerminalRecord,
 } from './types';
+import { SandboxViolation } from '@/agent/wiki/restrictedVaultAdapter';
 import type { ExtractorOutput, PageOp, ReducerOutput } from './schemas';
 import { runRefine } from './refine';
 
@@ -37,6 +32,8 @@ export interface IngestRunInput {
   readonly originalAsk: string;
   readonly sources: readonly IngestSource[];
   readonly note?: string;
+  /** Per-call provider+model override; falls back to global wiki invoker. */
+  readonly providerOverride?: ProviderOverride;
 }
 
 export interface IngestRunDeps {
@@ -68,6 +65,15 @@ export interface IngestRunDeps {
   readonly contextWindow?: number;
   /** Provider maxTokens for the chat model (response budget). */
   readonly maxOutputTokens?: number;
+  /**
+   * Pre-built run identity (mutex name + widget controller) supplied by callers
+   * that need to render the widget before the run starts (e.g. picker widget
+   * during awaiting_config). When present, the subgraph reuses both instead of
+   * minting + registering its own. The caller owns liveControllerRegistry
+   * registration; release happens in this function's finally as usual.
+   */
+  readonly existingRunId?: string;
+  readonly existingController?: WikiWidgetController;
 }
 
 export interface IngestRunPartial {
@@ -122,14 +128,20 @@ const _PHASE_ORDER: WikiPhase[] = [
 ];
 
 export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): IngestStartResult {
-  const runId = generateWikiRunId({ now: deps.now !== undefined ? () => deps.now!() : undefined });
+  const runId =
+    deps.existingRunId ??
+    generateWikiRunId({ now: deps.now !== undefined ? () => deps.now!() : undefined });
   const acquired = deps.mutex.acquire('ingest', runId);
   if (!acquired.ok) {
     return { ok: false, busy: acquired };
   }
 
-  const controller = new WikiWidgetController({ runId, threadId: input.threadId, op: 'ingest' });
-  registerWikiLiveController(runId, controller);
+  const controller =
+    deps.existingController ??
+    new WikiWidgetController({ runId, threadId: input.threadId, op: 'ingest' });
+  if (deps.existingController === undefined) {
+    registerWikiLiveController(runId, controller);
+  }
   const ac = new AbortController();
   const externalAbort = (): void => ac.abort();
 
@@ -148,7 +160,10 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
     const startedAt = (deps.now ?? ((): Date => new Date()))().getTime();
     let inFlightWriting = false;
 
-    const checkpoint = (phase: WikiPhase, extra: Partial<Parameters<WikiWidgetController['update']>[0]> = {}): void => {
+    const checkpoint = (
+      phase: WikiPhase,
+      extra: Partial<Parameters<WikiWidgetController['update']>[0]> = {},
+    ): void => {
       lastPhase = phase;
       controller.setPhase(phase, extra as Parameters<WikiWidgetController['update']>[0]);
       deps.logger?.debug(WIKI_LOG.ingest.transition, { phase, runId });
@@ -172,7 +187,11 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
       checkpoint('preparing');
       if (ac.signal.aborted) return abortError();
       const refined = await runRefine(
-        { originalAsk: input.originalAsk, sources: input.sources, ...(input.note !== undefined ? { note: input.note } : {}) },
+        {
+          originalAsk: input.originalAsk,
+          sources: input.sources,
+          ...(input.note !== undefined ? { note: input.note } : {}),
+        },
         { invoke: deps.llm, ...(deps.logger !== undefined ? { logger: deps.logger } : {}) },
       );
       if (!refined.ok) {
@@ -186,12 +205,20 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
       checkpoint('fetching', { fetchProgress: { total: sources.length, completed: 0 } });
       for (let i = 0; i < sources.length; i += 1) {
         if (ac.signal.aborted) return abortError();
-        controller.update({ fetchProgress: { total: sources.length, completed: i, current: describeSource(sources[i]!) } });
+        controller.update({
+          fetchProgress: {
+            total: sources.length,
+            completed: i,
+            current: describeSource(sources[i]!),
+          },
+        });
         const record = await processSourceFetchPersist(
           sources[i]!,
           {
             vault: deps.vault,
-            ...(deps.fetch.attachments !== undefined ? { attachments: deps.fetch.attachments } : {}),
+            ...(deps.fetch.attachments !== undefined
+              ? { attachments: deps.fetch.attachments }
+              : {}),
             ...(deps.fetch.url !== undefined ? { url: deps.fetch.url } : {}),
             ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
             ...(deps.now !== undefined ? { now: deps.now } : {}),
@@ -224,7 +251,11 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
       const indexExcerpt = (await deps.vault.exists(WIKI_INDEX_PATH))
         ? truncate(await deps.vault.read(WIKI_INDEX_PATH), 4000)
         : '';
-      const persisted = sourceRecords.filter((r) => r.rawPath !== null && (r.status === 'persisted' || r.status === 'replaced' || r.status === 'reprocessed'));
+      const persisted = sourceRecords.filter(
+        (r) =>
+          r.rawPath !== null &&
+          (r.status === 'persisted' || r.status === 'replaced' || r.status === 'reprocessed'),
+      );
       const plannerSources = await loadPlannerSourceInputs(deps.vault, persisted);
       const planResult = await runPlanner(
         {
@@ -396,7 +427,8 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
 
       if (ac.signal.aborted) {
         controller.setPhase('cancelled', {
-          writtenFiles: writeResult.errors.length === 0 ? slugs.map((s) => `wiki/pages/${s}.md`) : [],
+          writtenFiles:
+            writeResult.errors.length === 0 ? slugs.map((s) => `wiki/pages/${s}.md`) : [],
         });
         return abortError();
       }
@@ -422,14 +454,17 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
         },
       };
     } catch (err) {
-      const code = ac.signal.aborted ? 'cancelled' : 'unhandled';
       const message = err instanceof Error ? err.message : String(err);
       if (ac.signal.aborted) {
         controller.setPhase('cancelled');
         return abortError();
       }
-      controller.recordError(code, message);
-      return errorTerminal(code, message);
+      if (err instanceof SandboxViolation) {
+        controller.recordError('sandbox_violation', message);
+        return errorTerminal('sandbox_violation', message);
+      }
+      controller.recordError('unhandled', message);
+      return errorTerminal('unhandled', message);
     } finally {
       void inFlightWriting; // noted: writing race already handled above
       acquired.release();
@@ -545,7 +580,11 @@ async function buildSourceSummaries(
   return out;
 }
 
-function parseRawFrontmatter(body: string): { source?: string; fetched_at?: string; sha256?: string } {
+function parseRawFrontmatter(body: string): {
+  source?: string;
+  fetched_at?: string;
+  sha256?: string;
+} {
   const out: { source?: string; fetched_at?: string; sha256?: string } = {};
   const lines = body.split(/\r?\n/);
   if (lines[0]?.trim() !== '---') return out;

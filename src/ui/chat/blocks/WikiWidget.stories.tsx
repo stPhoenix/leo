@@ -22,6 +22,112 @@ export const IdleIngest: Story = {
   args: { controller: ctrl('ingest', {}) },
 };
 
+export const AwaitingConfigIdle: Story = {
+  args: {
+    controller: ctrl('ingest', {
+      phase: 'awaiting_config',
+      config: {
+        providers: ['lmstudio', 'openai', 'anthropic', 'ollama', 'custom'],
+        draftProviderId: 'lmstudio',
+        draftModel: '',
+        models: { state: 'idle' },
+        defaultProviderId: 'lmstudio',
+        defaultModel: 'qwen3',
+        apiKeyMissing: false,
+        validationError: null,
+        originalAsk: 'Ingest URL into wiki: https://example.com/blog',
+        sourcesSummary: 'https://example.com/blog',
+      },
+    }),
+  },
+};
+
+export const AwaitingConfigLoading: Story = {
+  args: {
+    controller: ctrl('ingest', {
+      phase: 'awaiting_config',
+      config: {
+        providers: ['lmstudio', 'openai'],
+        draftProviderId: 'lmstudio',
+        draftModel: '',
+        models: { state: 'loading' },
+        defaultProviderId: 'lmstudio',
+        defaultModel: 'qwen3',
+        apiKeyMissing: false,
+        validationError: null,
+        originalAsk: 'Ingest URL into wiki: https://example.com/blog',
+        sourcesSummary: 'https://example.com/blog',
+      },
+    }),
+  },
+};
+
+export const AwaitingConfigReady: Story = {
+  args: {
+    controller: ctrl('ingest', {
+      phase: 'awaiting_config',
+      config: {
+        providers: ['lmstudio', 'openai', 'anthropic'],
+        draftProviderId: 'lmstudio',
+        draftModel: 'qwen3',
+        models: {
+          state: 'ok',
+          items: [{ id: 'qwen3' }, { id: 'mistral-small' }],
+        },
+        defaultProviderId: 'lmstudio',
+        defaultModel: 'qwen3',
+        apiKeyMissing: false,
+        validationError: null,
+        originalAsk: 'Ingest URL into wiki: https://example.com/blog',
+        sourcesSummary: 'https://example.com/blog',
+      },
+    }),
+  },
+};
+
+export const AwaitingConfigError: Story = {
+  args: {
+    controller: ctrl('ingest', {
+      phase: 'awaiting_config',
+      config: {
+        providers: ['lmstudio'],
+        draftProviderId: 'lmstudio',
+        draftModel: '',
+        models: { state: 'error', error: 'connection refused' },
+        defaultProviderId: 'lmstudio',
+        defaultModel: 'qwen3',
+        apiKeyMissing: false,
+        validationError: null,
+        originalAsk: 'Lint wiki: all pages',
+        sourcesSummary: 'all pages',
+      },
+    }),
+  },
+};
+
+export const AwaitingConfigApiKeyMissing: Story = {
+  args: {
+    controller: ctrl('ingest', {
+      phase: 'awaiting_config',
+      config: {
+        providers: ['lmstudio', 'openai'],
+        draftProviderId: 'openai',
+        draftModel: 'gpt-4o',
+        models: {
+          state: 'ok',
+          items: [{ id: 'gpt-4o' }],
+        },
+        defaultProviderId: 'lmstudio',
+        defaultModel: 'qwen3',
+        apiKeyMissing: true,
+        validationError: null,
+        originalAsk: 'Ingest URL into wiki: https://example.com/blog',
+        sourcesSummary: 'https://example.com/blog',
+      },
+    }),
+  },
+};
+
 export const Preparing: Story = {
   args: {
     controller: ctrl('ingest', {

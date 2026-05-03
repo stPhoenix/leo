@@ -77,6 +77,7 @@ describe('bootstrapWiki', () => {
 
     expect(excludeStore.matcher()(`${WIKI_DIR_PREFIX}pages/foo.md`)).toBe(true);
     expect(excludeStore.matcher()('lifestream/x.md')).toBe(false);
+    expect(excludeStore.matcher()(WIKI_INBOX_PATH)).toBe(true);
   });
 
   it('second run is idempotent — no overwrites, no extra seeds, exclude re-register no-op', async () => {

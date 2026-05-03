@@ -1,4 +1,15 @@
+import type { ProviderKind } from '@/settings/settingsStore';
+
 export type IngestSourceKind = 'url' | 'vaultPath' | 'attachment' | 'conversation' | 'inbox';
+
+/**
+ * Per-call provider+model override for wiki workflows. Endpoint, API key,
+ * temperature, disableThinking always inherit from current global settings.
+ */
+export interface ProviderOverride {
+  readonly providerId: ProviderKind;
+  readonly model: string;
+}
 
 export type IngestSource =
   | { readonly kind: 'url'; readonly url: string; readonly note?: string }
@@ -32,7 +43,8 @@ export interface FetchError {
     | 'fetch_invalid_url'
     | 'fetch_failed'
     | 'fetch_attachment_missing'
-    | 'fetch_vault_missing';
+    | 'fetch_vault_missing'
+    | 'fetch_vault_not_file';
   readonly message: string;
 }
 
