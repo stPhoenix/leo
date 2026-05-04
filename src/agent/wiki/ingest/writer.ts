@@ -160,7 +160,7 @@ function renderPage(out: ReducerOutput): string {
   const lines: string[] = [];
   lines.push('---');
   const fm = out.frontmatter as Record<string, unknown>;
-  for (const key of Object.keys(fm).sort()) {
+  for (const key of Object.keys(fm).sort((a, b) => a.localeCompare(b))) {
     lines.push(`${key}: ${renderYamlValue(fm[key])}`);
   }
   lines.push('---');
@@ -171,7 +171,7 @@ function renderPage(out: ReducerOutput): string {
     lines.push('## Sources');
     lines.push('');
     const seen = new Set<string>();
-    for (const raw of [...out.sources].sort()) {
+    for (const raw of [...out.sources].sort((a, b) => a.localeCompare(b))) {
       const target = stripWikilinkWrap(raw);
       if (target.length === 0 || seen.has(target)) continue;
       seen.add(target);

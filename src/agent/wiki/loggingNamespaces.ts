@@ -73,6 +73,7 @@ export const WIKI_LOG = {
       findingApplied: 'wiki.lint.write.finding-applied',
       findingFailed: 'wiki.lint.write.finding-failed',
       findingSkipped: 'wiki.lint.write.finding-skipped',
+      summary: 'wiki.lint.write.summary',
     },
     tool: {
       busy: 'wiki.lint.tool.busy',

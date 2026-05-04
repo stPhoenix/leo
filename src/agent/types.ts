@@ -1,6 +1,7 @@
 import type { FocusedContext } from '@/editor/types';
 import type { ContentBlock } from '@/chat/types';
 
+// NOSONAR S6564 — intentional documentation alias; ThreadId is used pervasively to denote thread identity
 export type ThreadId = string;
 
 export interface AgentUserMessage {

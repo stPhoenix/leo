@@ -26,7 +26,6 @@ function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
         className="leo-tool-result leo-tool-result-orphan"
         data-slot="tool-result-orphan"
         data-status="orphan"
-        role="group"
         aria-label="tool result"
       >
         <header className="leo-tool-result-header">
@@ -38,13 +37,11 @@ function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
 
   const derived = resolveStatus(fromStore, associatedToolUse);
   // tool_result block + run-state combine: explicit is_error wins over store success state.
-  const status: 'success' | 'errored' | 'rejected' | 'canceled' = isError
-    ? 'errored'
-    : derived === 'rejected'
-      ? 'rejected'
-      : derived === 'canceled'
-        ? 'canceled'
-        : 'success';
+  let status: 'success' | 'errored' | 'rejected' | 'canceled';
+  if (isError) status = 'errored';
+  else if (derived === 'rejected') status = 'rejected';
+  else if (derived === 'canceled') status = 'canceled';
+  else status = 'success';
 
   const collapsible = status === 'success' && long && props.renderBody === undefined;
   const isCollapsed = collapsible && !expanded;
@@ -54,7 +51,6 @@ function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
       data-slot="tool-result"
       data-status={status}
       data-tool-use-id={block.tool_use_id}
-      role="group"
       aria-label="tool result"
     >
       <header className="leo-tool-result-header" data-slot="tool-result-header">

@@ -141,7 +141,7 @@ export class StreamingTurnController {
     if (event.type === 'block_delta') {
       const d = event.delta;
       if (turn.phase === 'cancelling') return;
-      if (d.type === 'text_delta') {
+      if (d.type === 'text_delta' || d.type === 'tool_result_delta') {
         const prev = turn.pendingTextByIndex.get(event.index) ?? '';
         turn.pendingTextByIndex.set(event.index, prev + d.text);
       } else if (d.type === 'thinking_delta') {
@@ -152,9 +152,6 @@ export class StreamingTurnController {
       } else if (d.type === 'input_json_delta') {
         const prev = turn.jsonBuffers.get(event.index) ?? '';
         turn.jsonBuffers.set(event.index, prev + d.partial_json);
-      } else if (d.type === 'tool_result_delta') {
-        const prev = turn.pendingTextByIndex.get(event.index) ?? '';
-        turn.pendingTextByIndex.set(event.index, prev + d.text);
       }
       this.ensureRafScheduled();
       return;

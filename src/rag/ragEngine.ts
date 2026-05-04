@@ -71,7 +71,7 @@ export class RAGEngine {
       this.logger?.warn('rag.query.unavailable', { reason: 'store-unavailable' });
       return [];
     }
-    if (signal !== undefined && signal.aborted) throw signalReason(signal);
+    if (signal?.aborted) throw signalReason(signal);
 
     const embedStart = this.nowMs();
     let queryVector: readonly number[];
@@ -80,7 +80,7 @@ export class RAGEngine {
       if (vectors.length === 0 || vectors[0] === undefined) return [];
       queryVector = vectors[0];
     } catch (err) {
-      if (signal !== undefined && signal.aborted) throw signalReason(signal);
+      if (signal?.aborted) throw signalReason(signal);
       throw err;
     }
     this.logger?.debug('rag.query.embed.ms', { ms: Math.round(this.nowMs() - embedStart) });
@@ -96,7 +96,7 @@ export class RAGEngine {
       return [];
     }
 
-    if (signal !== undefined && signal.aborted) throw signalReason(signal);
+    if (signal?.aborted) throw signalReason(signal);
     const scanStart = this.nowMs();
     const allRows = await this.store.getAll();
     if (allRows.length === 0) {
@@ -258,7 +258,7 @@ function selectTopK(
   if (k <= 0) return [];
   const scored: RAGHit[] = [];
   for (let i = 0; i < rows.length; i += 1) {
-    if (signal !== undefined && signal.aborted) throw signalReason(signal);
+    if (signal?.aborted) throw signalReason(signal);
     const row = rows[i]!;
     const score = scoreFn(row);
     const hit: RAGHit = {

@@ -77,17 +77,43 @@ export function createRefineSubAgent(opts: RefineSubAgentOptions): RefineDeps {
   const softLimit = opts.finalPromptSoftLimitChars ?? DEFAULT_SOFT_LIMIT;
   const hardLimit = opts.finalPromptHardLimitChars ?? DEFAULT_HARD_LIMIT;
 
+  // Stream-event tool-call parser. Not replaced by LangChain's
+  // `ChatModel.bindTools(...).invoke(...).tool_calls` because that path
+  // bypasses Leo's `ProviderManager` abstraction (uniform OpenAI-compat +
+  // Anthropic + LM Studio wiring with shared connection-state tracking,
+  // retry policy, FIFO queue, telemetry). The parser handles both
+  // OpenAI-style (`tool_call` events) and Anthropic-style streams
+  // (`block_start[tool_use]` → `block_delta[input_json_delta]` → `block_stop`)
+  // because `ProviderManager.stream()` normalises across providers but
+  // surfaces the provider-native event shape verbatim.
+  const collectStream = async (
+    stream: AsyncIterable<RefineStreamEvent>,
+    signal: AbortSignal,
+  ): Promise<{ textBuffer: string; toolCalls: Array<{ name: string; argsJson: string }> }> => {
+    let textBuffer = '';
+    const toolCalls: Array<{ name: string; argsJson: string }> = [];
+    const toolBufs = new Map<number, { id: string; name: string; args: string }>();
+    for await (const event of stream) {
+      if (signal.aborted) break;
+      const outcome = applyRefineEvent(event, toolBufs, toolCalls);
+      if (outcome === 'text')
+        textBuffer +=
+          (event as { text?: string; delta?: { text?: string } }).text ??
+          (event as { delta: { text: string } }).delta.text;
+      else if (outcome === 'break') break;
+      else if (outcome === 'throw') throw (event as { error: Error }).error;
+    }
+    return { textBuffer, toolCalls };
+  };
+
   return {
     async refine({ state, userInput, signal, traceConfig }) {
+      void userInput; // refineHistory already carries the user message; userInput is informational only.
       const messages: ChatMessage[] = [
         { role: 'system', content: systemPrompt() },
         { role: 'user', content: state.originalAsk },
         ...state.refineHistory.map((m) => toChatMessage(m)),
       ];
-      if (userInput !== null && userInput.length > 0) {
-        // Avoid duplicating; refineHistory already carries the user message
-        // appended by the subgraph driver. userInput is informational only.
-      }
 
       const req: ProviderChatRequest = {
         model: opts.model(),
@@ -98,147 +124,194 @@ export function createRefineSubAgent(opts: RefineSubAgentOptions): RefineDeps {
         ...(traceConfig !== undefined ? { trace: buildTraceContext(traceConfig) } : {}),
       };
 
-      // Stream-event tool-call parser. Not replaced by LangChain's
-      // `ChatModel.bindTools(...).invoke(...).tool_calls` because that path
-      // bypasses Leo's `ProviderManager` abstraction (uniform OpenAI-compat +
-      // Anthropic + LM Studio wiring with shared connection-state tracking,
-      // retry policy, FIFO queue, telemetry). The parser handles both
-      // OpenAI-style (`tool_call` events) and Anthropic-style streams
-      // (`block_start[tool_use]` → `block_delta[input_json_delta]` → `block_stop`)
-      // because `ProviderManager.stream()` normalises across providers but
-      // surfaces the provider-native event shape verbatim.
-      let textBuffer = '';
-      const toolCalls: Array<{ name: string; argsJson: string }> = [];
-      const toolBufs = new Map<number, { id: string; name: string; args: string }>();
-
+      let collected: { textBuffer: string; toolCalls: Array<{ name: string; argsJson: string }> };
       try {
-        for await (const event of opts.provider.stream(req, signal)) {
-          if (signal.aborted) break;
-          if (event.type === 'token') {
-            textBuffer += event.text;
-          } else if (event.type === 'tool_call') {
-            toolCalls.push({ name: event.call.name, argsJson: event.call.argsJson });
-          } else if (event.type === 'block_start') {
-            if (event.block.type === 'tool_use') {
-              toolBufs.set(event.index, {
-                id: event.block.id,
-                name: event.block.name,
-                args: '',
-              });
-            }
-          } else if (event.type === 'block_delta') {
-            if (event.delta.type === 'text_delta') {
-              textBuffer += event.delta.text;
-            } else if (event.delta.type === 'input_json_delta') {
-              const buf = toolBufs.get(event.index);
-              if (buf !== undefined) buf.args += event.delta.partial_json;
-            }
-          } else if (event.type === 'block_stop') {
-            const buf = toolBufs.get(event.index);
-            if (buf !== undefined) {
-              toolCalls.push({
-                name: buf.name,
-                argsJson: buf.args.length === 0 ? '{}' : buf.args,
-              });
-              toolBufs.delete(event.index);
-            }
-          } else if (event.type === 'error') {
-            throw event.error;
-          } else if (event.type === 'done') {
-            break;
-          }
-        }
+        collected = await collectStream(
+          opts.provider.stream(req, signal) as AsyncIterable<RefineStreamEvent>,
+          signal,
+        );
       } catch (err) {
         throw err instanceof Error ? err : new Error(String(err));
       }
+      const { textBuffer, toolCalls } = collected;
 
       const assistantMessage: RefineMessage | undefined =
         textBuffer.length > 0 ? { role: 'assistant', content: textBuffer } : undefined;
 
+      assertNoForeignToolCall(toolCalls);
       const finalCall = toolCalls.find((c) => c.name === 'emit_final_prompt');
       const askCall = toolCalls.find((c) => c.name === 'ask_clarifying_question');
-      const otherCall = toolCalls.find(
-        (c) => c.name !== 'emit_final_prompt' && c.name !== 'ask_clarifying_question',
-      );
-
-      if (otherCall !== undefined) {
-        const err = new Error(
-          `refine_invalid_tool: refine sub-agent attempted to call ${otherCall.name}`,
-        );
-        // Surface as a typed error code via subgraph's error wiring.
-        (err as Error & { code?: string }).code = 'refine_invalid_tool';
-        throw err;
-      }
 
       if (finalCall !== undefined) {
-        if (askCall !== undefined) {
-          logger?.warn('externalAgent.refine.dual-tool-call', {
-            runId: state.runId,
-            preferred: 'emit_final_prompt',
-          });
-        }
-        const promptText = pickStringField(finalCall.argsJson, 'prompt') ?? textBuffer.trim();
-        if (promptText.length > hardLimit) {
-          const err = new Error(
-            `refine_prompt_too_large: ${promptText.length} chars (hard limit ${hardLimit})`,
-          );
-          (err as Error & { code?: string }).code = 'refine_prompt_too_large';
-          throw err;
-        }
-        if (promptText.length > softLimit) {
-          logger?.warn('externalAgent.refine.prompt-soft-limit', {
-            runId: state.runId,
-            length: promptText.length,
-            softLimit,
-          });
-        }
-        const decision: RefineDecision = {
-          type: 'final_prompt',
-          text: promptText,
-          refinedPrompt: promptText,
-          ...(assistantMessage !== undefined ? { assistantMessage } : {}),
-        };
-        return decision;
+        return finalizePromptDecision({
+          finalCall,
+          askCall,
+          textBuffer,
+          state,
+          assistantMessage,
+          softLimit,
+          hardLimit,
+          logger,
+        });
       }
-
       if (askCall !== undefined) {
         const question = pickStringField(askCall.argsJson, 'question') ?? textBuffer.trim();
-        const decision: RefineDecision = {
+        return {
           type: 'clarify',
           text: question,
           ...(assistantMessage !== undefined ? { assistantMessage } : {}),
         };
-        return decision;
       }
-
-      // Model returned text but no tool call: treat the text as a tentative
-      // final prompt to keep the loop progressing.
-      const fallback = textBuffer.trim();
-      if (fallback.length === 0) {
-        // Reasoning-heavy models (qwen3, deepseek) sometimes exhaust their
-        // token budget inside `reasoning_content` without ever emitting a
-        // tool call or visible content. Rather than fail the run, fall back
-        // to passing the user's original ask through verbatim — refine adds
-        // value but is not load-bearing.
-        logger?.warn('externalAgent.refine.passthrough', {
-          runId: state.runId,
-          reason: 'empty_response',
-        });
-        return {
-          type: 'final_prompt',
-          text: state.originalAsk,
-          refinedPrompt: state.originalAsk,
-          ...(assistantMessage !== undefined ? { assistantMessage } : {}),
-        };
-      }
-      logger?.warn('externalAgent.refine.no-tool-call', { runId: state.runId });
-      return {
-        type: 'final_prompt',
-        text: fallback,
-        refinedPrompt: fallback,
-        ...(assistantMessage !== undefined ? { assistantMessage } : {}),
-      };
+      return passthroughDecision({ textBuffer, state, assistantMessage, logger });
     },
+  };
+}
+
+type RefineStreamEvent =
+  | { readonly type: 'token'; readonly text: string }
+  | { readonly type: 'tool_call'; readonly call: { name: string; argsJson: string } }
+  | {
+      readonly type: 'block_start';
+      readonly index: number;
+      readonly block: { type: 'tool_use'; id: string; name: string } | { type: string };
+    }
+  | {
+      readonly type: 'block_delta';
+      readonly index: number;
+      readonly delta:
+        | { readonly type: 'text_delta'; readonly text: string }
+        | { readonly type: 'input_json_delta'; readonly partial_json: string }
+        | { readonly type: string };
+    }
+  | { readonly type: 'block_stop'; readonly index: number }
+  | { readonly type: 'error'; readonly error: Error }
+  | { readonly type: 'done' };
+
+function applyRefineEvent(
+  event: RefineStreamEvent,
+  toolBufs: Map<number, { id: string; name: string; args: string }>,
+  toolCalls: Array<{ name: string; argsJson: string }>,
+): 'text' | 'continue' | 'break' | 'throw' {
+  if (event.type === 'token') return 'text';
+  if (event.type === 'tool_call') {
+    toolCalls.push({ name: event.call.name, argsJson: event.call.argsJson });
+    return 'continue';
+  }
+  if (event.type === 'block_start') {
+    if (event.block.type === 'tool_use') {
+      const block = event.block as { id: string; name: string };
+      toolBufs.set(event.index, { id: block.id, name: block.name, args: '' });
+    }
+    return 'continue';
+  }
+  if (event.type === 'block_delta') {
+    if (event.delta.type === 'text_delta') return 'text';
+    if (event.delta.type === 'input_json_delta') {
+      const buf = toolBufs.get(event.index);
+      if (buf !== undefined) buf.args += (event.delta as { partial_json: string }).partial_json;
+    }
+    return 'continue';
+  }
+  if (event.type === 'block_stop') {
+    const buf = toolBufs.get(event.index);
+    if (buf !== undefined) {
+      toolCalls.push({ name: buf.name, argsJson: buf.args.length === 0 ? '{}' : buf.args });
+      toolBufs.delete(event.index);
+    }
+    return 'continue';
+  }
+  if (event.type === 'error') return 'throw';
+  if (event.type === 'done') return 'break';
+  return 'continue';
+}
+
+function assertNoForeignToolCall(toolCalls: ReadonlyArray<{ name: string }>): void {
+  const otherCall = toolCalls.find(
+    (c) => c.name !== 'emit_final_prompt' && c.name !== 'ask_clarifying_question',
+  );
+  if (otherCall === undefined) return;
+  const err = new Error(
+    `refine_invalid_tool: refine sub-agent attempted to call ${otherCall.name}`,
+  );
+  (err as Error & { code?: string }).code = 'refine_invalid_tool';
+  throw err;
+}
+
+interface FinalizeArgs {
+  readonly finalCall: { argsJson: string };
+  readonly askCall: { argsJson: string } | undefined;
+  readonly textBuffer: string;
+  readonly state: { runId: string };
+  readonly assistantMessage: RefineMessage | undefined;
+  readonly softLimit: number;
+  readonly hardLimit: number;
+  readonly logger: { warn(event: string, fields: Record<string, unknown>): void } | undefined;
+}
+
+function finalizePromptDecision(args: FinalizeArgs): RefineDecision {
+  const { finalCall, askCall, textBuffer, state, assistantMessage, softLimit, hardLimit, logger } =
+    args;
+  if (askCall !== undefined) {
+    logger?.warn('externalAgent.refine.dual-tool-call', {
+      runId: state.runId,
+      preferred: 'emit_final_prompt',
+    });
+  }
+  const promptText = pickStringField(finalCall.argsJson, 'prompt') ?? textBuffer.trim();
+  if (promptText.length > hardLimit) {
+    const err = new Error(
+      `refine_prompt_too_large: ${promptText.length} chars (hard limit ${hardLimit})`,
+    );
+    (err as Error & { code?: string }).code = 'refine_prompt_too_large';
+    throw err;
+  }
+  if (promptText.length > softLimit) {
+    logger?.warn('externalAgent.refine.prompt-soft-limit', {
+      runId: state.runId,
+      length: promptText.length,
+      softLimit,
+    });
+  }
+  return {
+    type: 'final_prompt',
+    text: promptText,
+    refinedPrompt: promptText,
+    ...(assistantMessage !== undefined ? { assistantMessage } : {}),
+  };
+}
+
+interface PassthroughArgs {
+  readonly textBuffer: string;
+  readonly state: { runId: string; originalAsk: string };
+  readonly assistantMessage: RefineMessage | undefined;
+  readonly logger: { warn(event: string, fields: Record<string, unknown>): void } | undefined;
+}
+
+function passthroughDecision(args: PassthroughArgs): RefineDecision {
+  const { textBuffer, state, assistantMessage, logger } = args;
+  // Model returned text but no tool call: treat the text as a tentative final prompt.
+  const fallback = textBuffer.trim();
+  if (fallback.length === 0) {
+    // Reasoning-heavy models (qwen3, deepseek) sometimes exhaust their token
+    // budget inside `reasoning_content` without ever emitting a tool call or
+    // visible content. Fall back to passing the user's original ask verbatim.
+    logger?.warn('externalAgent.refine.passthrough', {
+      runId: state.runId,
+      reason: 'empty_response',
+    });
+    return {
+      type: 'final_prompt',
+      text: state.originalAsk,
+      refinedPrompt: state.originalAsk,
+      ...(assistantMessage !== undefined ? { assistantMessage } : {}),
+    };
+  }
+  logger?.warn('externalAgent.refine.no-tool-call', { runId: state.runId });
+  return {
+    type: 'final_prompt',
+    text: fallback,
+    refinedPrompt: fallback,
+    ...(assistantMessage !== undefined ? { assistantMessage } : {}),
   };
 }
 

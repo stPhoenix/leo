@@ -45,8 +45,7 @@ export function PiiReviewBanner(props: PiiReviewBannerProps): JSX.Element | null
     >
       {status === 'scanning' ? (
         <p className="leo-pii-status leo-pii-scanning" data-slot="pii-scanning">
-          <span className="leo-pii-spinner" aria-hidden="true" />
-          Checking for sensitive content…
+          <span className="leo-pii-spinner" aria-hidden="true" /> Checking for sensitive content…
         </p>
       ) : null}
       {status === 'error' ? (
@@ -136,7 +135,7 @@ function FindingRow({ finding, decision, onDecide }: FindingRowProps): JSX.Eleme
         </span>
         {finding.note !== undefined ? <span className="leo-pii-note">{finding.note}</span> : null}
       </div>
-      <div className="leo-pii-row-actions" role="group" aria-label="Decision">
+      <div className="leo-pii-row-actions" aria-label="Decision">
         <button
           type="button"
           className="leo-pii-btn leo-pii-btn-mask"

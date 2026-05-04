@@ -57,8 +57,10 @@ function ContextWidgetBody({ data, contextWindow }: BodyProps): JSX.Element {
   const effective = effectiveContextWindow(window, MAX_OUTPUT_TOKENS_DEFAULT);
   const warnAt = effective - WARNING_THRESHOLD_BUFFER_TOKENS;
   const critAt = effective - MANUAL_COMPACT_BUFFER_TOKENS;
-  const level: 'ok' | 'warn' | 'critical' =
-    totalTokens >= critAt ? 'critical' : totalTokens >= warnAt ? 'warn' : 'ok';
+  let level: 'ok' | 'warn' | 'critical';
+  if (totalTokens >= critAt) level = 'critical';
+  else if (totalTokens >= warnAt) level = 'warn';
+  else level = 'ok';
 
   return (
     <section
@@ -140,6 +142,7 @@ function ContextDonut({ arcs, pct, totalTokens, window }: DonutProps): JSX.Eleme
       <svg
         className="leo-context-widget-donut-svg"
         viewBox={`0 0 ${DONUT_SIZE} ${DONUT_SIZE}`}
+        // NOSONAR S6819 — inline SVG donut chart; canonical accessible-graphics pattern is role="img"+aria-label, not <img>
         role="img"
         aria-label={`Context usage: ${fmt(totalTokens)} of ${fmt(window)} tokens (${pct}%)`}
       >

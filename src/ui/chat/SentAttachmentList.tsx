@@ -12,20 +12,11 @@ export function SentAttachmentList(props: SentAttachmentListProps): JSX.Element 
   );
   if (items.length === 0) return null;
   return (
-    <div
-      className="leo-sent-attachments"
-      role="list"
-      aria-label="sent attachments"
-      data-slot="sent-attachments"
-    >
+    <ul className="leo-sent-attachments" aria-label="sent attachments" data-slot="sent-attachments">
       {items.map((b, i) => (
-        <SentAttachmentChip
-          key={`${b.type}-${i}`}
-          block={b}
-          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
-        />
+        <SentAttachmentChip key={`${b.type}-${i}`} block={b} setIcon={props.setIcon} />
       ))}
-    </div>
+    </ul>
   );
 }
 
@@ -49,8 +40,7 @@ function SentAttachmentChip(props: {
   }, [isImage, previewUrl, props.setIcon]);
 
   return (
-    <span
-      role="listitem"
+    <li
       className={`leo-attachment-chip is-${block.type} is-sent`}
       data-slot="sent-attachment"
       data-kind={block.type}
@@ -69,7 +59,7 @@ function SentAttachmentChip(props: {
           {formatBytes(block.size)}
         </span>
       ) : null}
-    </span>
+    </li>
   );
 }
 

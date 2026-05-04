@@ -41,9 +41,12 @@ leo/
 │   │   │   │       ├── sanitize.ts       # stripInvisible (zero-width + bidi controls), stripHtmlScriptStyleComments, sanitizeBody(body, contentType?) — html-strip only when text/html
 │   │   │   │       └── untrustedWrap.ts  # wrapUntrusted(text, origin) → `<untrusted-content origin="…">…</untrusted-content>` (escapes nested close, scrubs origin); wrapToolResultForLLM(name, result) maps fetch_url body + search_web answer/per-row content
 │   │   │   ├── adapterRegistry.ts        # AdapterRegistry — register/freeze/list (alphabetical)/get/defaultId/isEnabled
+│   │   │   ├── applyPiiDecisions.ts      # applyPiiDecisions(text, findings, decisions) — splice mask/remove per finding (right-to-left walk to keep offsets valid); maskTokenFor(kind) returns per-kind mask token (`[email]`, `[api-key]`, …)
 │   │   │   ├── liveControllerRegistry.ts # In-memory map<runId, ExternalAgentWidgetController> bridging serialized widget block props ↔ live controller; EXTERNAL_AGENT_LIVE_KIND
 │   │   │   ├── loggingNamespaces.ts      # EXTERNAL_AGENT_LOG namespace tree + SENSITIVE_FIELD_KEYS — adapter/maintainer reference + lint policy declaration
 │   │   │   ├── orchestrator.ts           # ExternalAgentOrchestrator — start({threadId,…}) → {ok,handle,terminal} | {ok:false,busy}, liveHandles map, persistSnapshot callback wiring; optional `beginTrace` constructor opt forwarded to subgraph deps for Langfuse export
+│   │   │   ├── piiDetectAgent.ts         # PiiDetectAgent — chunked LLM-based privacy scan (PiiKind union: email/phone/governmentId/paymentCard/apiKey/jwt/iban/ipAddress/urlWithAuth/other); detect(text, signal) → readonly PiiFinding[] via main-assistant provider with bounded chunks + parallelism + report_findings tool call
+│   │   │   ├── piiDetectPrompt.ts        # getPiiDetectSystemPrompt() — snapshot system prompt for the PII detection sub-agent (forces single `report_findings` tool call, verbatim spans, no prose)
 │   │   │   ├── refinePrompt.ts           # Pure getRefineSystemPrompt() snapshot
 │   │   │   ├── refineSubAgent.ts         # createRefineSubAgent({provider,model,…}) — REFINE_TOOLS (emit_final_prompt / ask_clarifying_question), parses tool calls, throws refine_invalid_tool / refine_prompt_too_large; refine input accepts optional `traceConfig` → ProviderChatRequest.trace for Langfuse export
 │   │   │   ├── resultWriter.ts           # ResultWriter.write({runId,threadId,adapterId,…}) — sanitizeRelPath, buildRequestMarkdown, EXTERNAL_AGENT_RESULTS_PREFIX
@@ -82,6 +85,7 @@ leo/
 │   │   │   │   └── writer.ts
 │   │   │   ├── lint/                     # Wiki page lint pipeline (scan → check → propose → confirm → write)
 │   │   │   │   ├── checkers.ts            # runLlmChecker + tryProposeSchemaPatch (single-call invoke; retry inside llmAdapter chain)
+│   │   │   │   ├── markdownPatch.ts       # applyMarkdownPatch(currentBody, patch) — splitFrontmatter + stripSourcesSection + section-range scan, supports replace_section/replace_body kinds with body-size drift guard (REPLACE_BODY_DRIFT_THRESHOLD=0.5); typed ApplyMarkdownPatchFailReason union (`section_not_found`/`unsupported_kind`/`invalid_input`/`body_size_drift`)
 │   │   │   │   ├── scan.ts
 │   │   │   │   ├── schemas.ts
 │   │   │   │   └── subgraph.ts            # startLintRun — LangGraph StateGraph (Annotation.Root, MemorySaver, interrupt for confirm); abort/timeout race; mutex acquire/release; optional `traceConfig` on deps merged into LangGraphRunnableConfig for Langfuse export (same shape as ingest)
@@ -298,6 +302,9 @@ leo/
 │   │   │   │   ├── GroupedToolUses.stories.tsx
 │   │   │   │   ├── GroupedToolUses.tsx
 │   │   │   │   ├── index.ts
+│   │   │   │   ├── piiDetectorContext.ts            # React context — PiiDetectorContext + usePiiDetector() hook; falls back to no-op detector (returns []) when provider is unmounted
+│   │   │   │   ├── PiiReviewBanner.stories.tsx
+│   │   │   │   ├── PiiReviewBanner.tsx              # Composer-side banner — renders scanning spinner / per-finding rows (mask/remove/ignore decisions via aria role="group") / error retry; status union `idle | scanning | ready | error`; KIND_LABELS mapping (`email`→Email, `apiKey`→API key, `urlWithAuth`→URL with credentials, …)
 │   │   │   │   ├── ProgressLines.stories.tsx
 │   │   │   │   ├── ProgressLines.tsx
 │   │   │   │   ├── TextBlockView.tsx

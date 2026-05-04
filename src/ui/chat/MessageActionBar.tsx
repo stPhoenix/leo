@@ -17,14 +17,13 @@ export interface MessageActionBarProps {
 
 export function MessageActionBar(props: MessageActionBarProps): JSX.Element | null {
   const { record, actions } = props;
-  if (record.role === 'banner') return null;
-  const isAssistant = record.role === 'assistant';
-  const isUser = record.role === 'user';
-
   const copyBtn = useIconButton(props.setIcon, 'copy');
   const regenBtn = useIconButton(props.setIcon, 'refresh-cw');
   const editBtn = useIconButton(props.setIcon, 'pencil');
   const delBtn = useIconButton(props.setIcon, 'trash-2');
+  if (record.role === 'banner') return null;
+  const isAssistant = record.role === 'assistant';
+  const isUser = record.role === 'user';
 
   return (
     <div

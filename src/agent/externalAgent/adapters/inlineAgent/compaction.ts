@@ -129,7 +129,8 @@ function buildCompactionSummary(
     lines.push('');
     lines.push('Already published artifacts (do NOT publish again):');
     for (const a of state.publishedArtifacts) {
-      lines.push(`- ${a.relPath}${a.summary !== undefined ? ` — ${a.summary}` : ''}`);
+      const summary = a.summary !== undefined ? ` — ${a.summary}` : '';
+      lines.push(`- ${a.relPath}${summary}`);
     }
   }
 

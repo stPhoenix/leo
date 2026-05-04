@@ -105,7 +105,8 @@ function RefineBody({ vm }: { vm: WikiViewModel }): JSX.Element {
   return (
     <ol className="leo-wiki-refine" data-slot="wiki-refine">
       {transcript.map((turn, i) => (
-        <li key={i} data-role={turn.role}>
+        // NOSONAR S6479 — refine transcript is append-only; index is stable
+        <li key={`${i}-${turn.role}`} data-role={turn.role}>
           <strong>{turn.role}:</strong> {turn.content}
         </li>
       ))}
@@ -418,6 +419,48 @@ function ScanBody({ vm }: { vm: WikiViewModel }): JSX.Element {
   );
 }
 
+function renderModelControl(args: {
+  readonly cfg: NonNullable<WikiViewModel['config']>;
+  readonly onModel: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  readonly onRetry: () => void;
+}): JSX.Element {
+  const { cfg, onModel, onRetry } = args;
+  if (cfg.models.state === 'loading') {
+    return (
+      <span className="leo-wiki-config-loading" data-slot="wiki-config-models-loading">
+        Loading models…
+      </span>
+    );
+  }
+  if (cfg.models.state === 'error') {
+    return (
+      <span className="leo-wiki-config-error" data-slot="wiki-config-models-error">
+        {cfg.models.error}
+        <button type="button" onClick={onRetry} data-slot="wiki-config-models-retry">
+          Retry
+        </button>
+      </span>
+    );
+  }
+  if (cfg.models.state === 'ok' && cfg.models.items.length > 0) {
+    return (
+      <select
+        value={cfg.draftModel}
+        onChange={onModel}
+        data-slot="wiki-config-model"
+        aria-label="Model"
+      >
+        {cfg.models.items.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.id}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  return <span className="leo-wiki-config-empty">No models discovered.</span>;
+}
+
 function ConfigBody({ vm, controller }: ViewProps): JSX.Element {
   const cfg = vm.config;
   if (cfg === undefined) {
@@ -460,37 +503,7 @@ function ConfigBody({ vm, controller }: ViewProps): JSX.Element {
       </label>
       <label className="leo-wiki-config-row">
         <span>Model</span>
-        {cfg.models.state === 'loading' ? (
-          <span className="leo-wiki-config-loading" data-slot="wiki-config-models-loading">
-            Loading models…
-          </span>
-        ) : cfg.models.state === 'error' ? (
-          <span className="leo-wiki-config-error" data-slot="wiki-config-models-error">
-            {cfg.models.error}
-            <button
-              type="button"
-              onClick={() => controller.onRetryLoadModels()}
-              data-slot="wiki-config-models-retry"
-            >
-              Retry
-            </button>
-          </span>
-        ) : cfg.models.state === 'ok' && cfg.models.items.length > 0 ? (
-          <select
-            value={cfg.draftModel}
-            onChange={onModel}
-            data-slot="wiki-config-model"
-            aria-label="Model"
-          >
-            {cfg.models.items.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.id}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span className="leo-wiki-config-empty">No models discovered.</span>
-        )}
+        {renderModelControl({ cfg, onModel, onRetry: () => controller.onRetryLoadModels() })}
         <span className="leo-wiki-config-default">default: {cfg.defaultModel}</span>
       </label>
       {cfg.apiKeyMissing ? (

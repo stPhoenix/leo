@@ -141,12 +141,14 @@ export class ExternalAgentOrchestrator {
           const finalAdapterId = finalState.selectedAdapterId ?? '';
           // Reuse run-start resolution when the adapter is unchanged; otherwise
           // resolve fresh for the snapshot's actual adapter.
-          const resolvedConfig =
-            finalAdapterId === (adapterId ?? '')
-              ? await resolvedConfigPromise
-              : this.deps.resolveConfig !== undefined
-                ? await this.deps.resolveConfig(finalAdapterId).catch(() => ({}))
-                : {};
+          let resolvedConfig: unknown;
+          if (finalAdapterId === (adapterId ?? '')) {
+            resolvedConfig = await resolvedConfigPromise;
+          } else if (this.deps.resolveConfig !== undefined) {
+            resolvedConfig = await this.deps.resolveConfig(finalAdapterId).catch(() => ({}));
+          } else {
+            resolvedConfig = {};
+          }
           const snapshot = buildTerminalSnapshot({
             state: finalState,
             registry: this.deps.registry,

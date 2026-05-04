@@ -12,7 +12,7 @@
  */
 import { promises as fs } from 'node:fs';
 import { join, dirname, relative, resolve } from 'node:path';
-import { describe, it } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 import {
   startIngestRun,
@@ -840,6 +840,9 @@ describe('wiki-ingest canon ingest — live loop iteration', () => {
           terminal === null ? 'no-start' : terminal.ok ? 'ok' : 'error/cancelled'
         } — judgment pending`,
       );
+
+      expect(runNumber).toBeGreaterThan(0);
+      expect(pendingNote.length).toBeGreaterThan(0);
     },
     TIMEOUT_MS + 60_000,
   );

@@ -138,136 +138,18 @@ export async function* runManualResearchLoop(
   }
   const consumedRefs = new Map<string, string>();
   const lastToolCallByName = new Map<string, string>();
-  let iteration = 0;
 
-  while (iteration < ctx.maxIterations) {
+  for (let iteration = 0; iteration < ctx.maxIterations; iteration += 1) {
     if (ctx.signal.aborted) return;
-    const visible = rewriteConsumedToolResults(messages, consumedRefs);
-    iteration += 1;
-    incrementIterations(ctx.runState, 1);
-    let step: AssistantStep;
-    try {
-      step = await adapter.invokeTurn({
-        messages: visible,
-        toolNames: ctx.tools.map((t) => t.name),
-        signal: ctx.signal,
-      });
-    } catch (err) {
-      yield { kind: 'error', error: err };
-      return;
-    }
-    const tokenStat = tokenTick({
-      cumulativeTokens: ctx.runState.cumulativeTokens,
-      addedInputEstimate: 0,
-      observedUsage: step.usage,
-      maxTokens: ctx.tokenLimit,
-    });
-    addTokens(ctx.runState, step.usage);
-    if (tokenStat.over) {
-      yield {
-        kind: 'error',
-        error: {
-          code: 'token_limit',
-          message: `Inline agent token budget exhausted: cumulative ${ctx.runState.cumulativeTokens} > maxTokens ${ctx.tokenLimit}. Increase \`budgets.maxTokens\` in plugin settings (default 100000).`,
-        },
-      };
-      return;
-    }
-    if (step.text.length > 0) yield { kind: 'text', chunk: step.text };
-    if (step.toolCalls.length === 0) {
-      messages.push({ role: 'assistant', content: step.text });
-      yield {
-        kind: 'node_complete',
-        node: 'researchStep',
-        durationMs: 0,
-        stepIndex: ctx.stepIndex,
-      };
-      yield { kind: 'done' };
-      return;
-    }
-    messages.push({ role: 'assistant', content: step.text });
-    for (const call of step.toolCalls) {
-      const tool = ctx.tools.find((t) => t.name === call.name);
-      if (tool === undefined) {
-        messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          name: call.name,
-          content: JSON.stringify({ ok: false, error: 'unknown_tool' }),
-        });
-        continue;
-      }
-      yield { kind: 'tool_start', tool: call.name, args: call.args };
-      const startedAt = Date.now();
-      let result: unknown;
-      let ok = true;
-      let errorCode: string | undefined;
-      try {
-        result = await tool.invoke(call.args);
-        if (typeof result === 'object' && result !== null && 'ok' in result) {
-          const r = result as { ok: boolean; error?: string };
-          ok = r.ok;
-          if (!r.ok && typeof r.error === 'string') errorCode = r.error;
-        }
-      } catch (err) {
-        ok = false;
-        errorCode = err instanceof Error ? err.message : 'tool_throw';
-        result = { ok: false, error: errorCode };
-      }
-      yield {
-        kind: 'tool_end',
-        tool: call.name,
-        ok,
-        durationMs: Date.now() - startedAt,
-        ...(errorCode !== undefined ? { error: errorCode } : {}),
-      };
-      messages.push({
-        role: 'tool',
-        toolCallId: call.id,
-        name: call.name,
-        content: JSON.stringify(wrapToolResultForLLM(call.name, result)),
-      });
-      // FR-IA-39: when extract_note succeeds, mark the most-recent fetch_url /
-      // search_web tool result as consumed.
-      if (call.name === 'extract_note' && ok) {
-        const noteId =
-          typeof result === 'object' && result !== null && 'data' in result
-            ? ((result as { data?: { id?: string } }).data?.id ?? null)
-            : null;
-        if (typeof noteId === 'string') {
-          for (const consumedTool of ['fetch_url', 'search_web']) {
-            const consumedId = lastToolCallByName.get(consumedTool);
-            if (consumedId !== undefined && !consumedRefs.has(consumedId)) {
-              consumedRefs.set(consumedId, noteId);
-              break;
-            }
-          }
-        }
-      } else if (call.name === 'fetch_url' || call.name === 'search_web') {
-        lastToolCallByName.set(call.name, call.id);
-      }
-    }
-
-    const decision = decideCompaction(
+    const stepResult = yield* runIteration(
+      ctx,
+      adapter,
       messages,
-      ctx.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
-      ctx.autocompactThresholdPct ?? DEFAULT_AUTOCOMPACT_THRESHOLD_PCT,
+      consumedRefs,
+      lastToolCallByName,
     );
-    if (decision.shouldCompact) {
-      const result = compactMessages(messages, ctx.runState);
-      if (result.droppedCount > 0) {
-        ctx.logger.info('externalAgent.adapter.inlineAgent.autocompact', {
-          route: 'multistep',
-          stepIndex: ctx.stepIndex,
-          droppedCount: result.droppedCount,
-          preTokens: result.preTokens,
-          postTokens: result.postTokens,
-          thresholdTokens: decision.thresholdTokens,
-        });
-        messages.length = 0;
-        for (const m of result.messages) messages.push(m);
-      }
-    }
+    if (stepResult === 'terminate') return;
+    maybeCompactMessages(messages, ctx);
   }
   yield {
     kind: 'node_complete',
@@ -282,6 +164,165 @@ export async function* runManualResearchLoop(
       message: `researchStep ${ctx.stepIndex} exceeded ${ctx.maxIterations} iterations`,
     },
   };
+}
+
+async function* runIteration(
+  ctx: ResearchLoopInput,
+  adapter: ManualChatModelAdapter,
+  messages: RewriteMessage[],
+  consumedRefs: Map<string, string>,
+  lastToolCallByName: Map<string, string>,
+): AsyncGenerator<BridgeChunk, 'continue' | 'terminate'> {
+  const visible = rewriteConsumedToolResults(messages, consumedRefs);
+  incrementIterations(ctx.runState, 1);
+  let step: AssistantStep;
+  try {
+    step = await adapter.invokeTurn({
+      messages: visible,
+      toolNames: ctx.tools.map((t) => t.name),
+      signal: ctx.signal,
+    });
+  } catch (err) {
+    yield { kind: 'error', error: err };
+    return 'terminate';
+  }
+  const tokenStat = tokenTick({
+    cumulativeTokens: ctx.runState.cumulativeTokens,
+    addedInputEstimate: 0,
+    observedUsage: step.usage,
+    maxTokens: ctx.tokenLimit,
+  });
+  addTokens(ctx.runState, step.usage);
+  if (tokenStat.over) {
+    yield {
+      kind: 'error',
+      error: {
+        code: 'token_limit',
+        message: `Inline agent token budget exhausted: cumulative ${ctx.runState.cumulativeTokens} > maxTokens ${ctx.tokenLimit}. Increase \`budgets.maxTokens\` in plugin settings (default 100000).`,
+      },
+    };
+    return 'terminate';
+  }
+  if (step.text.length > 0) yield { kind: 'text', chunk: step.text };
+  if (step.toolCalls.length === 0) {
+    messages.push({ role: 'assistant', content: step.text });
+    yield { kind: 'node_complete', node: 'researchStep', durationMs: 0, stepIndex: ctx.stepIndex };
+    yield { kind: 'done' };
+    return 'terminate';
+  }
+  messages.push({ role: 'assistant', content: step.text });
+  for (const call of step.toolCalls) {
+    yield* invokeAndRecord(call, ctx, messages, consumedRefs, lastToolCallByName);
+  }
+  return 'continue';
+}
+
+async function* invokeAndRecord(
+  call: AssistantStep['toolCalls'][number],
+  ctx: ResearchLoopInput,
+  messages: RewriteMessage[],
+  consumedRefs: Map<string, string>,
+  lastToolCallByName: Map<string, string>,
+): AsyncGenerator<BridgeChunk, void> {
+  const tool = ctx.tools.find((t) => t.name === call.name);
+  if (tool === undefined) {
+    messages.push({
+      role: 'tool',
+      toolCallId: call.id,
+      name: call.name,
+      content: JSON.stringify({ ok: false, error: 'unknown_tool' }),
+    });
+    return;
+  }
+  yield { kind: 'tool_start', tool: call.name, args: call.args };
+  const { result, ok, errorCode, durationMs } = await invokeTool(tool, call);
+  yield {
+    kind: 'tool_end',
+    tool: call.name,
+    ok,
+    durationMs,
+    ...(errorCode !== undefined ? { error: errorCode } : {}),
+  };
+  messages.push({
+    role: 'tool',
+    toolCallId: call.id,
+    name: call.name,
+    content: JSON.stringify(wrapToolResultForLLM(call.name, result)),
+  });
+  trackConsumption(call, result, ok, consumedRefs, lastToolCallByName);
+}
+
+async function invokeTool(
+  tool: { invoke(args: unknown): Promise<unknown> | unknown },
+  call: { name: string; args: unknown },
+): Promise<{ result: unknown; ok: boolean; errorCode: string | undefined; durationMs: number }> {
+  const startedAt = Date.now();
+  let result: unknown;
+  let ok = true;
+  let errorCode: string | undefined;
+  try {
+    result = await tool.invoke(call.args);
+    if (typeof result === 'object' && result !== null && 'ok' in result) {
+      const r = result as { ok: boolean; error?: string };
+      ok = r.ok;
+      if (!r.ok && typeof r.error === 'string') errorCode = r.error;
+    }
+  } catch (err) {
+    ok = false;
+    errorCode = err instanceof Error ? err.message : 'tool_throw';
+    result = { ok: false, error: errorCode };
+  }
+  return { result, ok, errorCode, durationMs: Date.now() - startedAt };
+}
+
+// FR-IA-39: when extract_note succeeds, mark the most-recent fetch_url /
+// search_web tool result as consumed.
+function trackConsumption(
+  call: { id: string; name: string },
+  result: unknown,
+  ok: boolean,
+  consumedRefs: Map<string, string>,
+  lastToolCallByName: Map<string, string>,
+): void {
+  if (call.name === 'extract_note' && ok) {
+    const noteId =
+      typeof result === 'object' && result !== null && 'data' in result
+        ? ((result as { data?: { id?: string } }).data?.id ?? null)
+        : null;
+    if (typeof noteId !== 'string') return;
+    for (const consumedTool of ['fetch_url', 'search_web']) {
+      const consumedId = lastToolCallByName.get(consumedTool);
+      if (consumedId !== undefined && !consumedRefs.has(consumedId)) {
+        consumedRefs.set(consumedId, noteId);
+        return;
+      }
+    }
+    return;
+  }
+  if (call.name === 'fetch_url' || call.name === 'search_web') {
+    lastToolCallByName.set(call.name, call.id);
+  }
+}
+
+function maybeCompactMessages(messages: RewriteMessage[], ctx: ResearchLoopInput): void {
+  const decision = decideCompaction(
+    messages,
+    ctx.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
+    ctx.autocompactThresholdPct ?? DEFAULT_AUTOCOMPACT_THRESHOLD_PCT,
+  );
+  if (!decision.shouldCompact) return;
+  const result = compactMessages(messages, ctx.runState);
+  if (result.droppedCount === 0) return;
+  ctx.logger.info('externalAgent.adapter.inlineAgent.autocompact', {
+    route: 'multistep',
+    stepIndex: ctx.stepIndex,
+    droppedCount: result.droppedCount,
+    preTokens: result.preTokens,
+    postTokens: result.postTokens,
+    thresholdTokens: decision.thresholdTokens,
+  });
+  messages.length = 0;
+  for (const m of result.messages) messages.push(m);
 }
 
 export async function* runResearchStep(ctx: ResearchStepCtx): AsyncIterable<ExternalEvent> {

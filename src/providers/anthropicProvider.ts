@@ -68,18 +68,11 @@ export class AnthropicProvider implements Provider {
     });
 
     const disableParallel = req.providerHints?.disableParallelToolCalls === true;
-    const callable: AnthropicCallable =
-      req.tools !== undefined && req.tools.length > 0
-        ? model.bindTools(
-            toToolDefs(req.tools),
-            disableParallel
-              ? // ChatAnthropicCallOptions narrows tool_choice.type to 'tool', but the
-                // Anthropic API also accepts {type:'auto', disable_parallel_tool_use:true}.
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                ({ tool_choice: { type: 'auto', disable_parallel_tool_use: true } } as any)
-              : undefined,
-          )
-        : model;
+    const bindOpts = buildAnthropicBindOpts(disableParallel);
+    const hasTools = req.tools !== undefined && req.tools.length > 0;
+    const callable: AnthropicCallable = hasTools
+      ? model.bindTools(toToolDefs(req.tools!), bindOpts)
+      : model;
 
     const messages = toLangchainMessages(req.messages);
     let stream: AsyncIterable<AIMessageChunk>;
@@ -105,6 +98,14 @@ interface OpenAIToolLike {
     readonly parameters: unknown;
   };
   readonly defer_loading?: boolean;
+}
+
+// ChatAnthropicCallOptions narrows tool_choice.type to 'tool', but the
+// Anthropic API also accepts {type:'auto', disable_parallel_tool_use:true}.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildAnthropicBindOpts(disableParallel: boolean): any {
+  if (!disableParallel) return undefined;
+  return { tool_choice: { type: 'auto', disable_parallel_tool_use: true } };
 }
 
 function toToolDefs(tools: readonly OpenAIToolLike[]): Array<{

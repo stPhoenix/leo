@@ -5,9 +5,9 @@ import { resolveSystemPrompt } from './index';
 import { getInlineAgentResearchPrompt, getInlineAgentSynthesizePrompt } from './systemPrompt';
 import { inlineAgentConfigSchema, type InlineAgentConfig } from './configSchema';
 import { Sandbox } from './sandbox';
-import { createInitialRunState, setPlan } from './runState';
+import { createInitialRunState, setPlan, type InlineAgentRunState } from './runState';
 import { composeAbortSignal, perStepBudget, selectMaxIterations } from './budgets';
-import { bridgeStream, mapAdapterError, mapNodeComplete } from './eventBridge';
+import { bridgeStream, mapAdapterError, mapNodeComplete, type BridgeChunk } from './eventBridge';
 import { classifyTask } from './router';
 import { buildSimpleBranchTools, runManualLoop, type ReactLoopCtx } from './branches/simpleBranch';
 import { planSteps } from './multistep/planner';
@@ -263,131 +263,46 @@ export async function* runInlineAgentGraph(
     }
 
     // Phase 2 — branch execution
-    let deferredError: ExternalEvent | null = null;
-    if (route === 'simple') {
-      const cap = selectMaxIterations('simple', parsed.budgets);
-      const remaining = Math.max(0, cap - runState.iterations);
-      const loopCtx: ReactLoopCtx = {
-        chatModel,
-        tools: simpleTools,
-        maxIterations: remaining,
-        signal: composed.signal,
-        refinedAsk: input.refinedAsk,
-        systemPrompt: composedSystemPrompt,
-        runState,
-        logger: deps.logger,
-        tokenLimit: parsed.budgets.maxTokens,
-        contextWindowTokens: parsed.budgets.contextWindowTokens,
-        autocompactThresholdPct: parsed.budgets.autocompactThresholdPct,
-      };
-      for await (const ev of bridgeStream(runManualLoop(loopCtx, manualAdapter), {
-        logger: deps.logger,
-      })) {
-        if (ev.type === 'error') {
-          deferredError = ev;
-          break;
-        }
-        if (ev.type === 'done') break;
-        yield ev;
-      }
-    } else {
-      const cap = selectMaxIterations('multistep', parsed.budgets);
-      const researchSystemPrompt = composeStagePrompt(
-        input.systemPrompt,
-        getInlineAgentResearchPrompt(),
-      );
-      let messagesCarried: readonly RewriteMessage[] = [
-        { role: 'system', content: researchSystemPrompt },
-        { role: 'user', content: input.refinedAsk },
-      ];
-      const remainingSteps = plan.length;
-      for (let i = 0; i < remainingSteps; i += 1) {
-        runState.currentStep = i;
-        const remainingIterations = Math.max(0, cap - runState.iterations);
-        const remaining = remainingSteps - i;
-        const stepBudget = perStepBudget({
-          remainingIterations,
-          remainingSteps: remaining,
-        });
-        if (stepBudget <= 0 || composed.signal.aborted) break;
-        const stepTools = researchTools;
-        const generator = runManualResearchLoop(
-          {
-            tools: stepTools,
-            maxIterations: stepBudget,
-            signal: composed.signal,
+    const branchOutcome =
+      route === 'simple'
+        ? runSimpleBranch({
+            parsed,
+            input,
+            manualAdapter,
+            chatModel,
+            simpleTools,
+            composedSystemPrompt,
+            composed,
             runState,
             logger: deps.logger,
-            planStep: plan[i] ?? '',
-            stepIndex: i,
-            tokenLimit: parsed.budgets.maxTokens,
-            messages: messagesCarried,
-            contextWindowTokens: parsed.budgets.contextWindowTokens,
-            autocompactThresholdPct: parsed.budgets.autocompactThresholdPct,
-          },
-          manualAdapter,
-        );
-        let aborted = false;
-        for await (const ev of bridgeStream(generator, { logger: deps.logger })) {
-          if (ev.type === 'error') {
-            const code = ev.error.code;
-            if (code === 'iteration_limit') {
-              // Step-level cap; advance.
-              break;
-            }
-            if (code === 'token_limit') {
-              yield ev;
-              return;
-            }
-            yield ev;
-            aborted = true;
-            break;
-          }
-          if (ev.type === 'done') break;
-          yield ev;
-        }
-        if (aborted) return;
-        messagesCarried = dropRawToolMessagesAtStepBoundary(messagesCarried);
-      }
-
-      const remainingIterations = Math.max(0, cap - runState.iterations);
-      const synthMax = selectSynthesizeIterations(remainingIterations);
-      const synthMessages: readonly RewriteMessage[] = [
-        {
-          role: 'system',
-          content: composeStagePrompt(input.systemPrompt, getInlineAgentSynthesizePrompt()),
-        },
-        {
-          role: 'user',
-          content: buildSynthesizePrompt({
-            refinedAsk: input.refinedAsk,
+          })
+        : runMultistepBranch({
+            parsed,
+            input,
+            manualAdapter,
+            researchTools,
+            synthTools,
             plan,
-            notes: runState.notes,
-            scratchpad: runState.scratchpad,
-          }),
-        },
-      ];
-      const synthGen = runManualSynthesizeLoop(
-        {
-          tools: synthTools,
-          maxIterations: synthMax,
-          signal: composed.signal,
-          runState,
-          logger: deps.logger,
-          tokenLimit: parsed.budgets.maxTokens,
-          messages: synthMessages,
-        },
-        manualAdapter,
-      );
-      for await (const ev of bridgeStream(synthGen, { logger: deps.logger })) {
-        if (ev.type === 'error') {
-          deferredError = ev;
-          break;
-        }
-        if (ev.type === 'done') break;
-        yield ev;
+            composed,
+            runState,
+            logger: deps.logger,
+          });
+
+    let deferredError: ExternalEvent | null = null;
+    let earlyReturn = false;
+    for await (const ev of branchOutcome) {
+      if (ev.type === 'deferred-error') {
+        deferredError = ev.event;
+        continue;
       }
+      if (ev.type === 'early-return') {
+        yield ev.event;
+        earlyReturn = true;
+        break;
+      }
+      yield ev;
     }
+    if (earlyReturn) return;
 
     // Phase 3 — flush artifacts (partial-flush on error path is intentional;
     // FR-IA-36 keeps prior nominations even when the branch terminated with
@@ -426,4 +341,213 @@ function enrichWallClockError(
 function composeStagePrompt(hostPrompt: string, stagePrompt: string): string {
   if (hostPrompt.length === 0) return stagePrompt;
   return `${hostPrompt}\n\n${stagePrompt}`;
+}
+
+type BranchEvent =
+  | ExternalEvent
+  | { readonly type: 'deferred-error'; readonly event: ExternalEvent }
+  | { readonly type: 'early-return'; readonly event: ExternalEvent };
+
+interface SimpleBranchInput {
+  readonly parsed: InlineAgentConfig;
+  readonly input: InlineAgentGraphInput;
+  readonly manualAdapter: ManualChatModelAdapter;
+  readonly chatModel: BaseChatModel;
+  readonly simpleTools: ReturnType<typeof buildSimpleBranchTools>;
+  readonly composedSystemPrompt: string;
+  readonly composed: { readonly signal: AbortSignal };
+  readonly runState: InlineAgentRunState;
+  readonly logger: InlineAgentLogger;
+}
+
+async function* runSimpleBranch(args: SimpleBranchInput): AsyncIterable<BranchEvent> {
+  const {
+    parsed,
+    input,
+    manualAdapter,
+    chatModel,
+    simpleTools,
+    composedSystemPrompt,
+    composed,
+    runState,
+    logger,
+  } = args;
+  const cap = selectMaxIterations('simple', parsed.budgets);
+  const remaining = Math.max(0, cap - runState.iterations);
+  const loopCtx: ReactLoopCtx = {
+    chatModel,
+    tools: simpleTools,
+    maxIterations: remaining,
+    signal: composed.signal,
+    refinedAsk: input.refinedAsk,
+    systemPrompt: composedSystemPrompt,
+    runState,
+    logger,
+    tokenLimit: parsed.budgets.maxTokens,
+    contextWindowTokens: parsed.budgets.contextWindowTokens,
+    autocompactThresholdPct: parsed.budgets.autocompactThresholdPct,
+  };
+  for await (const ev of bridgeStream(runManualLoop(loopCtx, manualAdapter), { logger })) {
+    if (ev.type === 'error') {
+      yield { type: 'deferred-error', event: ev };
+      return;
+    }
+    if (ev.type === 'done') return;
+    yield ev;
+  }
+}
+
+interface MultistepBranchInput {
+  readonly parsed: InlineAgentConfig;
+  readonly input: InlineAgentGraphInput;
+  readonly manualAdapter: ManualChatModelAdapter;
+  readonly researchTools: ReturnType<typeof buildResearchStepTools>;
+  readonly synthTools: ReturnType<typeof buildSynthesizeTools>;
+  readonly plan: readonly string[];
+  readonly composed: { readonly signal: AbortSignal };
+  readonly runState: InlineAgentRunState;
+  readonly logger: InlineAgentLogger;
+}
+
+async function* runMultistepBranch(args: MultistepBranchInput): AsyncIterable<BranchEvent> {
+  const {
+    parsed,
+    input,
+    manualAdapter,
+    researchTools,
+    synthTools,
+    plan,
+    composed,
+    runState,
+    logger,
+  } = args;
+  const cap = selectMaxIterations('multistep', parsed.budgets);
+  const researchSystemPrompt = composeStagePrompt(
+    input.systemPrompt,
+    getInlineAgentResearchPrompt(),
+  );
+  let messagesCarried: readonly RewriteMessage[] = [
+    { role: 'system', content: researchSystemPrompt },
+    { role: 'user', content: input.refinedAsk },
+  ];
+  const researchOutcome = yield* runResearchSteps({
+    parsed,
+    manualAdapter,
+    researchTools,
+    plan,
+    cap,
+    composed,
+    runState,
+    logger,
+    initialMessages: messagesCarried,
+  });
+  if (researchOutcome.aborted) return;
+  messagesCarried = researchOutcome.messages;
+
+  const remainingIterations = Math.max(0, cap - runState.iterations);
+  const synthMax = selectSynthesizeIterations(remainingIterations);
+  const synthMessages: readonly RewriteMessage[] = [
+    {
+      role: 'system',
+      content: composeStagePrompt(input.systemPrompt, getInlineAgentSynthesizePrompt()),
+    },
+    {
+      role: 'user',
+      content: buildSynthesizePrompt({
+        refinedAsk: input.refinedAsk,
+        plan,
+        notes: runState.notes,
+        scratchpad: runState.scratchpad,
+      }),
+    },
+  ];
+  const synthGen = runManualSynthesizeLoop(
+    {
+      tools: synthTools,
+      maxIterations: synthMax,
+      signal: composed.signal,
+      runState,
+      logger,
+      tokenLimit: parsed.budgets.maxTokens,
+      messages: synthMessages,
+    },
+    manualAdapter,
+  );
+  for await (const ev of bridgeStream(synthGen, { logger })) {
+    if (ev.type === 'error') {
+      yield { type: 'deferred-error', event: ev };
+      return;
+    }
+    if (ev.type === 'done') return;
+    yield ev;
+  }
+}
+
+interface ResearchStepsInput {
+  readonly parsed: InlineAgentConfig;
+  readonly manualAdapter: ManualChatModelAdapter;
+  readonly researchTools: ReturnType<typeof buildResearchStepTools>;
+  readonly plan: readonly string[];
+  readonly cap: number;
+  readonly composed: { readonly signal: AbortSignal };
+  readonly runState: InlineAgentRunState;
+  readonly logger: InlineAgentLogger;
+  readonly initialMessages: readonly RewriteMessage[];
+}
+
+async function* runResearchSteps(
+  args: ResearchStepsInput,
+): AsyncGenerator<BranchEvent, { aborted: boolean; messages: readonly RewriteMessage[] }> {
+  const { parsed, manualAdapter, researchTools, plan, cap, composed, runState, logger } = args;
+  let messagesCarried = args.initialMessages;
+  const remainingSteps = plan.length;
+  for (let i = 0; i < remainingSteps; i += 1) {
+    runState.currentStep = i;
+    const remainingIterations = Math.max(0, cap - runState.iterations);
+    const remaining = remainingSteps - i;
+    const stepBudget = perStepBudget({ remainingIterations, remainingSteps: remaining });
+    if (stepBudget <= 0 || composed.signal.aborted) break;
+    const generator = runManualResearchLoop(
+      {
+        tools: researchTools,
+        maxIterations: stepBudget,
+        signal: composed.signal,
+        runState,
+        logger,
+        planStep: plan[i] ?? '',
+        stepIndex: i,
+        tokenLimit: parsed.budgets.maxTokens,
+        messages: messagesCarried,
+        contextWindowTokens: parsed.budgets.contextWindowTokens,
+        autocompactThresholdPct: parsed.budgets.autocompactThresholdPct,
+      },
+      manualAdapter,
+    );
+    const stepOutcome = yield* runResearchStep(generator, logger);
+    if (stepOutcome === 'token-limit') return { aborted: true, messages: messagesCarried };
+    if (stepOutcome === 'aborted') return { aborted: true, messages: messagesCarried };
+    messagesCarried = dropRawToolMessagesAtStepBoundary(messagesCarried);
+  }
+  return { aborted: false, messages: messagesCarried };
+}
+
+async function* runResearchStep(
+  generator: AsyncIterable<BridgeChunk>,
+  logger: InlineAgentLogger,
+): AsyncGenerator<BranchEvent, 'continue' | 'aborted' | 'token-limit'> {
+  for await (const ev of bridgeStream(generator, { logger })) {
+    if (ev.type === 'error') {
+      const code = ev.error.code;
+      if (code === 'iteration_limit') return 'continue'; // step-level cap; advance.
+      if (code === 'token_limit') {
+        yield { type: 'early-return', event: ev };
+        return 'token-limit';
+      }
+      yield ev;
+      return 'aborted';
+    }
+    if (ev.type === 'done') return 'continue';
+    yield ev;
+  }
+  return 'continue';
 }

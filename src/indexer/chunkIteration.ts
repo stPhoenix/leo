@@ -3,6 +3,7 @@ export interface IdleDeadlineLike {
   readonly didTimeout?: boolean;
 }
 
+// NOSONAR S6564 — intentional opaque-handle alias; consumers should not pass arbitrary numbers
 export type IdleCallbackHandle = number;
 
 export interface IdleScheduler {

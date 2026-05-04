@@ -145,8 +145,8 @@ export class ChatView extends ItemView {
   readonly runStateStore: RunStateStore = new RunStateStore();
   private root: Root | null = null;
   private resizeObserver: ResizeObserver | null = null;
-  private widthListeners = new Set<(w: number) => void>();
-  private renderComponents = new Set<Component>();
+  private readonly widthListeners = new Set<(w: number) => void>();
+  private readonly renderComponents = new Set<Component>();
   private streamingController: StreamingTurnController | null = null;
   private turnDispatcher: TurnDispatcher | null = null;
   private slashRegistry: SlashRegistry | null = null;
@@ -154,10 +154,10 @@ export class ChatView extends ItemView {
   private ragCommand: RagCommandHandle | null = null;
   private wikiStatusCommand: WikiStatusCommandHandle | null = null;
   private liveRegionEl: HTMLElement | null = null;
-  private phaseListeners = new Set<(p: StreamingPhase) => void>();
+  private readonly phaseListeners = new Set<(p: StreamingPhase) => void>();
   private lastPhase: StreamingPhase = 'idle';
   private attachmentRejections: AttachmentRejection[] = [];
-  private rejectionListeners = new Set<() => void>();
+  private readonly rejectionListeners = new Set<() => void>();
   private attachmentsUnsubscribe: (() => void) | null = null;
   private buildChatRootProps: (() => Parameters<typeof ChatRoot>[0]) | null = null;
 
@@ -191,7 +191,7 @@ export class ChatView extends ItemView {
     liveRegion.setAttribute('role', 'status');
     liveRegion.setAttribute('aria-live', 'assertive');
     liveRegion.setAttribute('aria-atomic', 'true');
-    liveRegion.setAttribute('data-slot', 'stream-live-region');
+    liveRegion.dataset.slot = 'stream-live-region';
     this.liveRegionEl = liveRegion;
 
     this.streamingController = new StreamingTurnController({
@@ -738,7 +738,7 @@ export class ChatView extends ItemView {
   private renderEditDiffIfAvailable(block: ToolUseBlock): JSX.Element | null {
     if (!EDIT_TOOL_NAMES.has(block.name)) return null;
     const result = this.runStateStore.getSnapshot().toolResults.get(block.id);
-    if (result === undefined || result.ok !== true) return null;
+    if (result?.ok !== true) return null;
     const data = result.data as { before?: unknown; after?: unknown; path?: unknown };
     if (typeof data?.before !== 'string' || typeof data?.after !== 'string') return null;
     return createElement(DiffView, {

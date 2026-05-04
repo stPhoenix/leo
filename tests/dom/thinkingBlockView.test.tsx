@@ -47,12 +47,13 @@ describe('ThinkingBlockView (F07 AC1, AC2)', () => {
     expect(container.querySelector('[data-slot="thinking-header"]')?.textContent).toContain('8');
   });
 
-  it('aria semantics — region role + aria-label (AC4)', () => {
+  it('aria semantics — section + aria-label (AC4)', () => {
     const { container } = render(
       <ThinkingBlockView block={{ type: 'thinking', thinking: 'r' }} streaming={true} />,
     );
     const region = container.querySelector('[data-slot="thinking"]');
-    expect(region?.getAttribute('role')).toBe('region');
+    // <section> with aria-label has implicit role 'region'; explicit role would be redundant (Sonar S6822).
+    expect(region?.tagName).toBe('SECTION');
     expect(region?.getAttribute('aria-label')).toBe('thinking');
   });
 });

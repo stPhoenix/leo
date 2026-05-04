@@ -124,7 +124,7 @@ export async function classifyTask(input: ClassifyTaskInput): Promise<ClassifyTa
       (result as unknown as { tool_calls?: ReadonlyArray<{ name?: string; args?: unknown }> })
         .tool_calls ?? [];
     const classifyCall = calls.find((c) => c.name === 'classify_task') ?? calls[0];
-    if (classifyCall === undefined || classifyCall.args === undefined) {
+    if (classifyCall?.args === undefined) {
       throw new Error('classifier emitted no tool call');
     }
     return classifyTaskOutputSchema.parse(classifyCall.args);

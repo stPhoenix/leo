@@ -96,7 +96,12 @@ export function ThreadSwitcher(props: ThreadSwitcherProps): JSX.Element {
         +
       </button>
       {open ? (
-        <ul className="leo-thread-switcher-list" role="listbox" aria-label="Chat threads">
+        <ul
+          className="leo-thread-switcher-list"
+          // NOSONAR S6819,S6842 — combobox-style picker over chat threads (custom rename + delete actions)
+          role="listbox"
+          aria-label="Chat threads"
+        >
           {summaries.length === 0 ? (
             <li className="leo-thread-switcher-empty">No threads</li>
           ) : (
@@ -106,6 +111,7 @@ export function ThreadSwitcher(props: ThreadSwitcherProps): JSX.Element {
               return (
                 <li
                   key={s.id}
+                  // NOSONAR S6842 — combobox-style option in custom thread picker
                   role="option"
                   aria-selected={isActive}
                   className={`leo-thread-switcher-item${isActive ? ' is-active' : ''}`}

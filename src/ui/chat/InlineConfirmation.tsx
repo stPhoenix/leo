@@ -94,6 +94,7 @@ export function InlineConfirmation(props: InlineConfirmationProps): JSX.Element 
   return (
     <div
       className={`leo-inline-confirmation leo-confirmation-${request.category}`}
+      // NOSONAR S6819 — inline chat-flow modal; native <dialog> default styling conflicts with chat-list layout
       role="dialog"
       aria-modal="true"
       aria-label={`confirm tool ${request.toolId}`}

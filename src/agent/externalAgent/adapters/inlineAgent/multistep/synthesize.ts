@@ -103,89 +103,10 @@ export async function* runManualSynthesizeLoop(
   adapter: ManualChatModelAdapter,
 ): AsyncIterable<BridgeChunk> {
   const messages: RewriteMessage[] = [...ctx.messages];
-  let iteration = 0;
-  while (iteration < ctx.maxIterations) {
+  for (let iteration = 0; iteration < ctx.maxIterations; iteration += 1) {
     if (ctx.signal.aborted) return;
-    iteration += 1;
-    incrementIterations(ctx.runState, 1);
-    let step: AssistantStep;
-    try {
-      step = await adapter.invokeTurn({
-        messages,
-        toolNames: ctx.tools.map((t) => t.name),
-        signal: ctx.signal,
-      });
-    } catch (err) {
-      yield { kind: 'error', error: err };
-      return;
-    }
-    const tokenStat = tokenTick({
-      cumulativeTokens: ctx.runState.cumulativeTokens,
-      addedInputEstimate: 0,
-      observedUsage: step.usage,
-      maxTokens: ctx.tokenLimit,
-    });
-    addTokens(ctx.runState, step.usage);
-    if (tokenStat.over) {
-      yield {
-        kind: 'error',
-        error: {
-          code: 'token_limit',
-          message: `Inline agent token budget exhausted (synthesize): cumulative ${ctx.runState.cumulativeTokens} > maxTokens ${ctx.tokenLimit}. Increase \`budgets.maxTokens\` in plugin settings (default 100000).`,
-        },
-      };
-      return;
-    }
-    if (step.text.length > 0) yield { kind: 'text', chunk: step.text };
-    if (step.toolCalls.length === 0) {
-      messages.push({ role: 'assistant', content: step.text });
-      yield { kind: 'node_complete', node: 'synthesize', durationMs: 0 };
-      yield { kind: 'done' };
-      return;
-    }
-    messages.push({ role: 'assistant', content: step.text });
-    for (const call of step.toolCalls) {
-      const tool = ctx.tools.find((t) => t.name === call.name);
-      if (tool === undefined) {
-        messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          name: call.name,
-          content: JSON.stringify({ ok: false, error: 'unknown_tool' }),
-        });
-        continue;
-      }
-      yield { kind: 'tool_start', tool: call.name, args: call.args };
-      const startedAt = Date.now();
-      let result: unknown;
-      let ok = true;
-      let errorCode: string | undefined;
-      try {
-        result = await tool.invoke(call.args);
-        if (typeof result === 'object' && result !== null && 'ok' in result) {
-          const r = result as { ok: boolean; error?: string };
-          ok = r.ok;
-          if (!r.ok && typeof r.error === 'string') errorCode = r.error;
-        }
-      } catch (err) {
-        ok = false;
-        errorCode = err instanceof Error ? err.message : 'tool_throw';
-        result = { ok: false, error: errorCode };
-      }
-      yield {
-        kind: 'tool_end',
-        tool: call.name,
-        ok,
-        durationMs: Date.now() - startedAt,
-        ...(errorCode !== undefined ? { error: errorCode } : {}),
-      };
-      messages.push({
-        role: 'tool',
-        toolCallId: call.id,
-        name: call.name,
-        content: JSON.stringify(result),
-      });
-    }
+    const outcome = yield* runSynthesizeIteration(ctx, adapter, messages);
+    if (outcome === 'terminate') return;
   }
   yield { kind: 'node_complete', node: 'synthesize', durationMs: 0 };
   yield {
@@ -195,6 +116,109 @@ export async function* runManualSynthesizeLoop(
       message: `synthesize exceeded ${ctx.maxIterations} iterations`,
     },
   };
+}
+
+async function* runSynthesizeIteration(
+  ctx: SynthesizeLoopInput,
+  adapter: ManualChatModelAdapter,
+  messages: RewriteMessage[],
+): AsyncGenerator<BridgeChunk, 'continue' | 'terminate'> {
+  incrementIterations(ctx.runState, 1);
+  let step: AssistantStep;
+  try {
+    step = await adapter.invokeTurn({
+      messages,
+      toolNames: ctx.tools.map((t) => t.name),
+      signal: ctx.signal,
+    });
+  } catch (err) {
+    yield { kind: 'error', error: err };
+    return 'terminate';
+  }
+  const tokenStat = tokenTick({
+    cumulativeTokens: ctx.runState.cumulativeTokens,
+    addedInputEstimate: 0,
+    observedUsage: step.usage,
+    maxTokens: ctx.tokenLimit,
+  });
+  addTokens(ctx.runState, step.usage);
+  if (tokenStat.over) {
+    yield {
+      kind: 'error',
+      error: {
+        code: 'token_limit',
+        message: `Inline agent token budget exhausted (synthesize): cumulative ${ctx.runState.cumulativeTokens} > maxTokens ${ctx.tokenLimit}. Increase \`budgets.maxTokens\` in plugin settings (default 100000).`,
+      },
+    };
+    return 'terminate';
+  }
+  if (step.text.length > 0) yield { kind: 'text', chunk: step.text };
+  if (step.toolCalls.length === 0) {
+    messages.push({ role: 'assistant', content: step.text });
+    yield { kind: 'node_complete', node: 'synthesize', durationMs: 0 };
+    yield { kind: 'done' };
+    return 'terminate';
+  }
+  messages.push({ role: 'assistant', content: step.text });
+  for (const call of step.toolCalls) {
+    yield* invokeSynthesizeToolCall(call, ctx, messages);
+  }
+  return 'continue';
+}
+
+async function* invokeSynthesizeToolCall(
+  call: { id: string; name: string; args: unknown },
+  ctx: SynthesizeLoopInput,
+  messages: RewriteMessage[],
+): AsyncGenerator<BridgeChunk, void> {
+  const tool = ctx.tools.find((t) => t.name === call.name);
+  if (tool === undefined) {
+    messages.push({
+      role: 'tool',
+      toolCallId: call.id,
+      name: call.name,
+      content: JSON.stringify({ ok: false, error: 'unknown_tool' }),
+    });
+    return;
+  }
+  yield { kind: 'tool_start', tool: call.name, args: call.args };
+  const { result, ok, errorCode, durationMs } = await invokeSynthesizeTool(tool, call.args);
+  yield {
+    kind: 'tool_end',
+    tool: call.name,
+    ok,
+    durationMs,
+    ...(errorCode !== undefined ? { error: errorCode } : {}),
+  };
+  messages.push({
+    role: 'tool',
+    toolCallId: call.id,
+    name: call.name,
+    content: JSON.stringify(result),
+  });
+}
+
+async function invokeSynthesizeTool(
+  tool: { invoke(args: unknown): Promise<unknown> | unknown },
+  args: unknown,
+): Promise<{ result: unknown; ok: boolean; errorCode: string | undefined; durationMs: number }> {
+  const startedAt = Date.now();
+  let result: unknown;
+  let ok = true;
+  let errorCode: string | undefined;
+  try {
+    result = await tool.invoke(args);
+    if (typeof result === 'object' && result !== null && 'ok' in result) {
+      const r = result as { ok: boolean; error?: string };
+      ok = r.ok;
+      if (!r.ok && typeof r.error === 'string') errorCode = r.error;
+    }
+  } catch (err) {
+    ok = false;
+    errorCode = err instanceof Error ? err.message : 'tool_throw';
+    result = { ok: false, error: errorCode };
+  }
+  return { result, ok, errorCode, durationMs: Date.now() - startedAt };
 }
 
 export async function* runSynthesize(ctx: SynthesizeCtx): AsyncIterable<ExternalEvent> {

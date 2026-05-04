@@ -69,7 +69,7 @@ export class WikiWidgetController {
   // Picker state — only set while phase === 'awaiting_config'.
   private picker: WikiPickerDeps | null = null;
   private pickerResolve: ((v: ProviderOverride | null) => void) | null = null;
-  private modelsCache = new Map<ProviderKind, readonly ProviderModel[]>();
+  private readonly modelsCache = new Map<ProviderKind, readonly ProviderModel[]>();
   private modelsAbort: AbortController | null = null;
 
   constructor(opts: WikiWidgetControllerOptions) {
@@ -337,7 +337,7 @@ export class WikiWidgetController {
     const ac = new AbortController();
     this.modelsAbort = ac;
     const cfg = this.vm.config;
-    if (cfg !== undefined && cfg.draftProviderId === providerId) {
+    if (cfg?.draftProviderId === providerId) {
       this.update({ config: { ...cfg, models: { state: 'loading' } } });
     }
     try {
@@ -345,7 +345,7 @@ export class WikiWidgetController {
       if (ac.signal.aborted || this.disposed) return;
       this.modelsCache.set(providerId, items);
       const cur = this.vm.config;
-      if (cur === undefined || cur.draftProviderId !== providerId) return;
+      if (cur?.draftProviderId !== providerId) return;
       const draftModel =
         items.length > 0 ? (items.find((m) => m.id === cur.draftModel)?.id ?? items[0]!.id) : '';
       this.update({
@@ -355,7 +355,7 @@ export class WikiWidgetController {
       if (ac.signal.aborted || this.disposed) return;
       const message = err instanceof Error ? err.message : String(err);
       const cur = this.vm.config;
-      if (cur === undefined || cur.draftProviderId !== providerId) return;
+      if (cur?.draftProviderId !== providerId) return;
       this.update({ config: { ...cur, models: { state: 'error', error: message } } });
     }
   }

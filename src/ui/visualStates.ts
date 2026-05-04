@@ -38,7 +38,7 @@ export function ariaHintFor(state: VisualState): VisualStateAriaHint {
 }
 
 export function applyVisualState(el: HTMLElement, state: VisualState): void {
-  el.setAttribute('data-visual-state', state);
+  el.dataset.visualState = state;
   const hint = ARIA[state];
   if (hint.role !== undefined) {
     el.setAttribute('role', hint.role);

@@ -9,6 +9,7 @@ export interface InlineAgentLoggerLite {
   error(event: string, fields?: Record<string, unknown>): void;
 }
 
+// NOSONAR S6564 — intentional documentation alias; "elided" describes intent
 export type ElidedValue = unknown;
 
 export function elideArgs(toolName: string, args: unknown): Record<string, unknown> {

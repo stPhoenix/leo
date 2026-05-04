@@ -221,9 +221,13 @@ export function applyMarkdownPatch(input: ApplyMarkdownPatchInput): ApplyMarkdow
       };
     }
     default: {
+      // Exhaustiveness guard: TS will complain here if a new patch kind is added.
       const exhaustive: never = patch;
-      void exhaustive;
-      return { ok: false, reason: 'unsupported_kind', message: 'unknown patch kind' };
+      return {
+        ok: false,
+        reason: 'unsupported_kind',
+        message: `unknown patch kind: ${JSON.stringify(exhaustive)}`,
+      };
     }
   }
 }

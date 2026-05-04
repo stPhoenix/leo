@@ -87,7 +87,7 @@ import { ChatMessageStore } from '@/chat/messageStore';
 import { DEFAULT_THREAD_ID, type ConversationStore } from '@/storage/conversationStore';
 import { createObsidianVaultAdapter } from '@/storage/vaultAdapter';
 import type { StoredMessage } from '@/storage/conversationSchema';
-import type { ChatMessageRecord } from '@/chat/types';
+import type { BannerKind, ChatMessageRecord } from '@/chat/types';
 import { recordsToAnalyzerInputs } from '@/chat/contextBridge';
 import { wireIndexerRag, type AppLike, type IndexerRagWiring } from '@/indexer/wireIndexerRag';
 import { bootstrapWiki } from '@/agent/wiki/bootstrap';
@@ -347,7 +347,7 @@ export default class LeoPlugin extends Plugin {
   private providerStatusEl: HTMLElement | null = null;
   private connectionUnsub: (() => void) | null = null;
   private indexerStatusEl: HTMLElement | null = null;
-  private autocompactTracking = createTrackingState();
+  private readonly autocompactTracking = createTrackingState();
   private readonly inlineProviderKeys: Record<string, string> = {};
   private readonly inlineTavilyKey: { value: string } = { value: '' };
 
@@ -512,7 +512,7 @@ export default class LeoPlugin extends Plugin {
         resolveSearchWebApiKey: (config) =>
           resolveInlineSearchWebKey(config, this.inlineTavilyKey.value),
         beginTurn: ({ sessionId, runId }) => {
-          if (tracerRef === undefined || !tracerRef.isEnabled()) return null;
+          if (tracerRef?.isEnabled() !== true) return null;
           const handle = tracerRef.beginTurn({
             sessionId,
             metadata: { runId, agentId: 'inline-agent' },
@@ -1196,7 +1196,7 @@ export default class LeoPlugin extends Plugin {
           ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
         });
         if (hits.length > 0) return { hits: hits as readonly SearchVaultHit[] };
-        if (this.indexStatus !== null && this.indexStatus.hasIndex()) {
+        if (this.indexStatus?.hasIndex() === true) {
           return { hits: [] };
         }
         const fallback = await filenameMatch(vaultAdapter, text, opts?.signal);
@@ -1663,7 +1663,11 @@ export default class LeoPlugin extends Plugin {
     });
   }
 
-  override async onunload(): Promise<void> {
+  override onunload(): void {
+    void this.shutdown();
+  }
+
+  private async shutdown(): Promise<void> {
     this.logger?.info('plugin.unload', {});
     // Reload-flush: write a final snapshot per non-terminal in-flight subgraph
     // so the widget rehydrates as ERROR{code:'reload'} on next thread open.
@@ -1894,18 +1898,29 @@ export default class LeoPlugin extends Plugin {
   }
 }
 
+function extractContentText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((c) => {
+      if (typeof c === 'string') return c;
+      if (c !== null && typeof c === 'object' && 'text' in c) return (c as { text: string }).text;
+      return '';
+    })
+    .join('');
+}
+
+function resolveBannerKind(kind: string): BannerKind {
+  if (kind === 'error' || kind === 'info' || kind === 'compact') return kind;
+  return 'cancelled';
+}
+
 function storedToRecords(messages: readonly StoredMessage[]): ChatMessageRecord[] {
   const out: ChatMessageRecord[] = [];
   for (const m of messages) {
     if (m.role === 'tool') continue;
-    const role =
-      m.role === 'banner'
-        ? 'banner'
-        : m.role === 'widget'
-          ? 'widget'
-          : m.role === 'assistant'
-            ? 'assistant'
-            : 'user';
+    const role: ChatMessageRecord['role'] =
+      m.role === 'banner' || m.role === 'widget' || m.role === 'assistant' ? m.role : 'user';
     const status = isAssistantStatus(m.status) ? m.status : undefined;
     const record: ChatMessageRecord = {
       id: m.id,
@@ -1925,14 +1940,7 @@ function storedToRecords(messages: readonly StoredMessage[]): ChatMessageRecord[
       ...(m.banner !== undefined
         ? {
             banner: {
-              kind:
-                m.banner.kind === 'error'
-                  ? 'error'
-                  : m.banner.kind === 'info'
-                    ? 'info'
-                    : m.banner.kind === 'compact'
-                      ? 'compact'
-                      : 'cancelled',
+              kind: resolveBannerKind(m.banner.kind),
               ...(m.banner.toolCount !== undefined ? { toolCount: m.banner.toolCount } : {}),
               ...(m.banner.message !== undefined ? { message: m.banner.message } : {}),
             },
@@ -2019,7 +2027,7 @@ function resolveElectronSafeStorage(): SafeStorageLike | null {
     const w = globalThis as { require?: (id: string) => unknown };
     if (typeof w.require !== 'function') return null;
     const mod = w.require('electron') as { safeStorage?: SafeStorageLike } | null;
-    if (mod === null || mod.safeStorage === undefined) return null;
+    if (mod?.safeStorage === undefined) return null;
     return mod.safeStorage;
   } catch {
     return null;
@@ -2200,14 +2208,7 @@ function bindInlineChatModelAdapter(
       if (traceConfig?.metadata !== undefined) invokeOpts.metadata = traceConfig.metadata;
       if (traceConfig?.tags !== undefined) invokeOpts.tags = traceConfig.tags;
       const result = (await callable.invoke(lcMessages, invokeOpts)) as AIMessage;
-      const text =
-        typeof result.content === 'string'
-          ? result.content
-          : Array.isArray(result.content)
-            ? result.content
-                .map((c) => (typeof c === 'string' ? c : 'text' in c ? c.text : ''))
-                .join('')
-            : '';
+      const text = extractContentText(result.content);
       const rawCalls =
         (
           result as unknown as {

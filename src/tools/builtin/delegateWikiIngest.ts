@@ -333,7 +333,7 @@ async function expandVaultPathSources(
   args: { readonly path: string; readonly note?: string },
 ): Promise<ExpandResult> {
   const stat = await vault.stat(args.path);
-  if (stat === null || stat.kind !== 'folder') {
+  if (stat?.kind !== 'folder') {
     return {
       ok: true,
       sources: [
@@ -354,7 +354,7 @@ async function expandVaultPathSources(
       error: `vault path ${args.path} is a folder containing no .md files`,
     };
   }
-  files.sort();
+  files.sort((a, b) => a.localeCompare(b));
   const sources: IngestSource[] = files.map((p) => ({
     kind: 'vaultPath',
     path: p,

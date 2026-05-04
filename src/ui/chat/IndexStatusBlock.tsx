@@ -80,7 +80,7 @@ function reduce(state: IndexProgressSnapshot, event: DrainEvent): IndexProgressS
           ? { path: event.path, message: event.message }
           : { message: event.message };
       const last = state.errors[state.errors.length - 1];
-      if (last !== undefined && last.message === entry.message && last.path === entry.path) {
+      if (last?.message === entry.message && last.path === entry.path) {
         return state;
       }
       return { ...state, errors: [...state.errors, entry] };
@@ -147,10 +147,18 @@ export function IndexStatusBlock(props: IndexStatusBlockProps): JSX.Element | nu
   }, [progress.indexed, progress.total]);
 
   if (variant === null) return null;
+  const VARIANT_TO_TONE: Record<IndexBlockVariant, string> = {
+    errors: 'error',
+    complete: 'success',
+    indexing: 'progress',
+    'not-indexed': 'info',
+    dirty: 'info',
+  };
+  const tone = VARIANT_TO_TONE[variant];
 
   return (
     <aside
-      className={`leo-info-block leo-info-block-${variant === 'errors' ? 'error' : variant === 'complete' ? 'success' : variant === 'indexing' ? 'progress' : 'info'} leo-index-status-block`}
+      className={`leo-info-block leo-info-block-${tone} leo-index-status-block`}
       role="status"
       aria-live="polite"
       data-region="index-status-block"
@@ -238,6 +246,7 @@ function Body(props: BodyProps): JSX.Element {
         </div>
         <div
           className="leo-info-block-progress"
+          // NOSONAR S6819 — custom-styled bar with inner fill; native <progress> can't be styled consistently across Electron
           role="progressbar"
           aria-valuenow={props.pct}
           aria-valuemin={0}

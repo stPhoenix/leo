@@ -308,6 +308,322 @@ function buildLintGraph(b: NodeBindings) {
     return { decision };
   };
 
+  const PAGE_BOUND_CONCERNS: ReadonlySet<string> = new Set([
+    'contradiction',
+    'stale',
+    'missing-page',
+    'missing-xref',
+    'orphan-page',
+  ]);
+
+  interface WriteAccum {
+    readonly editedPaths: Set<string>;
+    findingsApplied: number;
+    findingsFailed: number;
+    pageBoundProposed: number;
+    derivedApplySchema: boolean;
+  }
+
+  type FindingOutcome = 'aborted' | 'continue';
+
+  const reportFindingProgress = (accum: WriteAccum): void => {
+    controller.update({
+      pagesEdited: accum.editedPaths.size,
+      findingsApplied: accum.findingsApplied,
+      findingsFailed: accum.findingsFailed,
+    });
+  };
+
+  const failFinding = (
+    finding: LintFinding,
+    reason: string,
+    accum: WriteAccum,
+    logFields: Record<string, unknown> = {},
+  ): void => {
+    controller.setFindingPatchStatus(finding.id, 'failed', reason);
+    deps.logger?.warn(WIKI_LOG.lint.write.findingFailed, { findingId: finding.id, ...logFields });
+    accum.findingsFailed += 1;
+    reportFindingProgress(accum);
+  };
+
+  const applyOrphanPage = async (
+    finding: LintFinding,
+    note: string | undefined,
+    state: LintGraphStateT,
+    lintBudgets: WikiBudgets,
+    signal: AbortSignal,
+    accum: WriteAccum,
+  ): Promise<FindingOutcome> => {
+    controller.setFindingPatchStatus(finding.id, 'proposing');
+    let orphanBody: string | null = null;
+    if (finding.page !== null) {
+      try {
+        if (await deps.vault.exists(finding.page)) {
+          orphanBody = await deps.vault.read(finding.page);
+        }
+      } catch {
+        orphanBody = null;
+      }
+    }
+    const linkResult = await tryProposeOrphanPageLink(
+      { finding, scan: state.scan!, orphanBody, ...(note !== undefined ? { note } : {}) },
+      {
+        invoke: deps.llm,
+        ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+        budgets: lintBudgets,
+      },
+      signal,
+    );
+    if (!linkResult.ok) {
+      if (linkResult.reason === 'aborted') return 'aborted';
+      const isSkip = linkResult.reason === 'no_candidates';
+      controller.setFindingPatchStatus(
+        finding.id,
+        isSkip ? 'skipped' : 'failed',
+        linkResult.message ?? linkResult.reason,
+      );
+      if (isSkip) {
+        deps.logger?.debug(WIKI_LOG.lint.write.findingSkipped, {
+          findingId: finding.id,
+          reason: linkResult.reason,
+        });
+      } else {
+        accum.findingsFailed += 1;
+        deps.logger?.warn(WIKI_LOG.lint.write.findingFailed, {
+          findingId: finding.id,
+          reason: linkResult.reason,
+        });
+      }
+      reportFindingProgress(accum);
+      return 'continue';
+    }
+
+    controller.setFindingPatchStatus(finding.id, 'applying');
+    const target = linkResult.proposal.targetPage;
+    let targetBody: string;
+    try {
+      targetBody = await deps.vault.read(target);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failFinding(finding, `read_failed: ${message}`, accum);
+      return 'continue';
+    }
+    const section = linkResult.proposal.section ?? 'See also';
+    let applyResult = applyMarkdownPatch({
+      currentBody: targetBody,
+      patch: { kind: 'append', section, body: linkResult.proposal.linkText },
+    });
+    if (!applyResult.ok && applyResult.reason === 'section_not_found') {
+      applyResult = applyMarkdownPatch({
+        currentBody: targetBody,
+        patch: {
+          kind: 'append',
+          section: null,
+          body: `## ${section}\n\n${linkResult.proposal.linkText}`,
+        },
+      });
+    }
+    if (!applyResult.ok) {
+      failFinding(finding, applyResult.message, accum);
+      return 'continue';
+    }
+    try {
+      await deps.vault.write(target, applyResult.nextBody);
+      accum.editedPaths.add(target);
+      accum.findingsApplied += 1;
+      controller.setFindingPatchStatus(finding.id, 'applied');
+      deps.logger?.debug(WIKI_LOG.lint.write.findingApplied, {
+        findingId: finding.id,
+        path: target,
+        from: 'orphan-link',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      controller.setFindingPatchStatus(finding.id, 'failed', `write_failed: ${message}`);
+      accum.findingsFailed += 1;
+    }
+    reportFindingProgress(accum);
+    return 'continue';
+  };
+
+  const loadPageBody = async (
+    finding: LintFinding,
+    accum: WriteAccum,
+  ): Promise<{ body: string } | { failed: true }> => {
+    if (finding.page === null) return { failed: true };
+    try {
+      if (!(await deps.vault.exists(finding.page))) {
+        controller.setFindingPatchStatus(finding.id, 'failed', 'page not found');
+        accum.findingsFailed += 1;
+        reportFindingProgress(accum);
+        return { failed: true };
+      }
+      const body = await deps.vault.read(finding.page);
+      return { body };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failFinding(finding, `read_failed: ${message}`, accum, { error: message });
+      return { failed: true };
+    }
+  };
+
+  const writeOrphanRawSummary = async (
+    finding: LintFinding,
+    patch: Parameters<typeof applyMarkdownPatch>[0]['patch'],
+    accum: WriteAccum,
+  ): Promise<void> => {
+    if (finding.rawPath === null) return;
+    const result = await writeSourceSummaryFromPatch(finding.rawPath, patch, {
+      vault: deps.vault,
+      ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+      ...(deps.now !== undefined ? { now: deps.now } : {}),
+    });
+    if (!result.ok) {
+      controller.setFindingPatchStatus(finding.id, 'failed', result.message);
+      accum.findingsFailed += 1;
+    } else {
+      accum.editedPaths.add(result.path);
+      accum.findingsApplied += 1;
+      controller.setFindingPatchStatus(finding.id, 'applied');
+      deps.logger?.debug(WIKI_LOG.lint.write.findingApplied, {
+        findingId: finding.id,
+        path: result.path,
+      });
+    }
+    reportFindingProgress(accum);
+  };
+
+  const writePageBoundPatch = async (
+    finding: LintFinding,
+    pageBody: string,
+    patch: Parameters<typeof applyMarkdownPatch>[0]['patch'],
+    accum: WriteAccum,
+  ): Promise<void> => {
+    const applyResult = applyMarkdownPatch({ currentBody: pageBody, patch });
+    if (!applyResult.ok) {
+      failFinding(finding, applyResult.message, accum, { reason: applyResult.reason });
+      return;
+    }
+    if (!applyResult.changed) {
+      controller.setFindingPatchStatus(finding.id, 'applied');
+      accum.findingsApplied += 1;
+      deps.logger?.debug(WIKI_LOG.lint.write.findingApplied, {
+        findingId: finding.id,
+        path: finding.page,
+        noop: true,
+      });
+      reportFindingProgress(accum);
+      return;
+    }
+    try {
+      await deps.vault.write(finding.page!, applyResult.nextBody);
+      accum.editedPaths.add(finding.page!);
+      accum.findingsApplied += 1;
+      controller.setFindingPatchStatus(finding.id, 'applied');
+      deps.logger?.debug(WIKI_LOG.lint.write.findingApplied, {
+        findingId: finding.id,
+        path: finding.page,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failFinding(finding, `write_failed: ${message}`, accum, { error: message });
+    }
+    reportFindingProgress(accum);
+  };
+
+  const applyNonOrphanPage = async (
+    finding: LintFinding,
+    note: string | undefined,
+    state: LintGraphStateT,
+    lintBudgets: WikiBudgets,
+    signal: AbortSignal,
+    accum: WriteAccum,
+  ): Promise<FindingOutcome> => {
+    controller.setFindingPatchStatus(finding.id, 'proposing');
+
+    let pageBody: string | null = null;
+    if (finding.concern !== 'orphan-raw' && finding.page !== null) {
+      const loaded = await loadPageBody(finding, accum);
+      if ('failed' in loaded) return 'continue';
+      pageBody = loaded.body;
+    }
+    accum.pageBoundProposed += 1;
+
+    const proposeResult = await tryProposeFindingPatch(
+      {
+        finding,
+        scan: state.scan!,
+        pageBody,
+        ...(note !== undefined ? { note } : {}),
+      },
+      {
+        invoke: deps.llm,
+        ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+        budgets: lintBudgets,
+      },
+      signal,
+    );
+    if (!proposeResult.ok) {
+      if (proposeResult.reason === 'aborted') return 'aborted';
+      if (proposeResult.reason === 'skipped') {
+        controller.setFindingPatchStatus(finding.id, 'skipped', proposeResult.message);
+        deps.logger?.debug(WIKI_LOG.lint.write.findingSkipped, {
+          findingId: finding.id,
+          reason: proposeResult.reason,
+        });
+        return 'continue';
+      }
+      failFinding(finding, proposeResult.message ?? proposeResult.reason, accum);
+      return 'continue';
+    }
+
+    controller.setFindingPatchStatus(finding.id, 'applying');
+
+    if (finding.concern === 'orphan-raw' && finding.rawPath !== null) {
+      await writeOrphanRawSummary(finding, proposeResult.patch, accum);
+      return 'continue';
+    }
+
+    await writePageBoundPatch(finding, pageBody!, proposeResult.patch, accum);
+    return 'continue';
+  };
+
+  const validatePageBoundPath = (
+    finding: LintFinding,
+    validPagePaths: ReadonlySet<string>,
+    accum: WriteAccum,
+  ): boolean => {
+    if (!PAGE_BOUND_CONCERNS.has(finding.concern)) return true;
+    if (finding.page !== null && validPagePaths.has(finding.page)) return true;
+    failFinding(finding, `invalid_page: "${finding.page ?? '(null)'}" is not a wiki page`, accum, {
+      reason: 'invalid_page',
+      page: finding.page,
+    });
+    return false;
+  };
+
+  const processOneFinding = async (
+    finding: LintFinding,
+    state: LintGraphStateT,
+    noteById: ReadonlyMap<string, string>,
+    validPagePaths: ReadonlySet<string>,
+    lintBudgets: WikiBudgets,
+    signal: AbortSignal,
+    accum: WriteAccum,
+  ): Promise<FindingOutcome> => {
+    if (finding.concern === 'schema-drift') {
+      accum.derivedApplySchema = true;
+      controller.setFindingPatchStatus(finding.id, 'skipped');
+      return 'continue';
+    }
+    if (!validatePageBoundPath(finding, validPagePaths, accum)) return 'continue';
+    const note = noteById.get(finding.id) ?? finding.note;
+    if (finding.concern === 'orphan-page') {
+      return applyOrphanPage(finding, note, state, lintBudgets, signal, accum);
+    }
+    return applyNonOrphanPage(finding, note, state, lintBudgets, signal, accum);
+  };
+
   const writingNode = async (
     state: LintGraphStateT,
     config: LangGraphRunnableConfig,
@@ -327,339 +643,41 @@ function buildLintGraph(b: NodeBindings) {
     const acceptedFindings = state.proposedFindings.filter((f) => decision.accepted.includes(f.id));
     const noteById = new Map<string, string>((decision.notes ?? []).map((n) => [n.id, n.note]));
     const validPagePaths = new Set<string>(state.scan!.pages.map((p) => p.path));
-    const editedPaths = new Set<string>();
-    let findingsApplied = 0;
-    let findingsFailed = 0;
+    const accum: WriteAccum = {
+      editedPaths: new Set<string>(),
+      findingsApplied: 0,
+      findingsFailed: 0,
+      pageBoundProposed: 0,
+      derivedApplySchema: decision.applySchema,
+    };
 
     for (const f of acceptedFindings) {
       controller.setFindingPatchStatus(f.id, 'pending');
     }
 
-    let derivedApplySchema = decision.applySchema;
-    let pageBoundProposed = 0;
-
-    const PAGE_BOUND_CONCERNS: ReadonlySet<(typeof acceptedFindings)[number]['concern']> = new Set([
-      'contradiction',
-      'stale',
-      'missing-page',
-      'missing-xref',
-      'orphan-page',
-    ]);
-
     for (const finding of acceptedFindings) {
       if (signal.aborted) break;
-      if (finding.concern === 'schema-drift') {
-        derivedApplySchema = true;
-        controller.setFindingPatchStatus(finding.id, 'skipped');
-        continue;
-      }
-
-      // Page-bound findings must name an existing wiki/pages/* file. LLM
-      // checkers occasionally hallucinate paths (e.g. bare "SCHEMA.md"); reject
-      // those upfront with a clear reason instead of letting the sandbox
-      // surface an opaque "outside wiki sandbox" error mid-write.
-      if (PAGE_BOUND_CONCERNS.has(finding.concern)) {
-        if (finding.page === null || !validPagePaths.has(finding.page)) {
-          controller.setFindingPatchStatus(
-            finding.id,
-            'failed',
-            `invalid_page: "${finding.page ?? '(null)'}" is not a wiki page`,
-          );
-          deps.logger?.warn(WIKI_LOG.lint.write.findingFailed, {
-            findingId: finding.id,
-            reason: 'invalid_page',
-            page: finding.page,
-          });
-          findingsFailed += 1;
-          controller.update({
-            pagesEdited: editedPaths.size,
-            findingsApplied,
-            findingsFailed,
-          });
-          continue;
-        }
-      }
-
-      const note = noteById.get(finding.id) ?? finding.note;
-
-      if (finding.concern === 'orphan-page') {
-        controller.setFindingPatchStatus(finding.id, 'proposing');
-        let orphanBody: string | null = null;
-        if (finding.page !== null) {
-          try {
-            if (await deps.vault.exists(finding.page)) {
-              orphanBody = await deps.vault.read(finding.page);
-            }
-          } catch {
-            orphanBody = null;
-          }
-        }
-        const linkResult = await tryProposeOrphanPageLink(
-          { finding, scan: state.scan!, orphanBody, ...(note !== undefined ? { note } : {}) },
-          {
-            invoke: deps.llm,
-            ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-            budgets: lintBudgets,
-          },
-          signal,
-        );
-        if (!linkResult.ok) {
-          if (linkResult.reason === 'aborted') break;
-          const isSkip = linkResult.reason === 'no_candidates';
-          controller.setFindingPatchStatus(
-            finding.id,
-            isSkip ? 'skipped' : 'failed',
-            linkResult.message ?? linkResult.reason,
-          );
-          if (isSkip) {
-            deps.logger?.debug(WIKI_LOG.lint.write.findingSkipped, {
-              findingId: finding.id,
-              reason: linkResult.reason,
-            });
-          } else {
-            findingsFailed += 1;
-            deps.logger?.warn(WIKI_LOG.lint.write.findingFailed, {
-              findingId: finding.id,
-              reason: linkResult.reason,
-            });
-          }
-          controller.update({
-            pagesEdited: editedPaths.size,
-            findingsApplied,
-            findingsFailed,
-          });
-          continue;
-        }
-
-        controller.setFindingPatchStatus(finding.id, 'applying');
-        const target = linkResult.proposal.targetPage;
-        let targetBody: string;
-        try {
-          targetBody = await deps.vault.read(target);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          controller.setFindingPatchStatus(finding.id, 'failed', `read_failed: ${message}`);
-          findingsFailed += 1;
-          controller.update({
-            pagesEdited: editedPaths.size,
-            findingsApplied,
-            findingsFailed,
-          });
-          continue;
-        }
-        const section = linkResult.proposal.section ?? 'See also';
-        let applyResult = applyMarkdownPatch({
-          currentBody: targetBody,
-          patch: { kind: 'append', section, body: linkResult.proposal.linkText },
-        });
-        if (!applyResult.ok && applyResult.reason === 'section_not_found') {
-          applyResult = applyMarkdownPatch({
-            currentBody: targetBody,
-            patch: {
-              kind: 'append',
-              section: null,
-              body: `## ${section}\n\n${linkResult.proposal.linkText}`,
-            },
-          });
-        }
-        if (!applyResult.ok) {
-          controller.setFindingPatchStatus(finding.id, 'failed', applyResult.message);
-          findingsFailed += 1;
-          controller.update({
-            pagesEdited: editedPaths.size,
-            findingsApplied,
-            findingsFailed,
-          });
-          continue;
-        }
-        try {
-          await deps.vault.write(target, applyResult.nextBody);
-          editedPaths.add(target);
-          findingsApplied += 1;
-          controller.setFindingPatchStatus(finding.id, 'applied');
-          deps.logger?.debug(WIKI_LOG.lint.write.findingApplied, {
-            findingId: finding.id,
-            path: target,
-            from: 'orphan-link',
-          });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          controller.setFindingPatchStatus(finding.id, 'failed', `write_failed: ${message}`);
-          findingsFailed += 1;
-        }
-        controller.update({
-          pagesEdited: editedPaths.size,
-          findingsApplied,
-          findingsFailed,
-        });
-        continue;
-      }
-
-      controller.setFindingPatchStatus(finding.id, 'proposing');
-
-      let pageBody: string | null = null;
-      if (finding.concern !== 'orphan-raw' && finding.page !== null) {
-        try {
-          if (await deps.vault.exists(finding.page)) {
-            pageBody = await deps.vault.read(finding.page);
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          controller.setFindingPatchStatus(finding.id, 'failed', `read_failed: ${message}`);
-          deps.logger?.warn(WIKI_LOG.lint.write.findingFailed, {
-            findingId: finding.id,
-            error: message,
-          });
-          findingsFailed += 1;
-          controller.update({
-            pagesEdited: editedPaths.size,
-            findingsApplied,
-            findingsFailed,
-          });
-          continue;
-        }
-        if (pageBody === null) {
-          controller.setFindingPatchStatus(finding.id, 'failed', 'page not found');
-          findingsFailed += 1;
-          controller.update({
-            pagesEdited: editedPaths.size,
-            findingsApplied,
-            findingsFailed,
-          });
-          continue;
-        }
-      }
-      pageBoundProposed += 1;
-
-      const proposeResult = await tryProposeFindingPatch(
-        {
-          finding,
-          scan: state.scan!,
-          pageBody,
-          ...(note !== undefined ? { note } : {}),
-        },
-        {
-          invoke: deps.llm,
-          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-          budgets: lintBudgets,
-        },
+      const outcome = await processOneFinding(
+        finding,
+        state,
+        noteById,
+        validPagePaths,
+        lintBudgets,
         signal,
+        accum,
       );
-      if (!proposeResult.ok) {
-        if (proposeResult.reason === 'aborted') break;
-        if (proposeResult.reason === 'skipped') {
-          controller.setFindingPatchStatus(finding.id, 'skipped', proposeResult.message);
-          deps.logger?.debug(WIKI_LOG.lint.write.findingSkipped, {
-            findingId: finding.id,
-            reason: proposeResult.reason,
-          });
-          continue;
-        }
-        controller.setFindingPatchStatus(
-          finding.id,
-          'failed',
-          proposeResult.message ?? proposeResult.reason,
-        );
-        findingsFailed += 1;
-        controller.update({
-          pagesEdited: editedPaths.size,
-          findingsApplied,
-          findingsFailed,
-        });
-        continue;
-      }
-
-      controller.setFindingPatchStatus(finding.id, 'applying');
-
-      if (finding.concern === 'orphan-raw' && finding.rawPath !== null) {
-        const result = await writeSourceSummaryFromPatch(finding.rawPath, proposeResult.patch, {
-          vault: deps.vault,
-          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-          ...(deps.now !== undefined ? { now: deps.now } : {}),
-        });
-        if (!result.ok) {
-          controller.setFindingPatchStatus(finding.id, 'failed', result.message);
-          findingsFailed += 1;
-        } else {
-          editedPaths.add(result.path);
-          findingsApplied += 1;
-          controller.setFindingPatchStatus(finding.id, 'applied');
-          deps.logger?.debug(WIKI_LOG.lint.write.findingApplied, {
-            findingId: finding.id,
-            path: result.path,
-          });
-        }
-        controller.update({
-          pagesEdited: editedPaths.size,
-          findingsApplied,
-          findingsFailed,
-        });
-        continue;
-      }
-
-      // Page-bound branch.
-      const applyResult = applyMarkdownPatch({
-        currentBody: pageBody!,
-        patch: proposeResult.patch,
-      });
-      if (!applyResult.ok) {
-        controller.setFindingPatchStatus(finding.id, 'failed', applyResult.message);
-        deps.logger?.warn(WIKI_LOG.lint.write.findingFailed, {
-          findingId: finding.id,
-          reason: applyResult.reason,
-        });
-        findingsFailed += 1;
-        controller.update({
-          pagesEdited: editedPaths.size,
-          findingsApplied,
-          findingsFailed,
-        });
-        continue;
-      }
-      if (!applyResult.changed) {
-        controller.setFindingPatchStatus(finding.id, 'applied');
-        findingsApplied += 1;
-        deps.logger?.debug(WIKI_LOG.lint.write.findingApplied, {
-          findingId: finding.id,
-          path: finding.page,
-          noop: true,
-        });
-        controller.update({
-          pagesEdited: editedPaths.size,
-          findingsApplied,
-          findingsFailed,
-        });
-        continue;
-      }
-      try {
-        await deps.vault.write(finding.page!, applyResult.nextBody);
-        editedPaths.add(finding.page!);
-        findingsApplied += 1;
-        controller.setFindingPatchStatus(finding.id, 'applied');
-        deps.logger?.debug(WIKI_LOG.lint.write.findingApplied, {
-          findingId: finding.id,
-          path: finding.page,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        controller.setFindingPatchStatus(finding.id, 'failed', `write_failed: ${message}`);
-        deps.logger?.warn(WIKI_LOG.lint.write.findingFailed, {
-          findingId: finding.id,
-          error: message,
-        });
-        findingsFailed += 1;
-      }
-      controller.update({
-        pagesEdited: editedPaths.size,
-        findingsApplied,
-        findingsFailed,
-      });
+      if (outcome === 'aborted') break;
     }
 
-    void pageBoundProposed;
+    deps.logger?.debug(WIKI_LOG.lint.write.summary, {
+      runId,
+      pageBoundProposed: accum.pageBoundProposed,
+      findingsApplied: accum.findingsApplied,
+      findingsFailed: accum.findingsFailed,
+    });
 
     let schemaEdited = false;
-    if (derivedApplySchema && state.schemaPatch !== null && !signal.aborted) {
+    if (accum.derivedApplySchema && state.schemaPatch !== null && !signal.aborted) {
       try {
         await applySchemaPatch(deps.vault, state.schemaPatch);
         schemaEdited = true;
@@ -673,11 +691,11 @@ function buildLintGraph(b: NodeBindings) {
       }
     }
 
-    partial.pagesEdited = editedPaths.size;
-    partial.findingsApplied = findingsApplied;
-    partial.findingsFailed = findingsFailed;
+    partial.pagesEdited = accum.editedPaths.size;
+    partial.findingsApplied = accum.findingsApplied;
+    partial.findingsFailed = accum.findingsFailed;
 
-    return { pagesEdited: editedPaths.size, schemaEdited };
+    return { pagesEdited: accum.editedPaths.size, schemaEdited };
   };
 
   return new StateGraph(LintGraphState)
@@ -754,27 +772,71 @@ export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartR
         : {}),
     };
 
-    try {
-      let result = (await graph.invoke({ scope: input.scope }, config)) as Record<string, unknown>;
-      if (isInterrupted<LintConfirmInterrupt>(result)) {
-        if (ac.signal.aborted) return abortError();
-        const interrupts = result[INTERRUPT] as { value?: LintConfirmInterrupt }[];
-        const intr = interrupts[0];
-        const value = intr?.value;
-        if (value === undefined)
-          return errorTerminal('graph_no_interrupt_value', 'missing payload');
-        const decision = await deps.requestConfirmation(runId, value.findings, value.schemaPatch);
-        if (decision === null) {
-          ac.abort();
-          controller.setPhase('cancelled');
-          return abortError();
-        }
-        if (ac.signal.aborted) return abortError();
-        result = (await graph.invoke(new Command({ resume: decision }), config)) as Record<
-          string,
-          unknown
-        >;
+    const resolveInterrupt = async (
+      result: Record<string, unknown>,
+    ): Promise<
+      | { kind: 'state'; result: Record<string, unknown> }
+      | { kind: 'terminal'; result: LintTerminalResult }
+    > => {
+      if (!isInterrupted<LintConfirmInterrupt>(result)) return { kind: 'state', result };
+      if (ac.signal.aborted) return { kind: 'terminal', result: abortError() };
+      const interrupts = result[INTERRUPT] as { value?: LintConfirmInterrupt }[];
+      const intr = interrupts[0];
+      const value = intr?.value;
+      if (value === undefined) {
+        return {
+          kind: 'terminal',
+          result: errorTerminal('graph_no_interrupt_value', 'missing payload'),
+        };
       }
+      const decision = await deps.requestConfirmation(runId, value.findings, value.schemaPatch);
+      if (decision === null) {
+        ac.abort();
+        controller.setPhase('cancelled');
+        return { kind: 'terminal', result: abortError() };
+      }
+      if (ac.signal.aborted) return { kind: 'terminal', result: abortError() };
+      const next = (await graph.invoke(new Command({ resume: decision }), config)) as Record<
+        string,
+        unknown
+      >;
+      return { kind: 'state', result: next };
+    };
+
+    const buildDoneFindings = (
+      proposedFindings: readonly LintFinding[],
+      decisionFinal: LintConfirmDecision | null,
+    ) => {
+      const liveFindings = controller.currentFindings();
+      const liveById = new Map(liveFindings.map((f) => [f.id, f]));
+      return proposedFindings.map((f) => {
+        const live = liveById.get(f.id);
+        let accepted: boolean | null;
+        if (decisionFinal?.accepted.includes(f.id) === true) accepted = true;
+        else if (decisionFinal?.rejected.includes(f.id) === true) accepted = false;
+        else accepted = null;
+        return {
+          id: f.id,
+          page: f.page ?? f.rawPath ?? '',
+          action: f.concern,
+          severity: f.severity,
+          rationale: f.rationale,
+          accepted,
+          ...(live?.note !== undefined ? { note: live.note } : {}),
+          ...(live?.patchStatus !== undefined ? { patchStatus: live.patchStatus } : {}),
+          ...(live?.patchError !== undefined ? { patchError: live.patchError } : {}),
+        };
+      });
+    };
+
+    try {
+      const initial = (await graph.invoke({ scope: input.scope }, config)) as Record<
+        string,
+        unknown
+      >;
+      const resolved = await resolveInterrupt(initial);
+      if (resolved.kind === 'terminal') return resolved.result;
+      const result = resolved.result;
 
       if (ac.signal.aborted) {
         controller.setPhase('cancelled');
@@ -786,33 +848,12 @@ export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartR
       const pagesEdited = (result.pagesEdited ?? 0) as number;
       const schemaEdited = (result.schemaEdited ?? false) as boolean;
 
-      const liveFindings = controller.currentFindings();
-      const liveById = new Map(liveFindings.map((f) => [f.id, f]));
       const endedAt = (deps.now ?? ((): Date => new Date()))().getTime();
       controller.setPhase('done', {
         pagesEdited,
         findingsApplied: partial.findingsApplied,
         findingsFailed: partial.findingsFailed,
-        findings: proposedFindings.map((f) => {
-          const live = liveById.get(f.id);
-          const accepted =
-            decisionFinal !== null && decisionFinal.accepted.includes(f.id)
-              ? true
-              : decisionFinal !== null && decisionFinal.rejected.includes(f.id)
-                ? false
-                : null;
-          return {
-            id: f.id,
-            page: f.page ?? f.rawPath ?? '',
-            action: f.concern,
-            severity: f.severity,
-            rationale: f.rationale,
-            accepted,
-            ...(live?.note !== undefined ? { note: live.note } : {}),
-            ...(live?.patchStatus !== undefined ? { patchStatus: live.patchStatus } : {}),
-            ...(live?.patchError !== undefined ? { patchError: live.patchError } : {}),
-          };
-        }),
+        findings: buildDoneFindings(proposedFindings, decisionFinal),
       });
       return {
         ok: true,
@@ -894,12 +935,9 @@ async function applySchemaPatch(vault: VaultAdapter, patch: LintSchemaPatch): Pr
   let next: string;
   if (patch.patch.kind === 'replace_body') {
     next = patch.patch.body;
-  } else if (patch.patch.kind === 'append') {
-    next = current.endsWith('\n')
-      ? `${current}${patch.patch.body}\n`
-      : `${current}\n${patch.patch.body}\n`;
   } else {
-    // replace_section: best-effort — fall back to append if section not found.
+    // append + replace_section share the same best-effort body-append shape;
+    // replace_section falls back to append when the section is not found.
     next = current.endsWith('\n')
       ? `${current}${patch.patch.body}\n`
       : `${current}\n${patch.patch.body}\n`;

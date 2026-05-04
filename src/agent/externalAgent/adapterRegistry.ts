@@ -10,7 +10,7 @@ export interface AdapterRegistryOptions {
 }
 
 export class AdapterRegistry {
-  private adapters = new Map<string, ExternalAgentAdapter>();
+  private readonly adapters = new Map<string, ExternalAgentAdapter>();
   private frozen = false;
   private readonly defaultIdSource: () => string | null | undefined;
   private readonly enabledSource: () => AdapterEnabledMap;

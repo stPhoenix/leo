@@ -136,7 +136,7 @@ export function tokenCountWithEstimation(messages: readonly TokenMessage[]): num
 
 export function estimateTokens(messages: readonly TokenMessage[]): EstimateResult {
   const tail = messages[messages.length - 1];
-  if (tail !== undefined && tail.role === 'assistant' && tail.usage !== undefined) {
+  if (tail?.role === 'assistant' && tail.usage !== undefined) {
     const usageTotal = apiUsageTokens(messages);
     if (usageTotal !== null) return { total: usageTotal, tier: 'usage' };
   }

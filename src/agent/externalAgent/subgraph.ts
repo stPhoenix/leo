@@ -365,40 +365,110 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
   const runAdapterPhase = async (adapter: ExternalAgentAdapter): Promise<void> => {
     const startedAt = now();
     transitionTo('running', { startedAt, endedAt: null });
+    const ctx = setupAdapterAbort(state.timeoutMs);
+    const result = await streamAdapterEvents(adapter, ctx);
+    cleanupAdapterAbort(ctx);
 
-    const adapterAbort = new AbortController();
-    const timeoutMs = state.timeoutMs;
-    let timedOut = false;
-    let abortTimedOut = false;
-    const adapterRunStartedAt = now();
-    const timer =
-      timeoutMs > 0
-        ? setTimeout(() => {
-            timedOut = true;
-            deps.logger?.warn('externalAgent.subgraph.adapterAbort.fire', {
-              runId: state.runId,
-              source: 'timeout',
-              timeoutMs,
-              elapsedMs: now() - adapterRunStartedAt,
-            });
-            adapterAbort.abort();
-          }, timeoutMs)
-        : null;
-    const onCancel = (): void => {
-      deps.logger?.warn('externalAgent.subgraph.adapterAbort.fire', {
+    if (result.postDoneEventCount > 0) {
+      deps.logger?.warn('externalAgent.run.events-after-done', {
         runId: state.runId,
-        source: 'cancelController',
-        elapsedMs: now() - adapterRunStartedAt,
+        adapterId: adapter.id,
+        count: result.postDoneEventCount,
       });
-      adapterAbort.abort();
+    }
+
+    const finished = await finalizeAdapterRun(adapter, result, ctx);
+    if (finished) return;
+
+    const endedAt = now();
+    transitionTo('writing', { endedAt });
+    try {
+      const writeResult = await deps.writer.write({ state, status: 'done' });
+      if (!writeResult.ok) {
+        transitionTo('error', {
+          error: { code: 'write_failed', message: 'ResultWriter reported failure' },
+          resultFolder: writeResult.folder,
+          writtenFiles: writeResult.writtenFiles,
+          endedAt: state.endedAt ?? now(),
+        });
+        return;
+      }
+      transitionTo('done', {
+        resultFolder: writeResult.folder,
+        writtenFiles: writeResult.writtenFiles,
+        endedAt: state.endedAt ?? now(),
+      });
+    } catch (err) {
+      await finishWithError('write_failed', err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  interface AdapterAbortCtx {
+    readonly adapterAbort: AbortController;
+    readonly timeoutMs: number;
+    readonly timer: ReturnType<typeof setTimeout> | null;
+    readonly onCancel: () => void;
+    readonly adapterRunStartedAt: number;
+    timedOut: boolean;
+  }
+
+  function setupAdapterAbort(timeoutMs: number): AdapterAbortCtx {
+    const adapterAbort = new AbortController();
+    const adapterRunStartedAt = now();
+    const ctx: AdapterAbortCtx = {
+      adapterAbort,
+      timeoutMs,
+      timer: null,
+      adapterRunStartedAt,
+      timedOut: false,
+      onCancel: () => {
+        deps.logger?.warn('externalAgent.subgraph.adapterAbort.fire', {
+          runId: state.runId,
+          source: 'cancelController',
+          elapsedMs: now() - adapterRunStartedAt,
+        });
+        adapterAbort.abort();
+      },
     };
-    cancelController.signal.addEventListener('abort', onCancel, { once: true });
+    if (timeoutMs > 0) {
+      (ctx as { timer: ReturnType<typeof setTimeout> | null }).timer = setTimeout(() => {
+        ctx.timedOut = true;
+        deps.logger?.warn('externalAgent.subgraph.adapterAbort.fire', {
+          runId: state.runId,
+          source: 'timeout',
+          timeoutMs,
+          elapsedMs: now() - adapterRunStartedAt,
+        });
+        adapterAbort.abort();
+      }, timeoutMs);
+    }
+    cancelController.signal.addEventListener('abort', ctx.onCancel, { once: true });
+    return ctx;
+  }
 
-    let adapterError: { code: string; message: string } | null = null;
-    let adapterDone = false;
-    let postDoneEventCount = 0;
+  function cleanupAdapterAbort(ctx: AdapterAbortCtx): void {
+    if (ctx.timer !== null) clearTimeout(ctx.timer);
+    cancelController.signal.removeEventListener('abort', ctx.onCancel);
+  }
+
+  interface AdapterStreamResult {
+    adapterError: { code: string; message: string } | null;
+    adapterDone: boolean;
+    abortTimedOut: boolean;
+    postDoneEventCount: number;
+  }
+
+  async function streamAdapterEvents(
+    adapter: ExternalAgentAdapter,
+    ctx: AdapterAbortCtx,
+  ): Promise<AdapterStreamResult> {
+    const out: AdapterStreamResult = {
+      adapterError: null,
+      adapterDone: false,
+      abortTimedOut: false,
+      postDoneEventCount: 0,
+    };
     let iterator: AsyncIterator<ExternalEvent> | null = null;
-
     try {
       const cfg =
         resolvedConfig !== undefined ? await Promise.resolve(resolvedConfig) : pickConfig(adapter);
@@ -406,68 +476,20 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
         adapter,
         refinedAsk: state.refinedPrompt ?? state.originalAsk,
         systemPrompt: deps.systemPrompt,
-        signal: adapterAbort.signal,
-        timeoutMs,
+        signal: ctx.adapterAbort.signal,
+        timeoutMs: ctx.timeoutMs,
         config: cfg,
         runId: state.runId,
         threadId: state.threadId,
       });
       iterator = stream[Symbol.asyncIterator]();
-      const graceMs = deps.abortGraceMs ?? 2_000;
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const nextStep = iterator.next();
-        let step: IteratorResult<ExternalEvent>;
-        // Always race against an abort observer so a hanging next() can be
-        // surfaced as `abort_timeout` once cancel/timeout fires.
-        const abortObserver = waitForAbort(adapterAbort.signal);
-        const winner = await Promise.race([
-          nextStep.then((s) => ({ kind: 'next' as const, step: s })),
-          abortObserver.promise.then(() => ({ kind: 'aborted' as const })),
-        ]);
-        abortObserver.cancel();
-        if (winner.kind === 'aborted') {
-          // Adapter still hasn't yielded after abort; give it a grace window.
-          const grace = abortTimeout(graceMs);
-          const after = await Promise.race([
-            nextStep.then((s) => ({ kind: 'next' as const, step: s })),
-            grace.promise.then(() => ({ kind: 'abort_timeout' as const })),
-          ]);
-          grace.cancel();
-          if (after.kind === 'abort_timeout') {
-            abortTimedOut = true;
-            break;
-          }
-          step = after.step;
-        } else {
-          step = winner.step;
-        }
-        if (step.done === true) break;
-        const event = step.value;
-        if (adapterDone) {
-          postDoneEventCount += 1;
-          continue;
-        }
-        setState(applyExternalEvent(state, event, { ts: now }));
-        if (event.type === 'error') {
-          adapterError = event.error;
-          break;
-        }
-        if (event.type === 'done') {
-          adapterDone = true;
-          // Continue draining briefly in case the adapter emits a tiny tail
-          // (we don't transition until iterator closes or aborts).
-          break;
-        }
-      }
+      await drainAdapterIterator(iterator, ctx, out);
     } catch (err) {
-      adapterError = {
+      out.adapterError = {
         code: 'adapter_throw',
         message: err instanceof Error ? err.message : String(err),
       };
     } finally {
-      if (timer !== null) clearTimeout(timer);
-      cancelController.signal.removeEventListener('abort', onCancel);
       if (iterator !== null && typeof iterator.return === 'function') {
         try {
           await iterator.return();
@@ -476,61 +498,99 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
         }
       }
     }
+    return out;
+  }
 
-    if (postDoneEventCount > 0) {
-      deps.logger?.warn('externalAgent.run.events-after-done', {
-        runId: state.runId,
-        adapterId: adapter.id,
-        count: postDoneEventCount,
-      });
+  async function drainAdapterIterator(
+    iterator: AsyncIterator<ExternalEvent>,
+    ctx: AdapterAbortCtx,
+    out: AdapterStreamResult,
+  ): Promise<void> {
+    const graceMs = deps.abortGraceMs ?? 2_000;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const stepOutcome = await raceNextAgainstAbort(iterator, ctx, graceMs);
+      if (stepOutcome.kind === 'abort_timeout') {
+        out.abortTimedOut = true;
+        return;
+      }
+      if (stepOutcome.step.done === true) return;
+      const event = stepOutcome.step.value;
+      if (out.adapterDone) {
+        out.postDoneEventCount += 1;
+        continue;
+      }
+      setState(applyExternalEvent(state, event, { ts: now }));
+      if (event.type === 'error') {
+        out.adapterError = event.error;
+        return;
+      }
+      if (event.type === 'done') {
+        out.adapterDone = true;
+        // Continue draining briefly in case the adapter emits a tiny tail
+        // (we don't transition until iterator closes or aborts).
+        return;
+      }
     }
+  }
 
-    if (abortTimedOut) {
+  // Always race against an abort observer so a hanging next() can be surfaced
+  // as `abort_timeout` once cancel/timeout fires.
+  async function raceNextAgainstAbort(
+    iterator: AsyncIterator<ExternalEvent>,
+    ctx: AdapterAbortCtx,
+    graceMs: number,
+  ): Promise<{ kind: 'step'; step: IteratorResult<ExternalEvent> } | { kind: 'abort_timeout' }> {
+    const nextStep = iterator.next();
+    const abortObserver = waitForAbort(ctx.adapterAbort.signal);
+    const winner = await Promise.race([
+      nextStep.then((s) => ({ kind: 'next' as const, step: s })),
+      abortObserver.promise.then(() => ({ kind: 'aborted' as const })),
+    ]);
+    abortObserver.cancel();
+    if (winner.kind === 'next') return { kind: 'step', step: winner.step };
+    // Adapter still hasn't yielded after abort; give it a grace window.
+    const grace = abortTimeout(graceMs);
+    const after = await Promise.race([
+      nextStep.then((s) => ({ kind: 'next' as const, step: s })),
+      grace.promise.then(() => ({ kind: 'abort_timeout' as const })),
+    ]);
+    grace.cancel();
+    if (after.kind === 'abort_timeout') return { kind: 'abort_timeout' };
+    return { kind: 'step', step: after.step };
+  }
+
+  // Returns true if a terminal phase was reached and caller should bail out.
+  async function finalizeAdapterRun(
+    adapter: ExternalAgentAdapter,
+    result: AdapterStreamResult,
+    ctx: AdapterAbortCtx,
+  ): Promise<boolean> {
+    if (result.abortTimedOut) {
       await finishWithError(
         'abort_timeout',
         `Adapter ${adapter.id} did not respect AbortSignal within grace window`,
       );
-      return;
+      return true;
     }
-    if (cancelController.signal.aborted && !timedOut) {
+    if (cancelController.signal.aborted && !ctx.timedOut) {
       finishCancelled('running');
-      return;
+      return true;
     }
-    if (timedOut) {
-      await finishWithError('timeout', `Adapter ${adapter.id} exceeded ${timeoutMs}ms`);
-      return;
+    if (ctx.timedOut) {
+      await finishWithError('timeout', `Adapter ${adapter.id} exceeded ${ctx.timeoutMs}ms`);
+      return true;
     }
-    if (adapterError !== null) {
-      await finishWithError(adapterError.code, adapterError.message);
-      return;
+    if (result.adapterError !== null) {
+      await finishWithError(result.adapterError.code, result.adapterError.message);
+      return true;
     }
-    if (!adapterDone) {
+    if (!result.adapterDone) {
       await finishWithError('adapter_no_done', `Adapter ${adapter.id} ended without 'done' event`);
-      return;
+      return true;
     }
-
-    const endedAt = now();
-    transitionTo('writing', { endedAt });
-    try {
-      const result = await deps.writer.write({ state, status: 'done' });
-      if (!result.ok) {
-        transitionTo('error', {
-          error: { code: 'write_failed', message: 'ResultWriter reported failure' },
-          resultFolder: result.folder,
-          writtenFiles: result.writtenFiles,
-          endedAt: state.endedAt ?? now(),
-        });
-        return;
-      }
-      transitionTo('done', {
-        resultFolder: result.folder,
-        writtenFiles: result.writtenFiles,
-        endedAt: state.endedAt ?? now(),
-      });
-    } catch (err) {
-      await finishWithError('write_failed', err instanceof Error ? err.message : String(err));
-    }
-  };
+    return false;
+  }
 
   const handle: RunHandle = {
     runId: input.runId,

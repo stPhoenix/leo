@@ -136,3 +136,4 @@ storybook-static/
 /data.json
 /autoresearch/
 /.ai/
+.sonarqube-reports/

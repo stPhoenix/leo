@@ -75,54 +75,9 @@ export function createGlobVaultTool(): ToolSpec<GlobVaultArgs, GlobVaultResult> 
         if (root.length > 0 && !(await ctx.vault.exists(root))) {
           return { ok: false, error: `folder not found: ${root}` };
         }
-        const matches: string[] = [];
-        const queue: string[] = [root];
-        let visited = 0;
-        let truncated = false;
-        const excludeMatcher = ctx.excludeMatcher;
-        while (queue.length > 0) {
-          if (ctx.signal.aborted) return { ok: false, error: 'aborted' };
-          if (visited >= MAX_ENTRIES) {
-            truncated = true;
-            break;
-          }
-          const cur = queue.shift() as string;
-          let listing;
-          try {
-            listing = await ctx.vault.list(cur);
-          } catch {
-            continue;
-          }
-          visited += 1;
-          for (const f of listing.files) {
-            if (hasHiddenSegment(f)) continue;
-            if (excludeMatcher !== undefined && excludeMatcher(f)) continue;
-            const rel = relativize(root, f);
-            if (!minimatch(rel, args.pattern, { dot: true, matchBase: false })) continue;
-            matches.push(f);
-            if (matches.length >= MAX_RESULTS) {
-              truncated = true;
-              break;
-            }
-          }
-          if (truncated) break;
-          for (const d of listing.folders) {
-            if (hasHiddenSegment(d)) continue;
-            queue.push(d);
-          }
-        }
-        const stats = await Promise.allSettled(matches.map((p) => ctx.vault.stat(p)));
-        const decorated: { path: string; mtime: number }[] = matches.map((p, i) => {
-          const result = stats[i];
-          const mtime =
-            result?.status === 'fulfilled' && result.value !== null ? result.value.mtimeMs : 0;
-          return { path: p, mtime };
-        });
-        decorated.sort((a, b) => {
-          if (b.mtime !== a.mtime) return b.mtime - a.mtime;
-          return a.path.localeCompare(b.path);
-        });
-        const filenames = decorated.map((d) => d.path);
+        const collected = await collectGlobMatches(args.pattern, root, ctx);
+        if (collected === 'aborted') return { ok: false, error: 'aborted' };
+        const filenames = await sortByMtimeDesc(collected.matches, ctx);
         return {
           ok: true,
           data: {
@@ -130,7 +85,7 @@ export function createGlobVaultTool(): ToolSpec<GlobVaultArgs, GlobVaultResult> 
             path: root,
             filenames,
             numFiles: filenames.length,
-            truncated,
+            truncated: collected.truncated,
             durationMs: Math.round(now() - start),
           },
         };
@@ -139,6 +94,86 @@ export function createGlobVaultTool(): ToolSpec<GlobVaultArgs, GlobVaultResult> 
       }
     },
   };
+}
+
+interface CollectedMatches {
+  readonly matches: readonly string[];
+  readonly truncated: boolean;
+}
+
+async function collectGlobMatches(
+  pattern: string,
+  root: string,
+  ctx: {
+    vault: { list(p: string): Promise<{ files: readonly string[]; folders: readonly string[] }> };
+    signal: AbortSignal;
+    excludeMatcher?: (p: string) => boolean;
+  },
+): Promise<CollectedMatches | 'aborted'> {
+  const matches: string[] = [];
+  const queue: string[] = [root];
+  let visited = 0;
+  let truncated = false;
+  while (queue.length > 0) {
+    if (ctx.signal.aborted) return 'aborted';
+    if (visited >= MAX_ENTRIES) {
+      truncated = true;
+      break;
+    }
+    const cur = queue.shift() as string;
+    let listing;
+    try {
+      listing = await ctx.vault.list(cur);
+    } catch {
+      continue;
+    }
+    visited += 1;
+    if (matchListingFiles(listing.files, pattern, root, ctx, matches)) {
+      truncated = true;
+      break;
+    }
+    for (const d of listing.folders) {
+      if (hasHiddenSegment(d)) continue;
+      queue.push(d);
+    }
+  }
+  return { matches, truncated };
+}
+
+function matchListingFiles(
+  files: readonly string[],
+  pattern: string,
+  root: string,
+  ctx: { excludeMatcher?: (p: string) => boolean },
+  matches: string[],
+): boolean {
+  for (const f of files) {
+    if (hasHiddenSegment(f)) continue;
+    if (ctx.excludeMatcher?.(f) === true) continue;
+    const rel = relativize(root, f);
+    if (!minimatch(rel, pattern, { dot: true, matchBase: false })) continue;
+    matches.push(f);
+    if (matches.length >= MAX_RESULTS) return true;
+  }
+  return false;
+}
+
+async function sortByMtimeDesc(
+  matches: readonly string[],
+  ctx: { vault: { stat(p: string): Promise<{ mtimeMs: number } | null> } },
+): Promise<string[]> {
+  const stats = await Promise.allSettled(matches.map((p) => ctx.vault.stat(p)));
+  const decorated: { path: string; mtime: number }[] = matches.map((p, i) => {
+    const result = stats[i];
+    const mtime =
+      result?.status === 'fulfilled' && result.value !== null ? result.value.mtimeMs : 0;
+    return { path: p, mtime };
+  });
+  decorated.sort((a, b) => {
+    if (b.mtime !== a.mtime) return b.mtime - a.mtime;
+    return a.path.localeCompare(b.path);
+  });
+  return decorated.map((d) => d.path);
 }
 
 function now(): number {

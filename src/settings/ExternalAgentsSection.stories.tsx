@@ -10,6 +10,12 @@ import {
 import { ExternalAgentsSection } from './ExternalAgentsSection';
 import type { ExternalAgentsSettings } from './settingsStore';
 
+const emptyEventStream = (_input: ExternalAgentInput): AsyncIterable<ExternalEvent> => ({
+  [Symbol.asyncIterator]: () => ({
+    next: async () => ({ value: undefined as unknown as ExternalEvent, done: true }),
+  }),
+});
+
 class MockAdapterA extends ExternalAgentAdapter {
   readonly id = 'mock-a';
   readonly label = 'Mock A (CLI)';
@@ -20,13 +26,7 @@ class MockAdapterA extends ExternalAgentAdapter {
     extraArgs: z.array(z.string()).describe('Extra command-line args'),
     debug: z.boolean(),
   });
-  start(_input: ExternalAgentInput): AsyncIterable<ExternalEvent> {
-    return {
-      [Symbol.asyncIterator]: () => ({
-        next: async () => ({ value: undefined as unknown as ExternalEvent, done: true }),
-      }),
-    };
-  }
+  start = emptyEventStream;
 }
 
 class MockAdapterB extends ExternalAgentAdapter {
@@ -39,13 +39,7 @@ class MockAdapterB extends ExternalAgentAdapter {
     model: z.string(),
     apiKey: z.string().describe('secret'),
   });
-  start(_input: ExternalAgentInput): AsyncIterable<ExternalEvent> {
-    return {
-      [Symbol.asyncIterator]: () => ({
-        next: async () => ({ value: undefined as unknown as ExternalEvent, done: true }),
-      }),
-    };
-  }
+  start = emptyEventStream;
 }
 
 function makeRegistry(adapters: ExternalAgentAdapter[]): AdapterRegistry {

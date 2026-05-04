@@ -60,7 +60,7 @@ export class EmbeddingClient {
     // `@langchain/core/utils/p-retry`). Tests + ad-hoc back-off tuning
     // (`baseBackoffMs`) need finer control than the framework exposes.
     const max = this.opts.maxAttempts ?? DEFAULTS.maxAttempts;
-    const isAborted = (): boolean => signal !== undefined && signal.aborted;
+    const isAborted = (): boolean => signal?.aborted === true;
     let lastErr: unknown;
     for (let attempt = 0; attempt < max; attempt++) {
       if (isAborted()) throw signal?.reason ?? new Error('aborted');

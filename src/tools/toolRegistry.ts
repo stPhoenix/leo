@@ -67,7 +67,7 @@ export class ToolRegistry {
     const visible = this.listFor(thread, opts);
     const out: OpenAITool[] = [];
     for (const spec of visible) {
-      const isDeferred = ctx !== undefined && ctx.deferLoading.has(spec.id);
+      const isDeferred = ctx?.deferLoading.has(spec.id) === true;
       if (isDeferred && !ctx.nativeDefer) continue;
       const tool: OpenAITool = {
         type: 'function' as const,

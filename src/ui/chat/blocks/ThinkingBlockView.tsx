@@ -8,12 +8,12 @@ export interface ThinkingBlockViewProps {
 
 export function ThinkingBlockView(props: ThinkingBlockViewProps): JSX.Element {
   const { block } = props;
+  const [userExpanded, setUserExpanded] = useState<boolean>(false);
   if (block.type === 'redacted_thinking') {
     const bytes = block.data.length;
     return (
       <section
         className="leo-thinking-block leo-thinking-redacted"
-        role="region"
         aria-label="thinking"
         data-slot="thinking-redacted"
       >
@@ -24,13 +24,11 @@ export function ThinkingBlockView(props: ThinkingBlockViewProps): JSX.Element {
     );
   }
   const length = block.thinking.length;
-  const [userExpanded, setUserExpanded] = useState<boolean>(false);
   const expanded = props.streaming || userExpanded;
   const toggleable = !props.streaming;
   return (
     <section
       className={`leo-thinking-block${expanded ? ' is-expanded' : ' is-collapsed'}`}
-      role="region"
       aria-label="thinking"
       data-slot="thinking"
       data-expanded={expanded ? 'true' : 'false'}

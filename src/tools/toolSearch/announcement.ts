@@ -7,7 +7,7 @@ export function formatDeferredAnnouncement(
   if (deferredNames.size === 0) {
     return '<system-reminder>\nDeferred tool pool is now empty.\n</system-reminder>';
   }
-  const sorted = [...deferredNames].sort();
+  const sorted = [...deferredNames].sort((a, b) => a.localeCompare(b));
   const lines = sorted.join('\n');
   return (
     '<system-reminder>\n' +

@@ -791,11 +791,10 @@ export class SettingsTab extends PluginSettingTab {
     }
 
     for (const skill of skills) {
+      const descSuffix = skill.description.length > 0 ? ` — ${skill.description}` : '';
       const setting = new Setting(body)
         .setName(skill.displayName)
-        .setDesc(
-          `${skill.source} · ${skill.name}${skill.description.length > 0 ? ` — ${skill.description}` : ''}`,
-        );
+        .setDesc(`${skill.source} · ${skill.name}${descSuffix}`);
       setting.addButton((b) => {
         b.setButtonText('Edit').onClick(() => {
           const draft = editor.openDraftForEdit(skill.name);

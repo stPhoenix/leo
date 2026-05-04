@@ -502,7 +502,7 @@ function buildIngestGraph(b: NodeBindings) {
         else list.push(op);
       }
     }
-    const slugs = [...opsBySlug.keys()].sort();
+    const slugs = [...opsBySlug.keys()].sort((a, b) => a.localeCompare(b));
     const reducerSemaphore = createSemaphore({
       maxConcurrency: clampInt(
         deps.reducerConcurrency ?? WIKI_RUN_DEFAULTS.reducerConcurrency,
@@ -719,8 +719,6 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
       const sourceRecordsFinal = (result.sourceRecords ?? []) as readonly SourceTerminalRecord[];
       const pagesCreated = (result.pagesCreated ?? 0) as number;
       const pagesEdited = (result.pagesEdited ?? 0) as number;
-      const reducerOutputsFinal = (result.reducerOutputs ?? []) as readonly ReducerOutput[];
-      const writtenSlugs = reducerOutputsFinal.map((r) => r.pageSlug);
       const endedAt = (deps.now ?? ((): Date => new Date()))().getTime();
 
       controller.setPhase('done', {
@@ -732,7 +730,6 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
           ...(r.error !== undefined ? { error: r.error } : {}),
         })),
       });
-      void writtenSlugs;
       return {
         ok: true,
         data: {

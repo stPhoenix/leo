@@ -14,14 +14,19 @@ export function makeAnthropicFetchPatch(
 ): (input: FetchInput, init?: FetchInit) => Promise<Response> {
   const baseFetch = opts.underlying ?? fetch.bind(globalThis);
   return async (input, init) => {
-    const url =
-      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const url = extractRequestUrl(input);
     if (!url.includes(MESSAGES_PATH) || init === undefined) {
       return baseFetch(input, init);
     }
     const patchedInit = patchRequestInit(init, opts);
     return baseFetch(input, patchedInit);
   };
+}
+
+function extractRequestUrl(input: FetchInput): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
 }
 
 function patchRequestInit(

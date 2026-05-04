@@ -64,13 +64,9 @@ export class OpenAICompatibleProvider implements Provider {
     });
 
     const disableParallel = req.providerHints?.disableParallelToolCalls === true;
-    const callable: OpenAICallable =
-      req.tools !== undefined && req.tools.length > 0
-        ? model.bindTools(
-            [...req.tools],
-            disableParallel ? { parallel_tool_calls: false } : undefined,
-          )
-        : model;
+    const bindOpts = disableParallel ? { parallel_tool_calls: false } : undefined;
+    const hasTools = req.tools !== undefined && req.tools.length > 0;
+    const callable: OpenAICallable = hasTools ? model.bindTools([...req.tools!], bindOpts) : model;
 
     const normalized = normalizeForOpenAI(req.messages);
     const messages = toLangchainMessages(normalized);

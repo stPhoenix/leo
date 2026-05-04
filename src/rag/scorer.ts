@@ -43,11 +43,10 @@ export interface ApplyBoostsCtx {
 }
 
 export function applyBoosts(ctx: ApplyBoostsCtx): number {
-  const graphBoost = ctx.oneHop.has(ctx.chunkPath)
-    ? ctx.weights.oneHop
-    : ctx.twoHop.has(ctx.chunkPath)
-      ? ctx.weights.twoHop
-      : 1;
+  let graphBoost: number;
+  if (ctx.oneHop.has(ctx.chunkPath)) graphBoost = ctx.weights.oneHop;
+  else if (ctx.twoHop.has(ctx.chunkPath)) graphBoost = ctx.weights.twoHop;
+  else graphBoost = 1;
   const tagSharedDelta = ctx.weights.tagShared - 1;
   let hasTagOverlap = false;
   if (tagSharedDelta > 0 && ctx.activeTags.size > 0 && ctx.chunkTags.size > 0) {

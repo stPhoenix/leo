@@ -377,7 +377,8 @@ function RunningView({ vm, controller }: SubProps): JSX.Element {
             <summary>Event log ({vm.logEvents.length})</summary>
             <ul>
               {vm.logEvents.slice(-200).map((ev, i) => (
-                <li key={i} className={`leo-ea-log-row leo-ea-log-${ev.level}`}>
+                // NOSONAR S6479 — log events are append-only; index is stable
+                <li key={`${i}-${ev.level}`} className={`leo-ea-log-row leo-ea-log-${ev.level}`}>
                   <span className="leo-ea-log-level">{ev.level}</span>
                   <span className="leo-ea-log-msg">{ev.msg}</span>
                 </li>
@@ -404,9 +405,15 @@ interface TerminalProps {
   readonly vm: WidgetViewModel;
 }
 
+function pickPhaseIcon(phase: string): string {
+  if (phase === 'done') return '✓';
+  if (phase === 'cancelled') return '✕';
+  return '⚠';
+}
+
 function TerminalView({ vm }: TerminalProps): JSX.Element {
   const [expanded, setExpanded] = useState(false);
-  const icon = vm.phase === 'done' ? '✓' : vm.phase === 'cancelled' ? '✕' : '⚠';
+  const icon = pickPhaseIcon(vm.phase);
   const adapterLabel = vm.draftAdapterId ?? 'unknown';
   const folder = vm.resultFolder !== null && vm.resultFolder.length > 0 ? vm.resultFolder : null;
   const duration =

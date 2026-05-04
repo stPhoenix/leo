@@ -217,116 +217,12 @@ export async function* runManualLoop(
     { role: 'user', content: ctx.refinedAsk },
   ];
   const toolNames = ctx.tools.map((t) => t.name);
-  let iteration = 0;
-  let nudgesUsed = 0;
-  while (iteration < ctx.maxIterations) {
+  const nudgeCounter = { used: 0 };
+  for (let iteration = 0; iteration < ctx.maxIterations; iteration += 1) {
     if (ctx.signal.aborted) return;
-    iteration += 1;
-    incrementIterations(ctx.runState, 1);
-    let step;
-    try {
-      step = await adapter.invokeTurn({
-        messages,
-        toolNames,
-        signal: ctx.signal,
-      });
-    } catch (err) {
-      yield { kind: 'error', error: err };
-      return;
-    }
-    if (step.text.length > 0) {
-      yield { kind: 'text', chunk: step.text };
-    }
-    const tokenStat = tokenTick({
-      cumulativeTokens: ctx.runState.cumulativeTokens,
-      addedInputEstimate: 0,
-      observedUsage: step.usage,
-      maxTokens: ctx.tokenLimit,
-    });
-    addTokens(ctx.runState, step.usage);
-    if (tokenStat.over) {
-      yield {
-        kind: 'error',
-        error: {
-          code: 'token_limit',
-          message: `Inline agent token budget exhausted (simple): cumulative ${ctx.runState.cumulativeTokens} > maxTokens ${ctx.tokenLimit}. Increase \`budgets.maxTokens\` in plugin settings (default 100000).`,
-        },
-      };
-      return;
-    }
-    if (step.toolCalls.length === 0) {
-      messages.push({ role: 'assistant', content: step.text });
-      if (nudgesUsed < MAX_EMPTY_TOOLCALL_NUDGES && hasFutureIntentMarker(step.text)) {
-        nudgesUsed += 1;
-        messages.push({ role: 'system', content: EMPTY_TOOLCALL_NUDGE });
-        continue;
-      }
-      yield { kind: 'done' };
-      return;
-    }
-    messages.push({ role: 'assistant', content: step.text });
-    for (const call of step.toolCalls) {
-      const tool = ctx.tools.find((t) => t.name === call.name);
-      if (tool === undefined) {
-        messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          name: call.name,
-          content: JSON.stringify({ ok: false, error: 'unknown_tool' }),
-        });
-        continue;
-      }
-      yield { kind: 'tool_start', tool: call.name, args: call.args };
-      const startedAt = Date.now();
-      let result: unknown;
-      let ok = true;
-      let errorCode: string | undefined;
-      try {
-        result = await tool.invoke(call.args);
-        if (typeof result === 'object' && result !== null && 'ok' in result) {
-          const r = result as { ok: boolean; error?: string };
-          ok = r.ok;
-          if (!r.ok && typeof r.error === 'string') errorCode = r.error;
-        }
-      } catch (err) {
-        ok = false;
-        errorCode = err instanceof Error ? err.message : 'tool_throw';
-        result = { ok: false, error: errorCode };
-      }
-      yield {
-        kind: 'tool_end',
-        tool: call.name,
-        ok,
-        durationMs: Date.now() - startedAt,
-        ...(errorCode !== undefined ? { error: errorCode } : {}),
-      };
-      messages.push({
-        role: 'tool',
-        toolCallId: call.id,
-        name: call.name,
-        content: JSON.stringify(wrapToolResultForLLM(call.name, result)),
-      });
-    }
-
-    const decision = decideCompaction(
-      messages,
-      ctx.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
-      ctx.autocompactThresholdPct ?? DEFAULT_AUTOCOMPACT_THRESHOLD_PCT,
-    );
-    if (decision.shouldCompact) {
-      const result = compactMessages(messages, ctx.runState);
-      if (result.droppedCount > 0) {
-        ctx.logger.info('externalAgent.adapter.inlineAgent.autocompact', {
-          route: 'simple',
-          droppedCount: result.droppedCount,
-          preTokens: result.preTokens,
-          postTokens: result.postTokens,
-          thresholdTokens: decision.thresholdTokens,
-        });
-        messages.length = 0;
-        for (const m of result.messages) messages.push(m);
-      }
-    }
+    const outcome = yield* runSimpleIteration(ctx, adapter, messages, toolNames, nudgeCounter);
+    if (outcome === 'terminate') return;
+    maybeCompactSimple(messages, ctx);
   }
   yield {
     kind: 'error',
@@ -335,6 +231,135 @@ export async function* runManualLoop(
       message: `simple branch exceeded ${ctx.maxIterations} iterations`,
     },
   };
+}
+
+async function* runSimpleIteration(
+  ctx: ReactLoopCtx,
+  adapter: ManualChatModelAdapter,
+  messages: RewriteMessage[],
+  toolNames: readonly string[],
+  nudgeCounter: { used: number },
+): AsyncGenerator<BridgeChunk, 'continue' | 'terminate'> {
+  incrementIterations(ctx.runState, 1);
+  let step;
+  try {
+    step = await adapter.invokeTurn({
+      messages,
+      toolNames,
+      signal: ctx.signal,
+    });
+  } catch (err) {
+    yield { kind: 'error', error: err };
+    return 'terminate';
+  }
+  if (step.text.length > 0) yield { kind: 'text', chunk: step.text };
+  const tokenStat = tokenTick({
+    cumulativeTokens: ctx.runState.cumulativeTokens,
+    addedInputEstimate: 0,
+    observedUsage: step.usage,
+    maxTokens: ctx.tokenLimit,
+  });
+  addTokens(ctx.runState, step.usage);
+  if (tokenStat.over) {
+    yield {
+      kind: 'error',
+      error: {
+        code: 'token_limit',
+        message: `Inline agent token budget exhausted (simple): cumulative ${ctx.runState.cumulativeTokens} > maxTokens ${ctx.tokenLimit}. Increase \`budgets.maxTokens\` in plugin settings (default 100000).`,
+      },
+    };
+    return 'terminate';
+  }
+  if (step.toolCalls.length === 0) {
+    messages.push({ role: 'assistant', content: step.text });
+    if (nudgeCounter.used < MAX_EMPTY_TOOLCALL_NUDGES && hasFutureIntentMarker(step.text)) {
+      nudgeCounter.used += 1;
+      messages.push({ role: 'system', content: EMPTY_TOOLCALL_NUDGE });
+      return 'continue';
+    }
+    yield { kind: 'done' };
+    return 'terminate';
+  }
+  messages.push({ role: 'assistant', content: step.text });
+  for (const call of step.toolCalls) {
+    yield* invokeSimpleToolCall(call, ctx, messages);
+  }
+  return 'continue';
+}
+
+async function* invokeSimpleToolCall(
+  call: { id: string; name: string; args: unknown },
+  ctx: ReactLoopCtx,
+  messages: RewriteMessage[],
+): AsyncGenerator<BridgeChunk, void> {
+  const tool = ctx.tools.find((t) => t.name === call.name);
+  if (tool === undefined) {
+    messages.push({
+      role: 'tool',
+      toolCallId: call.id,
+      name: call.name,
+      content: JSON.stringify({ ok: false, error: 'unknown_tool' }),
+    });
+    return;
+  }
+  yield { kind: 'tool_start', tool: call.name, args: call.args };
+  const { result, ok, errorCode, durationMs } = await invokeSimpleTool(tool, call.args);
+  yield {
+    kind: 'tool_end',
+    tool: call.name,
+    ok,
+    durationMs,
+    ...(errorCode !== undefined ? { error: errorCode } : {}),
+  };
+  messages.push({
+    role: 'tool',
+    toolCallId: call.id,
+    name: call.name,
+    content: JSON.stringify(wrapToolResultForLLM(call.name, result)),
+  });
+}
+
+async function invokeSimpleTool(
+  tool: { invoke(args: unknown): Promise<unknown> | unknown },
+  args: unknown,
+): Promise<{ result: unknown; ok: boolean; errorCode: string | undefined; durationMs: number }> {
+  const startedAt = Date.now();
+  let result: unknown;
+  let ok = true;
+  let errorCode: string | undefined;
+  try {
+    result = await tool.invoke(args);
+    if (typeof result === 'object' && result !== null && 'ok' in result) {
+      const r = result as { ok: boolean; error?: string };
+      ok = r.ok;
+      if (!r.ok && typeof r.error === 'string') errorCode = r.error;
+    }
+  } catch (err) {
+    ok = false;
+    errorCode = err instanceof Error ? err.message : 'tool_throw';
+    result = { ok: false, error: errorCode };
+  }
+  return { result, ok, errorCode, durationMs: Date.now() - startedAt };
+}
+
+function maybeCompactSimple(messages: RewriteMessage[], ctx: ReactLoopCtx): void {
+  const decision = decideCompaction(
+    messages,
+    ctx.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
+    ctx.autocompactThresholdPct ?? DEFAULT_AUTOCOMPACT_THRESHOLD_PCT,
+  );
+  if (!decision.shouldCompact) return;
+  const result = compactMessages(messages, ctx.runState);
+  if (result.droppedCount === 0) return;
+  ctx.logger.info('externalAgent.adapter.inlineAgent.autocompact', {
+    route: 'simple',
+    droppedCount: result.droppedCount,
+    preTokens: result.preTokens,
+    postTokens: result.postTokens,
+    thresholdTokens: decision.thresholdTokens,
+  });
+  messages.length = 0;
+  for (const m of result.messages) messages.push(m);
 }
 
 const MAX_EMPTY_TOOLCALL_NUDGES = 3;

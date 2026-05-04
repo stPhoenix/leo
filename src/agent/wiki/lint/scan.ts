@@ -61,11 +61,13 @@ export async function scanWiki(deps: LintScanDeps): Promise<LintScanResult> {
   const orphanPages = pages
     .map((p) => p.path)
     .filter((p) => (inboundCount.get(p) ?? 0) === 0)
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
 
   const sourceRawPaths = new Set<string>();
   for (const s of sources) if (s.rawPath !== null) sourceRawPaths.add(s.rawPath);
-  const orphanRawPaths = rawPaths.filter((r) => !sourceRawPaths.has(r)).sort();
+  const orphanRawPaths = rawPaths
+    .filter((r) => !sourceRawPaths.has(r))
+    .sort((a, b) => a.localeCompare(b));
 
   deps.logger?.debug(WIKI_LOG.lint.scan.ok, {
     pages: pages.length,
@@ -135,7 +137,7 @@ async function listMarkdownFiles(vault: VaultAdapter, dir: string): Promise<read
   return listing.files
     .filter((f) => f.endsWith('.md'))
     .slice()
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
 }
 
 function buildAdjacency(pages: readonly PageNode[]): Map<string, Set<string>> {

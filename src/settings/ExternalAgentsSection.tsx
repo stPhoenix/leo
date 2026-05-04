@@ -163,12 +163,11 @@ function AdapterBlock(props: AdapterBlockProps): JSX.Element {
     onChange({ config: config as Record<string, unknown> });
   };
 
-  const inlineProviderId =
-    adapter.id === 'inline-agent'
-      ? typeof (instance.config as { providerId?: unknown }).providerId === 'string'
-        ? ((instance.config as { providerId: string }).providerId as string)
-        : 'lmstudio'
-      : null;
+  let inlineProviderId: string | null = null;
+  if (adapter.id === 'inline-agent') {
+    const cfg = instance.config as { providerId?: unknown };
+    inlineProviderId = typeof cfg.providerId === 'string' ? cfg.providerId : 'lmstudio';
+  }
   const inlineProviderKind: ProviderKind | null =
     inlineProviderId !== null && PROVIDER_KIND_SET.has(inlineProviderId as ProviderKind)
       ? (inlineProviderId as ProviderKind)
@@ -220,11 +219,9 @@ function AdapterBlock(props: AdapterBlockProps): JSX.Element {
                   <ProviderApiKeyField
                     providerKind={inlineProviderKind}
                     adapterId={adapter.id}
-                    {...(props.readSecret !== undefined ? { readSecret: props.readSecret } : {})}
-                    {...(props.writeSecret !== undefined ? { writeSecret: props.writeSecret } : {})}
-                    {...(props.onProviderApiKeyChanged !== undefined
-                      ? { onProviderApiKeyChanged: props.onProviderApiKeyChanged }
-                      : {})}
+                    readSecret={props.readSecret}
+                    writeSecret={props.writeSecret}
+                    onProviderApiKeyChanged={props.onProviderApiKeyChanged}
                   />
                 ) : null}
               </Fragment>
@@ -321,68 +318,75 @@ interface FieldRowProps {
   readonly discoveredModels?: readonly { readonly id: string }[];
 }
 
+function renderInlineAgentSpecialField(props: FieldRowProps, label: string): JSX.Element | null {
+  if (props.adapterId !== 'inline-agent' || props.field.path.length !== 1) return null;
+  if (props.field.path[0] === 'providerId' && (props.providerOptions?.length ?? 0) > 0) {
+    return renderProviderIdSelect(props, label);
+  }
+  if (props.field.path[0] === 'model' && (props.discoveredModels?.length ?? 0) > 0) {
+    return renderInlineModelSelect(props, label);
+  }
+  return null;
+}
+
+function renderProviderIdSelect(props: FieldRowProps, label: string): JSX.Element {
+  const opts = props.providerOptions ?? [];
+  return (
+    <label className="leo-eas-field" key={label}>
+      <span>{label}</span>
+      <select
+        className="leo-eas-select"
+        aria-label={`${props.adapterId}.${label}`}
+        value={typeof props.value === 'string' ? props.value : ''}
+        onChange={(e) => props.onChange(e.target.value)}
+      >
+        {opts.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {props.field.description !== undefined ? (
+        <small className="leo-eas-help">{props.field.description}</small>
+      ) : null}
+    </label>
+  );
+}
+
+function renderInlineModelSelect(props: FieldRowProps, label: string): JSX.Element {
+  const models = props.discoveredModels ?? [];
+  const current = typeof props.value === 'string' ? props.value : '';
+  const known = models.some((m) => m.id === current);
+  return (
+    <label className="leo-eas-field" key={label}>
+      <span>{label}</span>
+      <select
+        className="leo-eas-select"
+        aria-label={`${props.adapterId}.${label}`}
+        value={current}
+        onChange={(e) => props.onChange(e.target.value)}
+      >
+        <option value="">(use default)</option>
+        {!known && current.length > 0 ? (
+          <option value={current}>{current} (not in list)</option>
+        ) : null}
+        {models.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.id}
+          </option>
+        ))}
+      </select>
+      {props.field.description !== undefined ? (
+        <small className="leo-eas-help">{props.field.description}</small>
+      ) : null}
+    </label>
+  );
+}
+
 function FieldRow(props: FieldRowProps): JSX.Element {
   const label = props.field.path.join('.');
-  const isInlineProviderId =
-    props.adapterId === 'inline-agent' &&
-    props.field.path.length === 1 &&
-    props.field.path[0] === 'providerId';
-  const isInlineModel =
-    props.adapterId === 'inline-agent' &&
-    props.field.path.length === 1 &&
-    props.field.path[0] === 'model';
-  if (isInlineProviderId && (props.providerOptions?.length ?? 0) > 0) {
-    const opts = props.providerOptions ?? [];
-    return (
-      <label className="leo-eas-field" key={label}>
-        <span>{label}</span>
-        <select
-          className="leo-eas-select"
-          aria-label={`${props.adapterId}.${label}`}
-          value={typeof props.value === 'string' ? props.value : ''}
-          onChange={(e) => props.onChange(e.target.value)}
-        >
-          {opts.map((o) => (
-            <option key={o.id} value={o.id}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-        {props.field.description !== undefined ? (
-          <small className="leo-eas-help">{props.field.description}</small>
-        ) : null}
-      </label>
-    );
-  }
-  if (isInlineModel && (props.discoveredModels?.length ?? 0) > 0) {
-    const models = props.discoveredModels ?? [];
-    const current = typeof props.value === 'string' ? props.value : '';
-    const known = models.some((m) => m.id === current);
-    return (
-      <label className="leo-eas-field" key={label}>
-        <span>{label}</span>
-        <select
-          className="leo-eas-select"
-          aria-label={`${props.adapterId}.${label}`}
-          value={current}
-          onChange={(e) => props.onChange(e.target.value)}
-        >
-          <option value="">(use default)</option>
-          {!known && current.length > 0 ? (
-            <option value={current}>{current} (not in list)</option>
-          ) : null}
-          {models.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.id}
-            </option>
-          ))}
-        </select>
-        {props.field.description !== undefined ? (
-          <small className="leo-eas-help">{props.field.description}</small>
-        ) : null}
-      </label>
-    );
-  }
+  const inlineSpecial = renderInlineAgentSpecialField(props, label);
+  if (inlineSpecial !== null) return inlineSpecial;
   switch (props.field.kind) {
     case 'string':
       return (
