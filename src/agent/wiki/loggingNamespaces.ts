@@ -59,6 +59,9 @@ export const WIKI_LOG = {
     },
     propose: {
       ok: 'wiki.lint.propose.ok',
+      findingStart: 'wiki.lint.propose.finding-start',
+      findingOk: 'wiki.lint.propose.finding-ok',
+      findingInvalid: 'wiki.lint.propose.finding-invalid',
     },
     confirm: {
       accepted: 'wiki.lint.confirm.accepted',
@@ -67,6 +70,9 @@ export const WIKI_LOG = {
     write: {
       ok: 'wiki.lint.write.ok',
       failed: 'wiki.lint.write.failed',
+      findingApplied: 'wiki.lint.write.finding-applied',
+      findingFailed: 'wiki.lint.write.finding-failed',
+      findingSkipped: 'wiki.lint.write.finding-skipped',
     },
     tool: {
       busy: 'wiki.lint.tool.busy',

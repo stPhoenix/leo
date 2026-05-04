@@ -1,6 +1,6 @@
-import { useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import type { WikiWidgetController } from '@/agent/wiki/widgetController';
-import type { WikiViewModel } from '@/agent/wiki/widgetState';
+import type { LintFindingSummary, WikiViewModel } from '@/agent/wiki/widgetState';
 
 export interface WikiWidgetProps {
   readonly controller: WikiWidgetController;
@@ -81,7 +81,7 @@ function PhaseBody({ vm, controller }: ViewProps): JSX.Element | null {
     case 'awaiting_confirm':
       return <ConfirmBody vm={vm} controller={controller} />;
     case 'writing':
-      return <ProgressBody vm={vm} kind="write" />;
+      return vm.op === 'lint' ? <LintWritingBody vm={vm} /> : <ProgressBody vm={vm} kind="write" />;
     case 'scanning':
       return <ScanBody vm={vm} />;
     case 'checking':
@@ -234,28 +234,23 @@ function PlanBody({ vm }: { vm: WikiViewModel }): JSX.Element {
 
 function ConfirmBody({ vm, controller }: ViewProps): JSX.Element {
   const findings = vm.findings ?? [];
-  const onAcceptAll = (): void =>
-    controller.applyLintConfirm({
-      accepted: findings.map((f) => f.id),
-      rejected: [],
-      applySchema: vm.schemaPatchPending === true,
-    });
-  const onRejectAll = (): void =>
-    controller.applyLintConfirm({
-      accepted: [],
-      rejected: findings.map((f) => f.id),
-      applySchema: false,
-    });
+  const onAcceptAll = (): void => {
+    for (const f of findings) controller.setFindingDecision(f.id, true);
+    controller.applyLintConfirmFromState(vm.schemaPatchPending === true);
+  };
+  const onRejectAll = (): void => {
+    for (const f of findings) controller.setFindingDecision(f.id, false);
+    controller.applyLintConfirmFromState(false);
+  };
+  const onApply = (): void => controller.applyLintConfirmFromState(vm.schemaPatchPending === true);
   return (
     <div className="leo-wiki-confirm" data-slot="wiki-confirm">
       <p className="leo-wiki-confirm-summary">
         {findings.length} finding{findings.length === 1 ? '' : 's'} ready for review.
       </p>
-      <ul>
+      <ul className="leo-wiki-finding-list" data-slot="wiki-confirm-list">
         {findings.map((f) => (
-          <li key={f.id} data-severity={f.severity}>
-            <strong>{f.action}</strong> · <code>{f.page}</code> — {f.rationale}
-          </li>
+          <FindingRow key={f.id} finding={f} controller={controller} />
         ))}
       </ul>
       {vm.schemaPatchPending === true ? (
@@ -264,15 +259,150 @@ function ConfirmBody({ vm, controller }: ViewProps): JSX.Element {
         </p>
       ) : null}
       <div className="leo-wiki-confirm-actions">
-        <button type="button" onClick={onAcceptAll}>
+        <button type="button" onClick={onAcceptAll} data-slot="wiki-confirm-accept-all">
           Accept all
         </button>
-        <button type="button" onClick={onRejectAll}>
+        <button type="button" onClick={onRejectAll} data-slot="wiki-confirm-reject-all">
           Reject all
+        </button>
+        <button type="button" onClick={onApply} data-slot="wiki-confirm-apply">
+          Apply
         </button>
       </div>
     </div>
   );
+}
+
+interface FindingRowProps {
+  readonly finding: LintFindingSummary;
+  readonly controller: WikiWidgetController;
+}
+
+function FindingRow({ finding, controller }: FindingRowProps): JSX.Element {
+  const [noteOpen, setNoteOpen] = useState<boolean>((finding.note ?? '').length > 0);
+  const isSchemaDrift = finding.action === 'schema-drift';
+  return (
+    <li
+      className="leo-wiki-finding-row"
+      data-severity={finding.severity}
+      data-accepted={String(finding.accepted)}
+      data-slot="wiki-finding-row"
+    >
+      <div className="leo-wiki-finding-head">
+        <strong>{finding.action}</strong>
+        {finding.page.length > 0 ? (
+          <>
+            {' · '}
+            <code>{finding.page}</code>
+          </>
+        ) : null}
+      </div>
+      <p className="leo-wiki-finding-rationale">{finding.rationale}</p>
+      {isSchemaDrift ? (
+        <p className="leo-wiki-finding-schema-note" data-slot="wiki-finding-schema-note">
+          schema patch — applied via SCHEMA panel
+        </p>
+      ) : null}
+      <div className="leo-wiki-finding-actions">
+        <button
+          type="button"
+          onClick={() => controller.setFindingDecision(finding.id, true)}
+          data-slot="wiki-finding-accept"
+          aria-pressed={finding.accepted === true}
+        >
+          Accept
+        </button>
+        <button
+          type="button"
+          onClick={() => controller.setFindingDecision(finding.id, false)}
+          data-slot="wiki-finding-discard"
+          aria-pressed={finding.accepted === false}
+        >
+          Discard
+        </button>
+        <button
+          type="button"
+          onClick={() => setNoteOpen((s) => !s)}
+          data-slot="wiki-finding-note-toggle"
+          aria-expanded={noteOpen}
+        >
+          Add note
+        </button>
+      </div>
+      {noteOpen ? (
+        <textarea
+          className="leo-wiki-finding-note"
+          rows={2}
+          aria-label={`Note for ${finding.action}`}
+          defaultValue={finding.note ?? ''}
+          onChange={(e) => controller.setFindingNote(finding.id, e.target.value)}
+          data-slot="wiki-finding-note"
+        />
+      ) : null}
+    </li>
+  );
+}
+
+function LintWritingBody({ vm }: { vm: WikiViewModel }): JSX.Element {
+  const findings = vm.findings ?? [];
+  return (
+    <div className="leo-wiki-lint-writing" data-slot="wiki-lint-writing">
+      <p className="leo-wiki-progress-line">
+        Applied: {vm.findingsApplied ?? 0} · Failed: {vm.findingsFailed ?? 0} · Pages edited:{' '}
+        {vm.pagesEdited ?? 0}
+      </p>
+      <ul className="leo-wiki-finding-list">
+        {findings.map((f) => {
+          const status = f.patchStatus ?? 'pending';
+          return (
+            <li
+              key={f.id}
+              className="leo-wiki-finding-row"
+              data-severity={f.severity}
+              data-slot="wiki-lint-write-row"
+            >
+              <div className="leo-wiki-finding-head">
+                <strong>{f.action}</strong>
+                {f.page.length > 0 ? (
+                  <>
+                    {' · '}
+                    <code>{f.page}</code>
+                  </>
+                ) : null}
+              </div>
+              <span
+                className="leo-wiki-finding-badge"
+                data-status={status}
+                data-slot="wiki-finding-badge"
+              >
+                {writingBadgeText(status, f.patchError)}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function writingBadgeText(
+  status: NonNullable<LintFindingSummary['patchStatus']>,
+  err?: string,
+): string {
+  switch (status) {
+    case 'pending':
+      return 'queued';
+    case 'proposing':
+      return 'proposing patch…';
+    case 'applying':
+      return 'applying…';
+    case 'applied':
+      return 'applied';
+    case 'skipped':
+      return 'skipped';
+    case 'failed':
+      return err !== undefined && err.length > 0 ? `failed: ${err}` : 'failed';
+  }
 }
 
 function ScanBody({ vm }: { vm: WikiViewModel }): JSX.Element {
@@ -400,13 +530,54 @@ function TerminalSummaryBody({ vm }: { vm: WikiViewModel }): JSX.Element {
       </ul>
     );
   }
+  const findings = vm.findings ?? [];
+  const accepted = findings.filter((f) => f.accepted === true).length;
+  const rejected = findings.filter((f) => f.accepted === false).length;
+  const applied = vm.findingsApplied ?? 0;
+  const failed = vm.findingsFailed ?? 0;
+  const pagesEdited = vm.pagesEdited ?? 0;
+  const showZeroAppliedWarning = accepted > 0 && pagesEdited === 0;
   return (
-    <ul className="leo-wiki-terminal" data-slot="wiki-terminal-summary">
-      <li>Findings: {vm.findings?.length ?? 0}</li>
-      <li>
-        Accepted: {(vm.findings ?? []).filter((f) => f.accepted === true).length} · Rejected:{' '}
-        {(vm.findings ?? []).filter((f) => f.accepted === false).length}
-      </li>
-    </ul>
+    <div className="leo-wiki-terminal" data-slot="wiki-terminal-summary">
+      <ul className="leo-wiki-terminal-counts">
+        <li>Findings: {findings.length}</li>
+        <li>
+          Accepted: {accepted} · Discarded: {rejected}
+        </li>
+        <li>
+          Applied: {applied} · Failed: {failed} · Pages edited: {pagesEdited}
+        </li>
+        <li>Schema patch: {vm.schemaEditedConfirmed === true ? 'yes' : 'no'}</li>
+      </ul>
+      {showZeroAppliedWarning ? (
+        <p className="leo-wiki-warning" data-slot="lint-zero-applied-warning" role="alert">
+          No pages were edited despite {accepted} accepted finding{accepted === 1 ? '' : 's'}. See
+          per-finding statuses for details.
+        </p>
+      ) : null}
+      {findings.length > 0 ? (
+        <ul className="leo-wiki-finding-list" data-slot="wiki-terminal-findings">
+          {findings.map((f) => {
+            const status = f.patchStatus ?? (f.accepted === true ? 'pending' : 'skipped');
+            return (
+              <li key={f.id} className="leo-wiki-finding-row" data-severity={f.severity}>
+                <div className="leo-wiki-finding-head">
+                  <strong>{f.action}</strong>
+                  {f.page.length > 0 ? (
+                    <>
+                      {' · '}
+                      <code>{f.page}</code>
+                    </>
+                  ) : null}
+                </div>
+                <span className="leo-wiki-finding-badge" data-status={status}>
+                  {writingBadgeText(status, f.patchError)}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
   );
 }

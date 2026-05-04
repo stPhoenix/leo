@@ -1,5 +1,6 @@
 import type { Logger } from '@/platform/Logger';
 import type { OpenAITool } from '@/providers/types';
+import { decorateSpecForProviderCompat } from './parameterEnvelope';
 import type { ToolCtx, ToolResult, ToolSpec } from './types';
 
 export type PlanModeView = 'normal' | 'plan';
@@ -37,7 +38,8 @@ export class ToolRegistry {
     if (this.tools.has(spec.id)) {
       throw new Error(`ToolRegistry: duplicate tool id ${spec.id}`);
     }
-    this.tools.set(spec.id, spec);
+    const decorated = decorateSpecForProviderCompat(spec);
+    this.tools.set(spec.id, decorated);
     this.logger?.info('tool.register', {
       toolId: spec.id,
       source: spec.source,

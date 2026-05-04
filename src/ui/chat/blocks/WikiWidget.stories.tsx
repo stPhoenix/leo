@@ -308,6 +308,7 @@ export const LintDone: Story = {
           severity: 'info',
           rationale: 'r',
           accepted: true,
+          patchStatus: 'applied',
         },
         {
           id: 'f2',
@@ -316,6 +317,171 @@ export const LintDone: Story = {
           severity: 'warn',
           rationale: 'r',
           accepted: false,
+          patchStatus: 'skipped',
+        },
+      ],
+      pagesEdited: 1,
+      findingsApplied: 1,
+      findingsFailed: 0,
+    }),
+  },
+};
+
+export const ConfirmPerFinding: Story = {
+  args: {
+    controller: ctrl('lint', {
+      phase: 'awaiting_confirm',
+      findings: [
+        {
+          id: 'f1',
+          page: 'pages/oauth',
+          action: 'missing-xref',
+          severity: 'info',
+          rationale: 'pages/jwt references oauth in plain text without [[oauth]]',
+          accepted: null,
+          note: 'use canonical wikilink [[oauth]]',
+        },
+        {
+          id: 'f2',
+          page: 'pages/jwt',
+          action: 'rewrite-stale',
+          severity: 'warn',
+          rationale: 'Body cites RFC 7519 with stale version',
+          accepted: true,
+        },
+        {
+          id: 'f3',
+          page: 'wiki/SCHEMA.md',
+          action: 'schema-drift',
+          severity: 'info',
+          rationale: 'tags shape deprecated',
+          accepted: null,
+        },
+      ],
+      schemaPatchPending: true,
+    }),
+  },
+};
+
+export const WritingPerFinding: Story = {
+  args: {
+    controller: ctrl('lint', {
+      phase: 'writing',
+      pagesEdited: 1,
+      findingsApplied: 1,
+      findingsFailed: 1,
+      findings: [
+        {
+          id: 'f1',
+          page: 'pages/oauth',
+          action: 'missing-xref',
+          severity: 'info',
+          rationale: 'r',
+          accepted: true,
+          patchStatus: 'applied',
+        },
+        {
+          id: 'f2',
+          page: 'pages/jwt',
+          action: 'rewrite-stale',
+          severity: 'warn',
+          rationale: 'r',
+          accepted: true,
+          patchStatus: 'applying',
+        },
+        {
+          id: 'f3',
+          page: 'pages/saml',
+          action: 'contradiction',
+          severity: 'error',
+          rationale: 'r',
+          accepted: true,
+          patchStatus: 'failed',
+          patchError: 'section_not_found',
+        },
+        {
+          id: 'f4',
+          page: 'pages/oidc',
+          action: 'add-xref',
+          severity: 'info',
+          rationale: 'r',
+          accepted: true,
+          patchStatus: 'pending',
+        },
+      ],
+    }),
+  },
+};
+
+export const TerminalWithFailures: Story = {
+  args: {
+    controller: ctrl('lint', {
+      phase: 'done',
+      pagesEdited: 1,
+      findingsApplied: 1,
+      findingsFailed: 2,
+      findings: [
+        {
+          id: 'f1',
+          page: 'pages/a',
+          action: 'add-xref',
+          severity: 'info',
+          rationale: 'r',
+          accepted: true,
+          patchStatus: 'applied',
+        },
+        {
+          id: 'f2',
+          page: 'pages/b',
+          action: 'contradiction',
+          severity: 'error',
+          rationale: 'r',
+          accepted: true,
+          patchStatus: 'failed',
+          patchError: 'section_not_found',
+        },
+        {
+          id: 'f3',
+          page: 'pages/c',
+          action: 'rewrite-stale',
+          severity: 'warn',
+          rationale: 'r',
+          accepted: true,
+          patchStatus: 'failed',
+          patchError: 'invalid: unknown_kind',
+        },
+      ],
+    }),
+  },
+};
+
+export const TerminalAcceptedButZeroApplied: Story = {
+  args: {
+    controller: ctrl('lint', {
+      phase: 'done',
+      pagesEdited: 0,
+      findingsApplied: 0,
+      findingsFailed: 2,
+      findings: [
+        {
+          id: 'f1',
+          page: 'pages/a',
+          action: 'contradiction',
+          severity: 'warn',
+          rationale: 'r',
+          accepted: true,
+          patchStatus: 'failed',
+          patchError: 'section_not_found',
+        },
+        {
+          id: 'f2',
+          page: 'pages/b',
+          action: 'rewrite-stale',
+          severity: 'warn',
+          rationale: 'r',
+          accepted: true,
+          patchStatus: 'failed',
+          patchError: 'body_size_drift',
         },
       ],
     }),

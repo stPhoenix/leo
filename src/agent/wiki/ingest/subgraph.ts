@@ -93,6 +93,17 @@ export interface IngestRunDeps {
    */
   readonly existingRunId?: string;
   readonly existingController?: WikiWidgetController;
+  /**
+   * Optional Langfuse trace context. When supplied, callbacks/metadata/tags
+   * are forwarded to LangGraph's RunnableConfig so all node-internal
+   * model.invoke calls (planner/extractor/reducer) get nested as generations
+   * under the caller's parent span.
+   */
+  readonly traceConfig?: {
+    readonly callbacks?: readonly unknown[];
+    readonly metadata?: Readonly<Record<string, unknown>>;
+    readonly tags?: readonly string[];
+  };
 }
 
 export interface IngestRunPartial {
@@ -658,6 +669,13 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
       // Per-source nodes count against recursion limit; raise well above
       // VAULT_FOLDER_FANOUT_MAX (50 sources × 1 fetching node + ~5 other nodes).
       recursionLimit: 1000,
+      ...(deps.traceConfig?.callbacks !== undefined && deps.traceConfig.callbacks.length > 0
+        ? { callbacks: deps.traceConfig.callbacks as never }
+        : {}),
+      ...(deps.traceConfig?.metadata !== undefined ? { metadata: deps.traceConfig.metadata } : {}),
+      ...(deps.traceConfig?.tags !== undefined && deps.traceConfig.tags.length > 0
+        ? { tags: [...deps.traceConfig.tags] }
+        : {}),
     };
 
     try {

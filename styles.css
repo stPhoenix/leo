@@ -4091,6 +4091,129 @@
   color: var(--text-warning, var(--text-accent));
 }
 
+.leo-wiki-finding-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+  max-height: 360px;
+  overflow: auto;
+}
+
+.leo-wiki-finding-row {
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  border-left: 2px solid var(--background-modifier-border);
+  background: var(--background-primary-alt, var(--background-primary));
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+  word-break: break-word;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+}
+.leo-wiki-finding-row[data-severity='warn'] {
+  border-left-color: var(--color-yellow);
+}
+.leo-wiki-finding-row[data-severity='error'] {
+  border-left-color: var(--color-red, var(--text-error));
+}
+.leo-wiki-finding-row[data-severity='info'] {
+  border-left-color: var(--color-blue, var(--interactive-accent));
+}
+.leo-wiki-finding-row[data-accepted='true'] {
+  background: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
+}
+.leo-wiki-finding-row[data-accepted='false'] {
+  opacity: 0.55;
+}
+
+.leo-wiki-finding-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-1);
+  align-items: center;
+}
+
+.leo-wiki-finding-rationale {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.leo-wiki-finding-schema-note {
+  margin: 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.leo-wiki-finding-actions {
+  display: flex;
+  gap: var(--size-4-1);
+  flex-wrap: wrap;
+}
+
+.leo-wiki-finding-actions button {
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-1, 2px) var(--size-4-1);
+}
+
+.leo-wiki-finding-actions button[aria-pressed='true'] {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.leo-wiki-finding-note {
+  width: 100%;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  resize: vertical;
+}
+
+.leo-wiki-finding-badge {
+  align-self: flex-start;
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-1, 2px) var(--size-4-1);
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-border);
+  color: var(--text-normal);
+}
+.leo-wiki-finding-badge[data-status='proposing'],
+.leo-wiki-finding-badge[data-status='applying'] {
+  background: color-mix(in srgb, var(--interactive-accent) 35%, transparent);
+}
+.leo-wiki-finding-badge[data-status='applied'] {
+  background: color-mix(in srgb, var(--color-green, var(--text-success)) 35%, transparent);
+}
+.leo-wiki-finding-badge[data-status='failed'] {
+  background: color-mix(in srgb, var(--color-red, var(--text-error)) 35%, transparent);
+}
+.leo-wiki-finding-badge[data-status='skipped'] {
+  background: color-mix(in srgb, var(--text-muted) 25%, transparent);
+}
+
+.leo-wiki-warning {
+  margin: 0;
+  padding: var(--size-4-1) var(--size-4-2);
+  border-left: 2px solid var(--color-yellow);
+  background: color-mix(in srgb, var(--color-yellow) 10%, transparent);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+}
+
+.leo-wiki-terminal-counts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+}
+
 .leo-wiki-config {
   display: flex;
   flex-direction: column;

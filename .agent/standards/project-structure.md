@@ -43,15 +43,15 @@ leo/
 │   │   │   ├── adapterRegistry.ts        # AdapterRegistry — register/freeze/list (alphabetical)/get/defaultId/isEnabled
 │   │   │   ├── liveControllerRegistry.ts # In-memory map<runId, ExternalAgentWidgetController> bridging serialized widget block props ↔ live controller; EXTERNAL_AGENT_LIVE_KIND
 │   │   │   ├── loggingNamespaces.ts      # EXTERNAL_AGENT_LOG namespace tree + SENSITIVE_FIELD_KEYS — adapter/maintainer reference + lint policy declaration
-│   │   │   ├── orchestrator.ts           # ExternalAgentOrchestrator — start({threadId,…}) → {ok,handle,terminal} | {ok:false,busy}, liveHandles map, persistSnapshot callback wiring
+│   │   │   ├── orchestrator.ts           # ExternalAgentOrchestrator — start({threadId,…}) → {ok,handle,terminal} | {ok:false,busy}, liveHandles map, persistSnapshot callback wiring; optional `beginTrace` constructor opt forwarded to subgraph deps for Langfuse export
 │   │   │   ├── refinePrompt.ts           # Pure getRefineSystemPrompt() snapshot
-│   │   │   ├── refineSubAgent.ts         # createRefineSubAgent({provider,model,…}) — REFINE_TOOLS (emit_final_prompt / ask_clarifying_question), parses tool calls, throws refine_invalid_tool / refine_prompt_too_large
+│   │   │   ├── refineSubAgent.ts         # createRefineSubAgent({provider,model,…}) — REFINE_TOOLS (emit_final_prompt / ask_clarifying_question), parses tool calls, throws refine_invalid_tool / refine_prompt_too_large; refine input accepts optional `traceConfig` → ProviderChatRequest.trace for Langfuse export
 │   │   │   ├── resultWriter.ts           # ResultWriter.write({runId,threadId,adapterId,…}) — sanitizeRelPath, buildRequestMarkdown, EXTERNAL_AGENT_RESULTS_PREFIX
 │   │   │   ├── runId.ts                  # generateRunId({now,tail}) → YYYYMMDD-HHmmss-<6-char>
 │   │   │   ├── runPhase.ts               # buildToolResult(state,…) terminal→DelegateExternalToolResult; createResultWriterDeps; SUMMARY_MAX_CHARS
 │   │   │   ├── slotManager.ts            # Per-thread one-slot concurrency: acquire/release/active
 │   │   │   ├── state.ts                  # ExternalAgentState, ExternalPhase, applyExternalEvent, isTerminal, TERMINAL_PHASES
-│   │   │   ├── subgraph.ts               # startExternalAgentRun(deps,input)→RunHandle — hand-rolled FSM driver, abort/timeout race, refine→ready→running→writing→terminal
+│   │   │   ├── subgraph.ts               # startExternalAgentRun(deps,input)→RunHandle — hand-rolled FSM driver, abort/timeout race, refine→ready→running→writing→terminal; optional `beginTrace({runId,threadId})` deps factory threads `traceConfig` into refine and `end()`s exactly once on terminal phase (BeginExternalAgentTrace + ExternalAgentTraceHandle types)
 │   │   │   ├── terminalSnapshot.ts       # TerminalSnapshotSchema (Zod, schemaVersion:1) + buildTerminalSnapshot + filterSecretFields + tryParseTerminalSnapshot + EXTERNAL_AGENT_WIDGET_KIND
 │   │   │   └── widgetController.ts       # ExternalAgentWidgetController({runId,threadId,…}) — viewModel(), onSelectAdapter/SetTimeout/SetBudget/AnswerClarification/Send/Edit/Cancel; reload rehydration to error.code='reload'
 │   │   ├── toolSearch/                   # Deferred-tool fetcher — assemble fetch requests, model-gating, result→tool-list mapping, per-thread session
@@ -77,14 +77,14 @@ leo/
 │   │   │   │   ├── sha256.ts
 │   │   │   │   ├── slug.ts
 │   │   │   │   ├── subagents.ts           # runPlanner/runExtractor/runReducer + invokeStructured (single try/catch — withRetry lives in llmAdapter chain)
-│   │   │   │   ├── subgraph.ts            # startIngestRun — LangGraph StateGraph (Annotation.Root, MemorySaver, interrupt for duplicate prompt); abort/timeout race; mutex acquire/release
+│   │   │   │   ├── subgraph.ts            # startIngestRun — LangGraph StateGraph (Annotation.Root, MemorySaver, interrupt for duplicate prompt); abort/timeout race; mutex acquire/release; optional `traceConfig {callbacks?,metadata?,tags?}` on deps merged into LangGraphRunnableConfig (callbacks/metadata/tags) so node-internal model.invoke calls export to Langfuse
 │   │   │   │   ├── types.ts
 │   │   │   │   └── writer.ts
 │   │   │   ├── lint/                     # Wiki page lint pipeline (scan → check → propose → confirm → write)
 │   │   │   │   ├── checkers.ts            # runLlmChecker + tryProposeSchemaPatch (single-call invoke; retry inside llmAdapter chain)
 │   │   │   │   ├── scan.ts
 │   │   │   │   ├── schemas.ts
-│   │   │   │   └── subgraph.ts            # startLintRun — LangGraph StateGraph (Annotation.Root, MemorySaver, interrupt for confirm); abort/timeout race; mutex acquire/release
+│   │   │   │   └── subgraph.ts            # startLintRun — LangGraph StateGraph (Annotation.Root, MemorySaver, interrupt for confirm); abort/timeout race; mutex acquire/release; optional `traceConfig` on deps merged into LangGraphRunnableConfig for Langfuse export (same shape as ingest)
 │   │   │   ├── seed/
 │   │   │   │   ├── introduction.ts
 │   │   │   │   └── schema.ts

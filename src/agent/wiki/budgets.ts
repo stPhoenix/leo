@@ -13,6 +13,8 @@ export interface WikiBudgets {
   readonly reducerOutputCap: number;
   readonly checkerInputCap: number;
   readonly checkerOutputCap: number;
+  readonly proposerInputCap: number;
+  readonly proposerOutputCap: number;
 }
 
 export const WIKI_BUDGETS: WikiBudgets = {
@@ -24,6 +26,8 @@ export const WIKI_BUDGETS: WikiBudgets = {
   plannerOutputCap: 1500,
   checkerInputCap: 6000,
   checkerOutputCap: 1500,
+  proposerInputCap: 3000,
+  proposerOutputCap: 1500,
 };
 
 export type WikiBudgetKey = keyof WikiBudgets;
@@ -66,6 +70,8 @@ export function resolveWikiBudgets(opts: ResolveWikiBudgetsOpts): WikiBudgets {
     reducerOutputCap: outputCap(WIKI_BUDGETS.reducerOutputCap),
     checkerInputCap: inputCap(WIKI_BUDGETS.checkerInputCap),
     checkerOutputCap: outputCap(WIKI_BUDGETS.checkerOutputCap),
+    proposerInputCap: inputCap(WIKI_BUDGETS.proposerInputCap),
+    proposerOutputCap: outputCap(WIKI_BUDGETS.proposerOutputCap),
   };
 }
 

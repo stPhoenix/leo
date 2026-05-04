@@ -100,7 +100,119 @@ describe('WikiWidget — phase dispatch', () => {
       accepted: ['f1'],
       rejected: [],
       applySchema: false,
+      notes: [],
     });
+  });
+
+  it('lint confirm row exposes per-row Accept/Discard/Note + Apply submits with notes', () => {
+    const applyLintConfirm = vi.fn();
+    const c = new WikiWidgetController({
+      runId: 'r1',
+      threadId: 't1',
+      op: 'lint',
+      actions: { applyLintConfirm },
+    });
+    c.update({
+      phase: 'awaiting_confirm',
+      findings: [
+        {
+          id: 'f1',
+          page: 'pages/x',
+          action: 'add-xref',
+          severity: 'info',
+          rationale: 'r',
+          accepted: null,
+        },
+        {
+          id: 'f2',
+          page: 'pages/y',
+          action: 'rewrite-stale',
+          severity: 'warn',
+          rationale: 'r',
+          accepted: null,
+        },
+      ],
+      schemaPatchPending: false,
+    });
+    const { container } = render(<WikiWidget controller={c} />);
+    const rows = container.querySelectorAll('[data-slot="wiki-finding-row"]');
+    expect(rows.length).toBe(2);
+    const firstRow = rows[0]!;
+    fireEvent.click(firstRow.querySelector('[data-slot="wiki-finding-accept"]')!);
+    fireEvent.click(firstRow.querySelector('[data-slot="wiki-finding-note-toggle"]')!);
+    const ta = firstRow.querySelector('[data-slot="wiki-finding-note"]') as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: 'use canonical [[y]]' } });
+    fireEvent.click(rows[1]!.querySelector('[data-slot="wiki-finding-discard"]')!);
+    fireEvent.click(screen.getByText('Apply'));
+    expect(applyLintConfirm).toHaveBeenCalledWith({
+      accepted: ['f1'],
+      rejected: ['f2'],
+      applySchema: false,
+      notes: [{ id: 'f1', note: 'use canonical [[y]]' }],
+    });
+  });
+
+  it('lint writing phase renders per-finding status badges', () => {
+    const c = new WikiWidgetController({ runId: 'r1', threadId: 't1', op: 'lint' });
+    c.update({
+      phase: 'writing',
+      pagesEdited: 1,
+      findingsApplied: 1,
+      findingsFailed: 1,
+      findings: [
+        {
+          id: 'f1',
+          page: 'pages/x',
+          action: 'add-xref',
+          severity: 'info',
+          rationale: 'r',
+          accepted: true,
+          patchStatus: 'applied',
+        },
+        {
+          id: 'f2',
+          page: 'pages/y',
+          action: 'contradiction',
+          severity: 'error',
+          rationale: 'r',
+          accepted: true,
+          patchStatus: 'failed',
+          patchError: 'section_not_found',
+        },
+      ],
+    });
+    const { container } = render(<WikiWidget controller={c} />);
+    const badges = container.querySelectorAll('[data-slot="wiki-finding-badge"]');
+    expect(badges.length).toBe(2);
+    expect(badges[0]?.getAttribute('data-status')).toBe('applied');
+    expect(badges[1]?.getAttribute('data-status')).toBe('failed');
+    expect(badges[1]?.textContent).toContain('section_not_found');
+  });
+
+  it('terminal summary surfaces zero-applied warning when accepted>0 and pagesEdited=0', () => {
+    const c = new WikiWidgetController({ runId: 'r1', threadId: 't1', op: 'lint' });
+    c.update({
+      phase: 'done',
+      pagesEdited: 0,
+      findingsApplied: 0,
+      findingsFailed: 1,
+      findings: [
+        {
+          id: 'f1',
+          page: 'pages/x',
+          action: 'contradiction',
+          severity: 'warn',
+          rationale: 'r',
+          accepted: true,
+          patchStatus: 'failed',
+          patchError: 'section_not_found',
+        },
+      ],
+    });
+    const { container } = render(<WikiWidget controller={c} />);
+    const warning = container.querySelector('[data-slot="lint-zero-applied-warning"]');
+    expect(warning).not.toBeNull();
+    expect(warning?.textContent).toContain('1 accepted finding');
   });
 
   it('renders error block when phase=error', () => {

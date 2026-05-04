@@ -9,6 +9,8 @@ import {
 import {
   isTerminal,
   makeInitialViewModel,
+  type LintFindingPatchStatus,
+  type LintFindingSummary,
   type WikiConfigDraft,
   type WikiViewModel,
 } from '@/agent/wiki/widgetState';
@@ -30,14 +32,17 @@ export interface WikiConfigInit {
   readonly sourcesSummary: string;
 }
 
+export interface LintConfirmActionPayload {
+  readonly accepted: readonly string[];
+  readonly rejected: readonly string[];
+  readonly applySchema: boolean;
+  readonly notes?: readonly { readonly id: string; readonly note: string }[];
+}
+
 export interface WikiWidgetActions {
   answerClarification?(text: string): void;
   resolveDuplicate?(decision: 'skip' | 'reprocess' | 'replace'): void;
-  applyLintConfirm?(payload: {
-    readonly accepted: readonly string[];
-    readonly rejected: readonly string[];
-    readonly applySchema: boolean;
-  }): void;
+  applyLintConfirm?(payload: LintConfirmActionPayload): void;
   cancel?(): void;
 }
 
@@ -141,12 +146,80 @@ export class WikiWidgetController {
   resolveDuplicate(decision: 'skip' | 'reprocess' | 'replace'): void {
     this.actions.resolveDuplicate?.(decision);
   }
-  applyLintConfirm(payload: {
-    readonly accepted: readonly string[];
-    readonly rejected: readonly string[];
-    readonly applySchema: boolean;
-  }): void {
+  applyLintConfirm(payload: LintConfirmActionPayload): void {
     this.actions.applyLintConfirm?.(payload);
+  }
+
+  currentFindings(): readonly LintFindingSummary[] {
+    return this.vm.findings ?? [];
+  }
+
+  setFindingNote(id: string, note: string): void {
+    this.patchFinding(id, (f) => ({ ...f, note }));
+  }
+
+  setFindingDecision(id: string, accepted: boolean | null): void {
+    this.patchFinding(id, (f) => ({ ...f, accepted }));
+  }
+
+  setFindingPatchStatus(
+    id: string,
+    status: LintFindingPatchStatus | undefined,
+    error?: string,
+  ): void {
+    this.patchFinding(id, (f) => {
+      const next: LintFindingSummary = { ...f };
+      if (status === undefined) {
+        delete (next as { patchStatus?: LintFindingPatchStatus }).patchStatus;
+      } else {
+        (next as { patchStatus?: LintFindingPatchStatus }).patchStatus = status;
+      }
+      if (error === undefined) {
+        delete (next as { patchError?: string }).patchError;
+      } else {
+        (next as { patchError?: string }).patchError = error;
+      }
+      return next;
+    });
+  }
+
+  applyLintConfirmFromState(applySchema: boolean): void {
+    const findings = this.vm.findings ?? [];
+    const accepted: string[] = [];
+    const rejected: string[] = [];
+    const notes: { id: string; note: string }[] = [];
+    let applySchemaDerived = applySchema;
+    for (const f of findings) {
+      if (f.accepted === true) accepted.push(f.id);
+      else if (f.accepted === false) rejected.push(f.id);
+      if (f.note !== undefined && f.note.trim().length > 0) {
+        notes.push({ id: f.id, note: f.note });
+      }
+      if (f.action === 'schema-drift' && f.accepted === true) {
+        applySchemaDerived = true;
+      }
+    }
+    this.applyLintConfirm({
+      accepted,
+      rejected,
+      applySchema: applySchemaDerived,
+      notes,
+    });
+  }
+
+  private patchFinding(id: string, mutator: (f: LintFindingSummary) => LintFindingSummary): void {
+    if (this.disposed) return;
+    const findings = this.vm.findings;
+    if (findings === undefined) return;
+    let changed = false;
+    const next = findings.map((f) => {
+      if (f.id !== id) return f;
+      const updated = mutator(f);
+      if (updated !== f) changed = true;
+      return updated;
+    });
+    if (!changed) return;
+    this.update({ findings: next });
   }
   cancel(): void {
     this.actions.cancel?.();

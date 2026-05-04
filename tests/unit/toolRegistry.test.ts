@@ -152,4 +152,71 @@ describe('ToolRegistry.invoke', () => {
     const result = await r.invoke('ghost', '{}', makeToolCtx({}));
     expect(result.ok).toBe(false);
   });
+
+  it('non-object-rooted parameters are wrapped at register; LLM-shaped args are unwrapped on invoke', async () => {
+    const r = new ToolRegistry();
+    let receivedByValidate: unknown = null;
+    let receivedByInvoke: unknown = null;
+    const arrayRooted: ToolSpec<readonly number[], string> = {
+      id: 'array-tool',
+      description: 'sum a list',
+      schema: z.array(z.number()) as unknown as z.ZodType<readonly number[]>,
+      parameters: { type: 'array', items: { type: 'number' } },
+      requiresConfirmation: false,
+      source: 'builtin',
+      validate: (raw) => {
+        receivedByValidate = raw;
+        return Array.isArray(raw)
+          ? { ok: true, data: raw as readonly number[] }
+          : { ok: false, error: 'not array' };
+      },
+      invoke: async (args) => {
+        receivedByInvoke = args;
+        return { ok: true, data: 'done' };
+      },
+    };
+    r.register(arrayRooted as unknown as ToolSpec<unknown, unknown>);
+    const stored = r.lookup('array-tool')!;
+    expect(stored.parameters.type).toBe('object');
+    expect(stored.parameters.required).toEqual(['value']);
+    expect(stored.description).toContain('wrapped');
+    const tools = r.toOpenAITools('t1');
+    const def = tools.find((t) => t.function.name === 'array-tool')!;
+    expect((def.function.parameters as { type?: string }).type).toBe('object');
+
+    const result = await r.invoke(
+      'array-tool',
+      JSON.stringify({ value: [1, 2, 3] }),
+      makeToolCtx({}),
+    );
+    expect(result.ok).toBe(true);
+    expect(receivedByValidate).toEqual([1, 2, 3]);
+    expect(receivedByInvoke).toEqual([1, 2, 3]);
+  });
+
+  it('oneOf-rooted parameters get type:object injected without envelope wrap', async () => {
+    const r = new ToolRegistry();
+    const oneOfRooted: ToolSpec<{ kind: string }, string> = {
+      id: 'union-tool',
+      description: 'union shape',
+      schema: z.object({ kind: z.string() }) as unknown as z.ZodType<{ kind: string }>,
+      parameters: {
+        oneOf: [{ type: 'object', properties: { kind: { type: 'string' } }, required: ['kind'] }],
+      } as never,
+      requiresConfirmation: false,
+      source: 'builtin',
+      validate: (raw) =>
+        typeof raw === 'object' && raw !== null && 'kind' in raw
+          ? { ok: true, data: raw as { kind: string } }
+          : { ok: false, error: 'bad' },
+      invoke: async () => ({ ok: true, data: 'ok' }),
+    };
+    r.register(oneOfRooted as unknown as ToolSpec<unknown, unknown>);
+    const stored = r.lookup('union-tool')!;
+    expect(stored.parameters.type).toBe('object');
+    expect((stored.parameters as Record<string, unknown>).oneOf).toBeDefined();
+    expect(stored.description).not.toContain('wrapped');
+    const result = await r.invoke('union-tool', JSON.stringify({ kind: 'a' }), makeToolCtx({}));
+    expect(result.ok).toBe(true);
+  });
 });

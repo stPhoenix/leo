@@ -65,6 +65,14 @@ export interface PlanSourceSummary {
   readonly candidatePages: readonly string[];
 }
 
+export type LintFindingPatchStatus =
+  | 'pending'
+  | 'proposing'
+  | 'applying'
+  | 'applied'
+  | 'failed'
+  | 'skipped';
+
 export interface LintFindingSummary {
   readonly id: string;
   readonly page: string;
@@ -72,6 +80,9 @@ export interface LintFindingSummary {
   readonly severity: 'info' | 'warn' | 'error';
   readonly rationale: string;
   readonly accepted: boolean | null;
+  readonly note?: string;
+  readonly patchStatus?: LintFindingPatchStatus;
+  readonly patchError?: string;
 }
 
 export interface PerSourceStatus {
@@ -126,6 +137,9 @@ export interface WikiViewModel {
   readonly checkProgress?: ProgressCounts;
   readonly findings?: readonly LintFindingSummary[];
   readonly schemaPatchPending?: boolean;
+  readonly schemaEditedConfirmed?: boolean;
+  readonly findingsApplied?: number;
+  readonly findingsFailed?: number;
 
   // Terminal
   readonly perSourceStatuses?: readonly PerSourceStatus[];

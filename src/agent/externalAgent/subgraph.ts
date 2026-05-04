@@ -1,4 +1,5 @@
 import type { Logger } from '@/platform/Logger';
+import type { ProviderTraceContext } from '@/providers/types';
 import type { ExternalAgentAdapter, ExternalEvent } from './adapters/base';
 import {
   applyExternalEvent,
@@ -21,8 +22,19 @@ export interface RefineDeps {
     readonly state: ExternalAgentState;
     readonly userInput: string | null;
     readonly signal: AbortSignal;
+    readonly traceConfig?: ProviderTraceContext;
   }): Promise<RefineDecision>;
 }
+
+export interface ExternalAgentTraceHandle {
+  readonly traceConfig: ProviderTraceContext;
+  end(): Promise<void>;
+}
+
+export type BeginExternalAgentTrace = (input: {
+  readonly runId: string;
+  readonly threadId: string;
+}) => ExternalAgentTraceHandle | null;
 
 export interface AdapterCallDeps {
   start(input: {
@@ -62,6 +74,14 @@ export interface SubgraphDeps {
    * `error.code='abort_timeout'`. Defaults to 2_000 ms (NFR-EXT-01).
    */
   readonly abortGraceMs?: number;
+  /**
+   * Optional Langfuse trace factory. Called once per run; the returned
+   * `traceConfig` is forwarded to the refine sub-agent's ProviderChatRequest
+   * so refine LLM generations are nested under the caller's parent span.
+   * `end()` is invoked exactly once on terminal transition (done | error |
+   * cancelled). The adapter call manages its own trace independently.
+   */
+  readonly beginTrace?: BeginExternalAgentTrace;
 }
 
 export type StateListener = (state: ExternalAgentState) => void;
@@ -138,6 +158,24 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
     terminalResolve = res;
   });
 
+  const traceHandle: ExternalAgentTraceHandle | null =
+    deps.beginTrace !== undefined
+      ? deps.beginTrace({ runId: input.runId, threadId: input.threadId })
+      : null;
+  let traceEnded = false;
+  const endTrace = async (): Promise<void> => {
+    if (traceHandle === null || traceEnded) return;
+    traceEnded = true;
+    try {
+      await traceHandle.end();
+    } catch (err) {
+      deps.logger?.warn('externalAgent.subgraph.trace-end-failed', {
+        runId: input.runId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   const setState = (next: ExternalAgentState): void => {
     if (state === next) return;
     state = next;
@@ -151,7 +189,10 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
         });
       }
     }
-    if (isTerminal(state.phase)) terminalResolve(state);
+    if (isTerminal(state.phase)) {
+      terminalResolve(state);
+      void endTrace();
+    }
   };
 
   const transitionTo = (next: ExternalPhase, patch: Partial<ExternalAgentState> = {}): void => {
@@ -258,6 +299,7 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
           state,
           userInput,
           signal: cancelController.signal,
+          ...(traceHandle !== null ? { traceConfig: traceHandle.traceConfig } : {}),
         });
         const abortObserver = waitForAbort(cancelController.signal);
         const winner = await Promise.race([

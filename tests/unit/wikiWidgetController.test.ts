@@ -95,6 +95,119 @@ describe('WikiWidgetController', () => {
     expect(() => empty.answerClarification('x')).not.toThrow();
   });
 
+  it('per-finding mutators update only the matching id and emit', () => {
+    const c = new WikiWidgetController({ runId: 'r1', threadId: 't1', op: 'lint' });
+    c.update({
+      findings: [
+        {
+          id: 'a',
+          page: 'pages/a',
+          action: 'add-xref',
+          severity: 'info',
+          rationale: 'r',
+          accepted: null,
+        },
+        {
+          id: 'b',
+          page: 'pages/b',
+          action: 'rewrite-stale',
+          severity: 'warn',
+          rationale: 'r',
+          accepted: null,
+        },
+      ],
+    });
+    const listener = vi.fn();
+    c.subscribe(listener);
+    c.setFindingNote('a', 'use canonical');
+    c.setFindingDecision('a', true);
+    c.setFindingPatchStatus('a', 'applying');
+    c.setFindingPatchStatus('b', 'failed', 'section_not_found');
+    const findings = c.currentFindings();
+    expect(findings[0]).toMatchObject({
+      id: 'a',
+      note: 'use canonical',
+      accepted: true,
+      patchStatus: 'applying',
+    });
+    expect(findings[1]).toMatchObject({
+      id: 'b',
+      patchStatus: 'failed',
+      patchError: 'section_not_found',
+    });
+    expect(listener).toHaveBeenCalledTimes(4);
+  });
+
+  it('applyLintConfirmFromState derives accepted/rejected/notes from VM', () => {
+    const applyLintConfirm = vi.fn();
+    const c = new WikiWidgetController({
+      runId: 'r1',
+      threadId: 't1',
+      op: 'lint',
+      actions: { applyLintConfirm },
+    });
+    c.update({
+      findings: [
+        {
+          id: 'a',
+          page: 'pages/a',
+          action: 'add-xref',
+          severity: 'info',
+          rationale: 'r',
+          accepted: true,
+          note: 'note for a',
+        },
+        {
+          id: 'b',
+          page: 'pages/b',
+          action: 'rewrite-stale',
+          severity: 'warn',
+          rationale: 'r',
+          accepted: false,
+        },
+        {
+          id: 'c',
+          page: 'pages/c',
+          action: 'add-xref',
+          severity: 'info',
+          rationale: 'r',
+          accepted: null,
+        },
+      ],
+    });
+    c.applyLintConfirmFromState(false);
+    expect(applyLintConfirm).toHaveBeenCalledWith({
+      accepted: ['a'],
+      rejected: ['b'],
+      applySchema: false,
+      notes: [{ id: 'a', note: 'note for a' }],
+    });
+  });
+
+  it('schema-drift accepted row promotes applySchema to true', () => {
+    const applyLintConfirm = vi.fn();
+    const c = new WikiWidgetController({
+      runId: 'r1',
+      threadId: 't1',
+      op: 'lint',
+      actions: { applyLintConfirm },
+    });
+    c.update({
+      findings: [
+        {
+          id: 's1',
+          page: 'wiki/SCHEMA.md',
+          action: 'schema-drift',
+          severity: 'info',
+          rationale: 'r',
+          accepted: true,
+        },
+      ],
+    });
+    c.applyLintConfirmFromState(false);
+    expect(applyLintConfirm).toHaveBeenCalledWith(expect.objectContaining({ applySchema: true }));
+  });
+
   it('dispose stops further listener fire', () => {
     const c = new WikiWidgetController({ runId: 'r1', threadId: 't1', op: 'ingest' });
     const listener = vi.fn();

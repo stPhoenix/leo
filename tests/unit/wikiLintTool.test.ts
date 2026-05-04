@@ -73,7 +73,7 @@ describe('delegate_wiki_lint tool', () => {
           ok: true,
           data: {
             lintId: 'r',
-            findings: { total: 0, accepted: 0, rejected: 0 },
+            findings: { total: 0, accepted: 0, rejected: 0, applied: 0, failed: 0 },
             pagesEdited: 0,
             schemaEdited: false,
             durationMs: 0,
@@ -95,7 +95,7 @@ describe('delegate_wiki_lint tool', () => {
           ok: true,
           data: {
             lintId: 'r',
-            findings: { total: 0, accepted: 0, rejected: 0 },
+            findings: { total: 0, accepted: 0, rejected: 0, applied: 0, failed: 0 },
             pagesEdited: 0,
             schemaEdited: false,
             durationMs: 0,
@@ -145,7 +145,7 @@ describe('delegate_wiki_lint tool', () => {
       ok: true,
       data: {
         lintId: 'rL',
-        findings: { total: 2, accepted: 1, rejected: 1 },
+        findings: { total: 2, accepted: 1, rejected: 1, applied: 1, failed: 0 },
         pagesEdited: 1,
         schemaEdited: false,
         durationMs: 5,

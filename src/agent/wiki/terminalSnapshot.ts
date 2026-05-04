@@ -10,6 +10,15 @@ const PerSourceStatusSchema = z.object({
   error: z.string().optional(),
 });
 
+const FindingPatchStatusSchema = z.enum([
+  'pending',
+  'proposing',
+  'applying',
+  'applied',
+  'failed',
+  'skipped',
+]);
+
 const FindingSummarySchema = z.object({
   id: z.string(),
   page: z.string(),
@@ -17,6 +26,9 @@ const FindingSummarySchema = z.object({
   severity: z.enum(['info', 'warn', 'error']),
   rationale: z.string(),
   accepted: z.boolean().nullable(),
+  note: z.string().optional(),
+  patchStatus: FindingPatchStatusSchema.optional(),
+  patchError: z.string().optional(),
 });
 
 export const WikiTerminalSnapshotSchema = z.object({
@@ -39,6 +51,8 @@ export const WikiTerminalSnapshotSchema = z.object({
   findingsTotal: z.number().int().nonnegative().default(0),
   findingsAccepted: z.number().int().nonnegative().default(0),
   findingsRejected: z.number().int().nonnegative().default(0),
+  findingsApplied: z.number().int().nonnegative().default(0),
+  findingsFailed: z.number().int().nonnegative().default(0),
   schemaEdited: z.boolean().default(false),
   findings: z.array(FindingSummarySchema).default([]),
 });
@@ -83,7 +97,9 @@ export function buildWikiTerminalSnapshot(input: BuildWikiSnapshotInput): WikiTe
     findingsTotal: findings.length,
     findingsAccepted: accepted,
     findingsRejected: rejected,
-    schemaEdited: view.schemaPatchPending === true,
+    findingsApplied: view.findingsApplied ?? 0,
+    findingsFailed: view.findingsFailed ?? 0,
+    schemaEdited: view.schemaEditedConfirmed === true,
     findings: filterFindings(findings),
   } satisfies Partial<WikiTerminalSnapshot>);
 }
@@ -101,28 +117,44 @@ function filterPerSource(
           }
         : null,
     )
-    .filter((s): s is { rawPath: string; status: 'ok' | 'skipped' | 'replaced' | 'error'; error?: string } =>
-      s !== null,
+    .filter(
+      (
+        s,
+      ): s is {
+        rawPath: string;
+        status: 'ok' | 'skipped' | 'replaced' | 'error';
+        error?: string;
+      } => s !== null,
     );
 }
 
-function filterFindings(
-  list: readonly {
-    id: string;
-    page: string;
-    action: string;
-    severity: 'info' | 'warn' | 'error';
-    rationale: string;
-    accepted: boolean | null;
-  }[],
-): {
+type FindingPatchStatus = z.infer<typeof FindingPatchStatusSchema>;
+
+interface FindingSummaryInput {
+  readonly id: string;
+  readonly page: string;
+  readonly action: string;
+  readonly severity: 'info' | 'warn' | 'error';
+  readonly rationale: string;
+  readonly accepted: boolean | null;
+  readonly note?: string;
+  readonly patchStatus?: FindingPatchStatus;
+  readonly patchError?: string;
+}
+
+interface FindingSummaryOutput {
   id: string;
   page: string;
   action: string;
   severity: 'info' | 'warn' | 'error';
   rationale: string;
   accepted: boolean | null;
-}[] {
+  note?: string;
+  patchStatus?: FindingPatchStatus;
+  patchError?: string;
+}
+
+function filterFindings(list: readonly FindingSummaryInput[]): FindingSummaryOutput[] {
   return list.map((f) => ({
     id: f.id,
     page: f.page,
@@ -130,6 +162,9 @@ function filterFindings(
     severity: f.severity,
     rationale: f.rationale,
     accepted: f.accepted,
+    ...(f.note !== undefined ? { note: f.note } : {}),
+    ...(f.patchStatus !== undefined ? { patchStatus: f.patchStatus } : {}),
+    ...(f.patchError !== undefined ? { patchError: f.patchError } : {}),
   }));
 }
 

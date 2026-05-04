@@ -1,5 +1,11 @@
 import type { Logger } from '@/platform/Logger';
-import type { ChatMessage, OpenAITool, ProviderChatRequest, StreamEvent } from '@/providers/types';
+import type {
+  ChatMessage,
+  OpenAITool,
+  ProviderChatRequest,
+  ProviderTraceContext,
+  StreamEvent,
+} from '@/providers/types';
 import type { RefineDecision, RefineDeps } from './subgraph';
 import type { RefineMessage } from './state';
 import { getRefineSystemPrompt } from './refinePrompt';
@@ -72,7 +78,7 @@ export function createRefineSubAgent(opts: RefineSubAgentOptions): RefineDeps {
   const hardLimit = opts.finalPromptHardLimitChars ?? DEFAULT_HARD_LIMIT;
 
   return {
-    async refine({ state, userInput, signal }) {
+    async refine({ state, userInput, signal, traceConfig }) {
       const messages: ChatMessage[] = [
         { role: 'system', content: systemPrompt() },
         { role: 'user', content: state.originalAsk },
@@ -89,6 +95,7 @@ export function createRefineSubAgent(opts: RefineSubAgentOptions): RefineDeps {
         ...(opts.temperature !== undefined ? { temperature: opts.temperature() } : {}),
         maxTokens: opts.maxTokens !== undefined ? opts.maxTokens() : DEFAULT_MAX_TOKENS,
         tools: REFINE_TOOLS,
+        ...(traceConfig !== undefined ? { trace: buildTraceContext(traceConfig) } : {}),
       };
 
       // Stream-event tool-call parser. Not replaced by LangChain's
@@ -237,6 +244,17 @@ export function createRefineSubAgent(opts: RefineSubAgentOptions): RefineDeps {
 
 function toChatMessage(m: RefineMessage): ChatMessage {
   return { role: m.role, content: m.content };
+}
+
+function buildTraceContext(input: ProviderTraceContext): ProviderTraceContext {
+  return {
+    ...(input.callbacks !== undefined && input.callbacks.length > 0
+      ? { callbacks: input.callbacks }
+      : {}),
+    ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+    ...(input.tags !== undefined && input.tags.length > 0 ? { tags: [...input.tags] } : {}),
+    ...(input.runName !== undefined ? { runName: input.runName } : {}),
+  };
 }
 
 function pickStringField(argsJson: string, field: string): string | null {

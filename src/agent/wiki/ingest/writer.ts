@@ -7,6 +7,7 @@ import {
   WIKI_PAGES_DIR,
   WIKI_SOURCES_DIR,
 } from '@/agent/wiki/paths';
+import type { LintFindingPatch } from '@/agent/wiki/lint/schemas';
 import type { ReducerOutput } from './schemas';
 
 export interface PersistedRawSummary {
@@ -198,7 +199,10 @@ function sanitizeBody(body: string): string {
     let end = cursor + 1;
     while (end < lines.length && (lines[end] ?? '').trim() !== '---') end += 1;
     if (end < lines.length) {
-      text = lines.slice(end + 1).join('\n').replace(/^\s*\n+/, '');
+      text = lines
+        .slice(end + 1)
+        .join('\n')
+        .replace(/^\s*\n+/, '');
     }
   }
   text = text.replace(/\n#{1,6}\s+Sources\s*\n[\s\S]*$/i, '\n');
@@ -289,7 +293,7 @@ interface PageIndexEntry {
   readonly tags: readonly string[];
 }
 
-async function regenerateIndex(vault: VaultAdapter): Promise<string> {
+export async function regenerateIndex(vault: VaultAdapter): Promise<string> {
   if (!(await vault.exists(WIKI_PAGES_DIR))) return defaultEmptyIndex();
   let listing;
   try {
@@ -307,9 +311,7 @@ async function regenerateIndex(vault: VaultAdapter): Promise<string> {
       continue;
     }
     const fm = parseFrontmatter(body);
-    const slug = path
-      .replace(`${WIKI_PAGES_DIR}/`, '')
-      .replace(/\.md$/i, '');
+    const slug = path.replace(`${WIKI_PAGES_DIR}/`, '').replace(/\.md$/i, '');
     const title = extractTitle(body) ?? slug.replace(/-/g, ' ');
     const summary = firstBodyLine(body);
     const tags = parseTagsField(fm['tags']);
@@ -414,4 +416,96 @@ function firstBodyLine(body: string): string {
     return trimmed.slice(0, 120);
   }
   return '';
+}
+
+export interface WriteSourceSummaryDeps {
+  readonly vault: VaultAdapter;
+  readonly logger?: Logger;
+  readonly now?: () => Date;
+}
+
+export type WriteSourceSummaryResult =
+  | { readonly ok: true; readonly path: string }
+  | { readonly ok: false; readonly message: string };
+
+export async function writeSourceSummaryFromPatch(
+  rawPath: string,
+  patch: LintFindingPatch,
+  deps: WriteSourceSummaryDeps,
+): Promise<WriteSourceSummaryResult> {
+  if (patch.kind !== 'create-source-summary') {
+    return { ok: false, message: `unsupported patch kind: ${patch.kind}` };
+  }
+  if (patch.rawPath !== rawPath && patch.rawPath.length > 0) {
+    rawPath = patch.rawPath;
+  }
+  const path = sourcePathFromRaw(rawPath);
+  const fetchedAt = (deps.now ?? ((): Date => new Date()))().toISOString();
+  const lines: string[] = [];
+  lines.push('---');
+  lines.push(`source_url: null`);
+  lines.push(`fetched_at: ${fetchedAt}`);
+  lines.push(`sha256: ""`);
+  lines.push(`raw_path: ${rawPath}`);
+  lines.push('---');
+  lines.push('');
+  lines.push(patch.body.trim());
+  lines.push('');
+  lines.push(`See raw entry: [[${rawPath.replace(/\.md$/i, '')}]]`);
+  lines.push('');
+  try {
+    await deps.vault.mkdir(WIKI_SOURCES_DIR);
+    await deps.vault.write(path, lines.join('\n'));
+    deps.logger?.debug(WIKI_LOG.lint.write.ok, { path });
+    return { ok: true, path };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    deps.logger?.warn(WIKI_LOG.lint.write.failed, { path, error: message });
+    return { ok: false, message };
+  }
+}
+
+export interface AppendLintLogLineInput {
+  readonly runId: string;
+  readonly applied: number;
+  readonly failed: number;
+  readonly pagesEdited: number;
+  readonly cancelled?: boolean;
+  readonly errorCode?: string;
+  readonly errorMessage?: string;
+  readonly logTimestamp?: string;
+}
+
+export interface AppendLogLineDeps {
+  readonly vault: VaultAdapter;
+  readonly logger?: Logger;
+  readonly now?: () => Date;
+}
+
+export async function appendLintLogLine(
+  input: AppendLintLogLineInput,
+  deps: AppendLogLineDeps,
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
+  try {
+    const ts = input.logTimestamp ?? (deps.now ?? ((): Date => new Date()))().toISOString();
+    const date = /^\d{4}-\d{2}-\d{2}/.exec(ts)?.[0] ?? ts.slice(0, 10);
+    let line: string;
+    if (input.errorCode !== undefined) {
+      line = `## [${date}] lint | error | ${input.errorCode}: ${input.errorMessage ?? ''} | runId=${input.runId}`;
+    } else if (input.cancelled === true) {
+      line = `## [${date}] lint | cancelled | applied=${input.applied} failed=${input.failed} edited=${input.pagesEdited} | runId=${input.runId}`;
+    } else {
+      line = `## [${date}] lint | applied=${input.applied} failed=${input.failed} edited=${input.pagesEdited} | runId=${input.runId}`;
+    }
+    const existing = (await deps.vault.exists(WIKI_LOG_PATH))
+      ? await deps.vault.read(WIKI_LOG_PATH)
+      : '# Wiki log\n\n';
+    const next = existing.endsWith('\n') ? `${existing}${line}\n` : `${existing}\n${line}\n`;
+    await deps.vault.write(WIKI_LOG_PATH, next);
+    return { ok: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    deps.logger?.warn(WIKI_LOG.lint.write.failed, { path: WIKI_LOG_PATH, error: message });
+    return { ok: false, message };
+  }
 }

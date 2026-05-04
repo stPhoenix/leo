@@ -751,6 +751,24 @@ export default class LeoPlugin extends Plugin {
           adapterId,
         }),
       persistSnapshot: persistExternalAgentSnapshot,
+      beginTrace: ({ runId, threadId }) => {
+        if (!this.tracer.isEnabled()) return null;
+        const handle = this.tracer.beginTurn({
+          sessionId: threadId,
+          metadata: { runId, agentId: 'external-agent' },
+          tags: ['leo', 'agent:external-agent'],
+          name: 'leo.external-agent.run',
+        });
+        const ctx = handle.traceContext;
+        return {
+          traceConfig: {
+            ...(ctx.callbacks !== undefined ? { callbacks: ctx.callbacks } : {}),
+            metadata: ctx.metadata,
+            tags: ctx.tags,
+          },
+          end: () => handle.end(),
+        };
+      },
     });
     this.toolRegistry.register(
       createDelegateExternalTool({
@@ -897,8 +915,26 @@ export default class LeoPlugin extends Plugin {
         beginPickerFlow: (args) => beginWikiPickerFlow({ ...args, op: 'ingest' }),
         isAllowedVaultPath: wikiSandbox.allow,
         inbox: { vault: wikiVault, logger: this.logger },
-        startRun: (input, runId, controller) =>
-          startIngestRun(input, {
+        startRun: (input, runId, controller) => {
+          const turn = this.tracer.isEnabled()
+            ? this.tracer.beginTurn({
+                sessionId: input.threadId,
+                metadata: { runId, op: 'wiki.ingest' },
+                tags: ['leo', 'wiki:ingest'],
+                name: 'leo.wiki.ingest.run',
+              })
+            : null;
+          const traceConfig =
+            turn !== null
+              ? {
+                  ...(turn.traceContext.callbacks !== undefined
+                    ? { callbacks: turn.traceContext.callbacks }
+                    : {}),
+                  metadata: turn.traceContext.metadata,
+                  tags: turn.traceContext.tags,
+                }
+              : undefined;
+          const result = startIngestRun(input, {
             vault: wikiVault,
             mutex: this.wikiMutex!,
             logger: this.logger,
@@ -912,7 +948,17 @@ export default class LeoPlugin extends Plugin {
             maxOutputTokens: wikiMaxOutputTokens(),
             existingRunId: runId,
             existingController: controller,
-          }),
+            ...(traceConfig !== undefined ? { traceConfig } : {}),
+          });
+          if (turn !== null) {
+            if (result.ok) {
+              const wrappedTerminal = result.handle.terminal.finally(() => turn.end());
+              return { ok: true, handle: { ...result.handle, terminal: wrappedTerminal } };
+            }
+            void turn.end();
+          }
+          return result;
+        },
       }) as unknown as ToolSpec<unknown, unknown>,
     );
 
@@ -923,8 +969,26 @@ export default class LeoPlugin extends Plugin {
     this.toolRegistry.register(
       createDelegateWikiLintTool({
         beginPickerFlow: (args) => beginWikiPickerFlow({ ...args, op: 'lint' }),
-        startRun: (input, runId, controller, requestConfirmation) =>
-          startLintRun(input, {
+        startRun: (input, runId, controller, requestConfirmation) => {
+          const turn = this.tracer.isEnabled()
+            ? this.tracer.beginTurn({
+                sessionId: input.threadId,
+                metadata: { runId, op: 'wiki.lint' },
+                tags: ['leo', 'wiki:lint'],
+                name: 'leo.wiki.lint.run',
+              })
+            : null;
+          const traceConfig =
+            turn !== null
+              ? {
+                  ...(turn.traceContext.callbacks !== undefined
+                    ? { callbacks: turn.traceContext.callbacks }
+                    : {}),
+                  metadata: turn.traceContext.metadata,
+                  tags: turn.traceContext.tags,
+                }
+              : undefined;
+          const result = startLintRun(input, {
             vault: wikiVault,
             mutex: this.wikiMutex!,
             llm:
@@ -937,7 +1001,17 @@ export default class LeoPlugin extends Plugin {
             maxOutputTokens: wikiMaxOutputTokens(),
             existingRunId: runId,
             existingController: controller,
-          }),
+            ...(traceConfig !== undefined ? { traceConfig } : {}),
+          });
+          if (turn !== null) {
+            if (result.ok) {
+              const wrappedTerminal = result.handle.terminal.finally(() => turn.end());
+              return { ok: true, handle: { ...result.handle, terminal: wrappedTerminal } };
+            }
+            void turn.end();
+          }
+          return result;
+        },
       }) as unknown as ToolSpec<unknown, unknown>,
     );
 

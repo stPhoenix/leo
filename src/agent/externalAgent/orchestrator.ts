@@ -6,6 +6,7 @@ import { buildTerminalSnapshot, type ExternalAgentTerminalSnapshot } from './ter
 import {
   startExternalAgentRun,
   type AdapterCallDeps,
+  type BeginExternalAgentTrace,
   type RefineDeps,
   type RunHandle,
   type SubgraphDeps,
@@ -37,6 +38,11 @@ export interface OrchestratorDeps {
    * after the subgraph reaches a terminal state.
    */
   readonly persistSnapshot?: (snapshot: ExternalAgentTerminalSnapshot) => void;
+  /**
+   * Optional Langfuse trace factory; forwarded to the subgraph so refine LLM
+   * generations are nested under the caller's parent span.
+   */
+  readonly beginTrace?: BeginExternalAgentTrace;
 }
 
 export type DelegationStartResult =
@@ -85,6 +91,7 @@ export class ExternalAgentOrchestrator {
       ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
       ...(this.deps.now !== undefined ? { now: this.deps.now } : {}),
       ...(this.deps.abortGraceMs !== undefined ? { abortGraceMs: this.deps.abortGraceMs } : {}),
+      ...(this.deps.beginTrace !== undefined ? { beginTrace: this.deps.beginTrace } : {}),
     };
 
     const adapterId = this.deps.registry.defaultId() ?? null;

@@ -182,6 +182,387 @@ describe('startLintRun — interrupt → Command(resume) round-trip', () => {
   });
 });
 
+describe('startLintRun — per-finding patch pipeline', () => {
+  it('accept all → patches authored → pages rewritten with frontmatter + sources preserved', async () => {
+    const vault = new FakeVault();
+    seed(vault);
+    const linkedPath = `${WIKI_PAGES_DIR}/a.md`;
+    vault.listings.set(WIKI_PAGES_DIR, {
+      files: [linkedPath, `${WIKI_PAGES_DIR}/orphan.md`],
+      folders: [],
+    });
+    vault.files.set(
+      linkedPath,
+      '---\ntitle: A\n---\n\n# A\n\n## Notes\n\nold note line one and two and three\n\n## Sources\n\n- [[s]]',
+    );
+    vault.files.set(`${WIKI_PAGES_DIR}/orphan.md`, '# Orphan\n\nNobody links here.\n');
+    const mutex = new WikiMutex();
+
+    const validFindings = [
+      {
+        id: 'c1',
+        concern: 'contradiction',
+        severity: 'warn',
+        page: linkedPath,
+        rawPath: null,
+        rationale: 'A claims X, B claims not X',
+        patch: null,
+        suggestedQueries: [],
+      },
+    ];
+    const patchResponse = {
+      kind: 'replace_section',
+      section: 'Notes',
+      body: 'updated note line one\nupdated note line two and three',
+    };
+    let call = 0;
+    const llm: LlmJsonInvoker = {
+      async invoke<T>(
+        _input: { system: string; user: string },
+        schema: ZodType<T>,
+        _name: string,
+        _signal: AbortSignal,
+      ): Promise<T> {
+        const responses: unknown[] = [{ findings: validFindings }, { patch: patchResponse }];
+        const value = responses[call] ?? responses[responses.length - 1];
+        call += 1;
+        return schema.parse(value);
+      },
+    };
+
+    const start = startLintRun(
+      { threadId: 't1' },
+      {
+        vault,
+        mutex,
+        llm,
+        concerns: ['contradiction'],
+        requestConfirmation: async (_runId, findings) => ({
+          accepted: findings.map((f) => f.id),
+          rejected: [],
+          applySchema: false,
+        }),
+        now: () => new Date('2026-04-29T12:00:00Z'),
+      },
+    );
+    expect(start.ok).toBe(true);
+    if (!start.ok) return;
+    const term = await start.handle.terminal;
+    expect(term.ok).toBe(true);
+    if (!term.ok) return;
+    expect(term.data.findings.applied).toBe(1);
+    expect(term.data.findings.failed).toBe(0);
+    expect(term.data.pagesEdited).toBe(1);
+    const updated = vault.files.get(linkedPath);
+    expect(updated).toBeDefined();
+    expect(updated!).toContain('---\ntitle: A\n---');
+    expect(updated!).toContain('updated note line one');
+    expect(updated!).not.toContain('old note line');
+    expect(updated!).toContain('## Sources');
+    expect(mutex.active()).toEqual({ kind: 'idle' });
+  });
+
+  it('proposer fails for one finding → marked failed, others succeed', async () => {
+    const vault = new FakeVault();
+    seed(vault);
+    const aPath = `${WIKI_PAGES_DIR}/a.md`;
+    const bPath = `${WIKI_PAGES_DIR}/b.md`;
+    vault.listings.set(WIKI_PAGES_DIR, { files: [aPath, bPath], folders: [] });
+    vault.files.set(
+      aPath,
+      '---\ntitle: A\n---\n\n# A\n\n## Notes\n\nold A\n\n## Sources\n\n- [[s]]',
+    );
+    vault.files.set(
+      bPath,
+      '---\ntitle: B\n---\n\n# B\n\n## Notes\n\nold B\n\n## Sources\n\n- [[s]]',
+    );
+    const mutex = new WikiMutex();
+    const findings = [
+      {
+        id: 'c1',
+        concern: 'contradiction',
+        severity: 'warn',
+        page: aPath,
+        rawPath: null,
+        rationale: 'r',
+        patch: null,
+        suggestedQueries: [],
+      },
+      {
+        id: 'c2',
+        concern: 'contradiction',
+        severity: 'warn',
+        page: bPath,
+        rawPath: null,
+        rationale: 'r',
+        patch: null,
+        suggestedQueries: [],
+      },
+    ];
+    let call = 0;
+    const llm: LlmJsonInvoker = {
+      async invoke<T>(
+        _input: { system: string; user: string },
+        schema: ZodType<T>,
+        _name: string,
+        _signal: AbortSignal,
+      ): Promise<T> {
+        const responses: unknown[] = [
+          { findings },
+          { patch: { kind: 'replace_section', section: 'Notes', body: 'new A note' } },
+          { patch: { kind: 'unknown_kind' } },
+        ];
+        const value = responses[call] ?? responses[responses.length - 1];
+        call += 1;
+        return schema.parse(value);
+      },
+    };
+    const start = startLintRun(
+      { threadId: 't1' },
+      {
+        vault,
+        mutex,
+        llm,
+        concerns: ['contradiction'],
+        requestConfirmation: async (_runId, all) => ({
+          accepted: all.map((f) => f.id),
+          rejected: [],
+          applySchema: false,
+        }),
+      },
+    );
+    expect(start.ok).toBe(true);
+    if (!start.ok) return;
+    const term = await start.handle.terminal;
+    expect(term.ok).toBe(true);
+    if (!term.ok) return;
+    expect(term.data.findings.applied).toBe(1);
+    expect(term.data.findings.failed).toBe(1);
+    expect(term.data.pagesEdited).toBe(1);
+    expect(vault.files.get(aPath)).toContain('new A note');
+    expect(vault.files.get(bPath)).toContain('old B');
+  });
+
+  it('orphan-raw → wiki/sources/<stem>.md created from create-source-summary patch', async () => {
+    const vault = new FakeVault();
+    seed(vault);
+    vault.listings.set(WIKI_RAW_DIR, {
+      files: [`${WIKI_RAW_DIR}/20260429-x.md`],
+      folders: [],
+    });
+    vault.files.set(`${WIKI_RAW_DIR}/20260429-x.md`, '# raw');
+    const mutex = new WikiMutex();
+    const llm: LlmJsonInvoker = {
+      async invoke<T>(
+        _input: { system: string; user: string },
+        schema: ZodType<T>,
+        _name: string,
+        _signal: AbortSignal,
+      ): Promise<T> {
+        const value = {
+          patch: {
+            kind: 'create-source-summary',
+            rawPath: `${WIKI_RAW_DIR}/20260429-x.md`,
+            body: 'summary of x',
+          },
+        };
+        return schema.parse(value);
+      },
+    };
+    const start = startLintRun(
+      { threadId: 't1', scope: { kind: 'orphans' } },
+      {
+        vault,
+        mutex,
+        llm,
+        requestConfirmation: async (_runId, findings) => ({
+          accepted: findings.map((f) => f.id),
+          rejected: [],
+          applySchema: false,
+        }),
+        now: () => new Date('2026-04-29T12:00:00Z'),
+      },
+    );
+    expect(start.ok).toBe(true);
+    if (!start.ok) return;
+    const term = await start.handle.terminal;
+    expect(term.ok).toBe(true);
+    if (!term.ok) return;
+    const expectedSourcePath = `${WIKI_SOURCES_DIR}/20260429-x.md`;
+    expect(vault.files.has(expectedSourcePath)).toBe(true);
+    expect(vault.files.get(expectedSourcePath)!).toContain('summary of x');
+  });
+});
+
+describe('startLintRun — finding.page validation', () => {
+  it('finding.page outside scan.pages is marked failed: invalid_page (no sandbox error)', async () => {
+    const vault = new FakeVault();
+    seed(vault);
+    const aPath = `${WIKI_PAGES_DIR}/a.md`;
+    vault.listings.set(WIKI_PAGES_DIR, { files: [aPath], folders: [] });
+    vault.files.set(aPath, '# A\n\nbody');
+    const mutex = new WikiMutex();
+    const findings = [
+      {
+        id: 'mx-bad',
+        concern: 'missing-xref',
+        severity: 'warn',
+        page: 'SCHEMA.md',
+        rawPath: null,
+        rationale: 'r',
+        patch: null,
+        suggestedQueries: [],
+      },
+    ];
+    const llm: LlmJsonInvoker = {
+      async invoke<T>(
+        _input: { system: string; user: string },
+        schema: ZodType<T>,
+        _name: string,
+        _signal: AbortSignal,
+      ): Promise<T> {
+        return schema.parse({ findings });
+      },
+    };
+    const start = startLintRun(
+      { threadId: 't1' },
+      {
+        vault,
+        mutex,
+        llm,
+        concerns: ['missing-xref'],
+        requestConfirmation: async (_runId, all) => ({
+          accepted: all.map((f) => f.id),
+          rejected: [],
+          applySchema: false,
+        }),
+      },
+    );
+    expect(start.ok).toBe(true);
+    if (!start.ok) return;
+    const term = await start.handle.terminal;
+    expect(term.ok).toBe(true);
+    if (!term.ok) return;
+    expect(term.data.findings.applied).toBe(0);
+    expect(term.data.findings.failed).toBe(1);
+    expect(term.data.pagesEdited).toBe(0);
+  });
+});
+
+describe('startLintRun — orphan-page link-from picker', () => {
+  it('accepted orphan-page → LLM picks target → "## See also" added to target page (not the orphan)', async () => {
+    const vault = new FakeVault();
+    seed(vault);
+    const orphanPath = `${WIKI_PAGES_DIR}/orphan.md`;
+    const targetPath = `${WIKI_PAGES_DIR}/related.md`;
+    vault.listings.set(WIKI_PAGES_DIR, {
+      files: [orphanPath, targetPath],
+      folders: [],
+    });
+    vault.files.set(orphanPath, '---\ntitle: Orphan\n---\n\n# Orphan\n\nbody.\n');
+    vault.files.set(
+      targetPath,
+      '---\ntitle: Related\n---\n\n# Related\n\nbody.\n\n## Sources\n\n- [[s]]',
+    );
+    const mutex = new WikiMutex();
+    const llm: LlmJsonInvoker = {
+      async invoke<T>(
+        _input: { system: string; user: string },
+        schema: ZodType<T>,
+        _name: string,
+        _signal: AbortSignal,
+      ): Promise<T> {
+        const value = {
+          proposal: {
+            targetPage: targetPath,
+            linkText: '- [[orphan|Orphan]]',
+            section: 'See also',
+          },
+        };
+        return schema.parse(value);
+      },
+    };
+    const start = startLintRun(
+      { threadId: 't1', scope: { kind: 'orphans' } },
+      {
+        vault,
+        mutex,
+        llm,
+        requestConfirmation: async (_runId, findings) => ({
+          accepted: findings.map((f) => f.id),
+          rejected: [],
+          applySchema: false,
+        }),
+        now: () => new Date('2026-04-29T12:00:00Z'),
+      },
+    );
+    expect(start.ok).toBe(true);
+    if (!start.ok) return;
+    const term = await start.handle.terminal;
+    expect(term.ok).toBe(true);
+    if (!term.ok) return;
+    expect(term.data.findings.applied).toBe(1);
+    expect(term.data.pagesEdited).toBe(1);
+    const updatedTarget = vault.files.get(targetPath)!;
+    expect(updatedTarget).toContain('## See also');
+    expect(updatedTarget).toContain('- [[orphan|Orphan]]');
+    expect(updatedTarget).toContain('## Sources');
+    // orphan itself unchanged.
+    expect(vault.files.get(orphanPath)).toBe('---\ntitle: Orphan\n---\n\n# Orphan\n\nbody.\n');
+  });
+
+  it('LLM picks invalid target → finding marked failed; no edits', async () => {
+    const vault = new FakeVault();
+    seed(vault);
+    const orphanPath = `${WIKI_PAGES_DIR}/orphan.md`;
+    const otherPath = `${WIKI_PAGES_DIR}/other.md`;
+    vault.listings.set(WIKI_PAGES_DIR, {
+      files: [orphanPath, otherPath],
+      folders: [],
+    });
+    vault.files.set(orphanPath, '# Orphan\n\nbody');
+    vault.files.set(otherPath, '# Other\n\nbody');
+    const mutex = new WikiMutex();
+    const llm: LlmJsonInvoker = {
+      async invoke<T>(
+        _input: { system: string; user: string },
+        schema: ZodType<T>,
+        _name: string,
+        _signal: AbortSignal,
+      ): Promise<T> {
+        return schema.parse({
+          proposal: {
+            targetPage: `${WIKI_PAGES_DIR}/ghost.md`,
+            linkText: '- [[orphan]]',
+            section: null,
+          },
+        });
+      },
+    };
+    const start = startLintRun(
+      { threadId: 't1', scope: { kind: 'orphans' } },
+      {
+        vault,
+        mutex,
+        llm,
+        requestConfirmation: async (_runId, findings) => ({
+          accepted: findings.map((f) => f.id),
+          rejected: [],
+          applySchema: false,
+        }),
+      },
+    );
+    expect(start.ok).toBe(true);
+    if (!start.ok) return;
+    const term = await start.handle.terminal;
+    expect(term.ok).toBe(true);
+    if (!term.ok) return;
+    expect(term.data.findings.applied).toBe(0);
+    expect(term.data.findings.failed).toBeGreaterThan(0);
+    expect(term.data.pagesEdited).toBe(0);
+  });
+});
+
 describe('startLintRun — outermost finally', () => {
   it('LLM throw routes to ERROR + mutex released', async () => {
     const vault = new FakeVault();
