@@ -4,6 +4,7 @@ import { LMStudioProvider } from './lmStudioProvider';
 import {
   createOpenAIProvider,
   createOllamaProvider,
+  createOllamaCloudProvider,
   createCustomProvider,
 } from './openAICompatibleProvider';
 import { AnthropicProvider } from './anthropicProvider';
@@ -23,6 +24,8 @@ export function createProviderForKind(kind: ProviderKind, ctx: ProviderFactoryCo
       return new AnthropicProvider({ apiKey: ctx.apiKey, endpoint: ctx.endpoint });
     case 'ollama':
       return createOllamaProvider({ endpoint: ctx.endpoint });
+    case 'ollama-cloud':
+      return createOllamaCloudProvider({ apiKey: ctx.apiKey, endpoint: ctx.endpoint });
     case 'custom':
       return createCustomProvider({
         baseURL: ctx.endpoint,
@@ -45,11 +48,13 @@ export function defaultEndpointFor(kind: ProviderKind): string {
       return 'https://api.anthropic.com';
     case 'ollama':
       return 'http://localhost:11434';
+    case 'ollama-cloud':
+      return 'https://ollama.com';
     case 'custom':
       return '';
   }
 }
 
 export function kindRequiresApiKey(kind: ProviderKind): boolean {
-  return kind === 'openai' || kind === 'anthropic' || kind === 'custom';
+  return kind === 'openai' || kind === 'anthropic' || kind === 'ollama-cloud' || kind === 'custom';
 }

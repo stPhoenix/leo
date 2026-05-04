@@ -61,7 +61,7 @@ leo/
 │   │   │   └── toolSearchSession.ts
 │   │   ├── wiki/                         # Wiki slice — ingest pipeline, lint, search, inbox; mutex-gated single-active-op; widget + status + paths + logging
 │   │   │   ├── inbox/
-│   │   │   │   └── parse.ts
+│   │   │   │   └── parse.ts                 # wiki-inbox.md pipe-table parser/serializer (cols `Source | Status | Note`, status `open|done|error`); appendRow seeds header when missing; annotateErrorOnRef flips row→error and appends `error: <code>: <msg>` into Note; round-trips non-table lines verbatim
 │   │   │   ├── ingest/                   # Hand-rolled FSM ingest pipeline: refine → fetch/persist → plan → extract → reduce → write
 │   │   │   │   ├── duplicateDetect.ts
 │   │   │   │   ├── duplicatePrompt.ts
@@ -88,7 +88,7 @@ leo/
 │   │   │   ├── seed/
 │   │   │   │   ├── introduction.ts
 │   │   │   │   └── schema.ts
-│   │   │   ├── bootstrap.ts                 # bootstrapWiki — seeds wiki/ tree + wiki-inbox.md, registers default RAG excludes (`wiki/**` via ensureDefaultPrefix + literal `wiki-inbox.md` via ensureDefaultPattern); idempotent
+│   │   │   ├── bootstrap.ts                 # bootstrapWiki — seeds wiki/ tree + wiki-inbox.md (with pipe-table header `| Source | Status | Note |`), registers default RAG excludes (`wiki/**` via ensureDefaultPrefix + literal `wiki-inbox.md` via ensureDefaultPattern); idempotent
 │   │   │   ├── budgets.ts                 # WIKI_BUDGETS + resolveWikiBudgets (dynamic factory by contextWindow + maxOutputTokens) + WIKI_RUN_DEFAULTS
 │   │   │   ├── indexReader.ts
 │   │   │   ├── liveControllerRegistry.ts  # Map<runId, WikiWidgetController> bridging serialized live blocks ↔ controller
@@ -191,9 +191,9 @@ leo/
 │   │   ├── langchainMessages.ts
 │   │   ├── langchainStream.ts            # AIMessageChunk → StreamEvent bridge — emits text/tool_use plus thinking blocks (content[].type 'thinking'/'reasoning'/'redacted_thinking' + additional_kwargs.reasoning_content), drains all open blocks on error
 │   │   ├── lmStudioProvider.ts
-│   │   ├── openAICompatibleProvider.ts
+│   │   ├── openAICompatibleProvider.ts     # OpenAI-compatible factory + concrete builders: createOpenAIProvider / createOllamaProvider (local) / createOllamaCloudProvider (Bearer apiKey, default endpoint `https://ollama.com`) / createCustomProvider
 │   │   ├── providerManager.ts
-│   │   ├── registry.ts
+│   │   ├── registry.ts                     # ProviderKind switchboard (`lmstudio | openai | anthropic | ollama | ollama-cloud | custom`) — createProviderForKind, defaultEndpointFor, kindRequiresApiKey (openai/anthropic/ollama-cloud/custom)
 │   │   ├── traceConfig.ts               # ProviderTraceContext → LangChain RunnableConfig
 │   │   └── types.ts
 │   ├── rag/                             # RAG engine, graph traversal, scoring, exclude/tag matchers
@@ -252,7 +252,7 @@ leo/
 │   │   │   ├── editNote.ts
 │   │   │   ├── globVault.ts             # glob_vault tool — minimatch-based vault file enumeration with cap + truncation
 │   │   │   ├── grepVault.ts             # grep_vault tool — regex search across vault with content/files/count modes + context lines
-│   │   │   ├── inboxAdd.ts               # inbox_add tool — append source ref to wiki inbox queue
+│   │   │   ├── inboxAdd.ts               # inbox_add tool — append source ref as a new row in the wiki-inbox.md pipe-table (`Source | Status | Note`); read-only wrt wiki content, no confirmation
 │   │   │   ├── listNotes.ts
 │   │   │   ├── openNote.ts              # open_note tool — open or reveal a note in an Obsidian leaf
 │   │   │   ├── readFile.ts              # Generic any-file reader with binary detection + offset/limit + maxBytes cap

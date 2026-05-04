@@ -101,7 +101,11 @@ export class ToolSearchSession {
       if (prior.discovered.has(spec.id)) continue;
       deferred.push(spec);
     }
-    const native = isNativeDeferralSupported(this.deps.modelId(), this.deps.providerKind(), settings);
+    const native = isNativeDeferralSupported(
+      this.deps.modelId(),
+      this.deps.providerKind(),
+      settings,
+    );
     return { deferred, all: allSpecs, nativeDeferral: native };
   }
 

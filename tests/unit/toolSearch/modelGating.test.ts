@@ -1,8 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  isNativeDeferralSupported,
-  isToolSearchEnabled,
-} from '@/agent/toolSearch/modelGating';
+import { isNativeDeferralSupported, isToolSearchEnabled } from '@/agent/toolSearch/modelGating';
 import { DEFAULT_TOOL_SEARCH } from '@/settings/settingsStore';
 
 describe('toolSearch.modelGating', () => {

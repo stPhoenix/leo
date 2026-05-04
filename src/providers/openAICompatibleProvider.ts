@@ -149,6 +149,24 @@ export function createOllamaProvider(opts: OllamaProviderOptions = {}): OpenAICo
   });
 }
 
+export interface OllamaCloudProviderOptions {
+  readonly apiKey: () => string;
+  readonly endpoint?: () => string;
+  readonly fetch?: FetchLike;
+}
+
+export function createOllamaCloudProvider(
+  opts: OllamaCloudProviderOptions,
+): OpenAICompatibleProvider {
+  return new OpenAICompatibleProvider({
+    id: 'ollama-cloud',
+    endpoint: opts.endpoint ?? ((): string => 'https://ollama.com'),
+    apiKey: opts.apiKey,
+    headers: () => ({ Authorization: `Bearer ${opts.apiKey()}` }),
+    ...(opts.fetch !== undefined ? { fetch: opts.fetch } : {}),
+  });
+}
+
 export interface CustomProviderOptions {
   readonly baseURL: () => string;
   readonly authHeader?: () => { name: string; value: string } | null;

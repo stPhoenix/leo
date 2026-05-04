@@ -32,7 +32,7 @@ const SEED_INDEX_MD =
   '# Wiki index\n\n_This catalog is regenerated on every ingest. It is empty until the first run._\n';
 const SEED_LOG_MD = '# Wiki log\n\n_Append-only chronological record of ingest and lint runs._\n';
 const SEED_INBOX_MD =
-  '# Wiki inbox\n\n<!-- Append `- [ ] <ref>  <!-- optional note -->` lines. Run `/wiki-ingest` to drain. -->\n';
+  '# Wiki inbox\n\n<!-- Append rows to the table below. Run `/wiki-ingest` to drain. -->\n\n| Source | Status | Note |\n| ------ | ------ | ---- |\n';
 
 export async function bootstrapWiki(opts: WikiBootstrapOptions): Promise<WikiBootstrapResult> {
   const { vault, excludeStore, logger } = opts;

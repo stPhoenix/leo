@@ -75,7 +75,9 @@ describe('assembleToolRequest', () => {
       'mcp.slack.list_channels',
       'mcp.slack.post_message',
     ]);
-    const deferredIds = out.tools.filter((t) => t.defer_loading === true).map((t) => t.function.name);
+    const deferredIds = out.tools
+      .filter((t) => t.defer_loading === true)
+      .map((t) => t.function.name);
     expect(deferredIds.sort()).toEqual([
       'mcp.github.create_issue',
       'mcp.slack.list_channels',

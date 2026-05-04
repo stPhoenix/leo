@@ -73,10 +73,12 @@ describe('runInboxBatch', () => {
       [
         '# inbox',
         '',
-        '- [ ] https://example.com/a',
-        '- [x] notes/already-done.md',
-        '- [ ] notes/missing.md',
-        '- [ ] attachment:zz',
+        '| Source | Status | Note |',
+        '| ------ | ------ | ---- |',
+        '| https://example.com/a | open |  |',
+        '| notes/already-done.md | done |  |',
+        '| notes/missing.md | open |  |',
+        '| attachment:zz | open |  |',
       ].join('\n'),
     );
 
@@ -124,9 +126,9 @@ describe('runInboxBatch', () => {
     expect(startCalls).toEqual(['url', 'vaultPath', 'attachment']);
 
     const final = vault.files.get(WIKI_INBOX_PATH)!;
-    expect(final).toContain('- [x] https://example.com/a');
-    expect(final).toContain('- [x] notes/already-done.md'); // unchanged
-    expect(final).toContain('- [ ] notes/missing.md');
+    expect(final).toContain('| https://example.com/a | done |');
+    expect(final).toContain('| notes/already-done.md | done |'); // unchanged
+    expect(final).toContain('| notes/missing.md | error |');
     expect(final).toContain('error: fetch_vault_missing: gone');
     expect(final).toContain('error: fetch_attachment_missing');
   });
@@ -135,7 +137,13 @@ describe('runInboxBatch', () => {
     const vault = new FakeVault();
     vault.files.set(
       WIKI_INBOX_PATH,
-      ['- [ ] notes/a.md', '- [ ] notes/b.md', '- [ ] notes/c.md'].join('\n'),
+      [
+        '| Source | Status | Note |',
+        '| ------ | ------ | ---- |',
+        '| notes/a.md | open |  |',
+        '| notes/b.md | open |  |',
+        '| notes/c.md | open |  |',
+      ].join('\n'),
     );
     const ac = new AbortController();
     let calls = 0;

@@ -132,7 +132,10 @@ async function listMarkdownFiles(vault: VaultAdapter, dir: string): Promise<read
   } catch {
     return [];
   }
-  return listing.files.filter((f) => f.endsWith('.md')).slice().sort();
+  return listing.files
+    .filter((f) => f.endsWith('.md'))
+    .slice()
+    .sort();
 }
 
 function buildAdjacency(pages: readonly PageNode[]): Map<string, Set<string>> {

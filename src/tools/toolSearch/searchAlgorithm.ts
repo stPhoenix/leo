@@ -135,7 +135,10 @@ function parseNameParts(id: string, isMcp: boolean): readonly string[] {
     }
     return out;
   }
-  const spaced = id.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ').toLowerCase();
+  const spaced = id
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .toLowerCase();
   return spaced.split(/\s+/).filter((s) => s.length > 0);
 }
 

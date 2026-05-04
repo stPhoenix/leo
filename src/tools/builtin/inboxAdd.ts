@@ -40,7 +40,7 @@ export function createInboxAddTool(deps: InboxAddDeps): ToolSpec<InboxAddArgs, I
   return {
     id: INBOX_ADD_TOOL_ID,
     description:
-      'Append a pending ingest item to wiki-inbox.md. Read-only with respect to the wiki content (it edits the inbox checklist only); no confirmation required.',
+      'Append a pending ingest item to wiki-inbox.md as a new row in the `Source | Status | Note` table. Read-only with respect to the wiki content (it edits the inbox table only); no confirmation required.',
     schema: InboxAddSchema,
     parameters: jsonSchemaFromZod(InboxAddSchema),
     requiresConfirmation: false,

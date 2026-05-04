@@ -4,7 +4,10 @@ import type { ToolRegistry } from '@/tools/toolRegistry';
 import type { ToolSpec } from '@/tools/types';
 import type { ContentBlock } from '@/chat/types';
 import { partitionTools } from '@/tools/toolSearch/deferralRules';
-import { extractDiscoveredToolNamesFromHistory, mergeDiscovered } from '@/tools/toolSearch/discovery';
+import {
+  extractDiscoveredToolNamesFromHistory,
+  mergeDiscovered,
+} from '@/tools/toolSearch/discovery';
 import { formatDeferredAnnouncement } from '@/tools/toolSearch/announcement';
 import { TOOL_SEARCH_TOOL_ID } from '@/tools/toolSearch/toolSearchTool';
 import { isNativeDeferralSupported, isToolSearchEnabled } from './modelGating';
@@ -48,7 +51,10 @@ export function assembleToolRequest(input: AssembleToolRequestInput): AssembleTo
   const fromHistory = extractDiscoveredToolNamesFromHistory(input.historyMessages);
   const discovered = mergeDiscovered(input.priorDiscovered, fromHistory);
 
-  const visibleSpecs = input.registry.listFor(input.thread, input.listOptions) as readonly ToolSpec[];
+  const visibleSpecs = input.registry.listFor(
+    input.thread,
+    input.listOptions,
+  ) as readonly ToolSpec[];
   const part = partitionTools(visibleSpecs, discovered, { toolSearchToolId: TOOL_SEARCH_TOOL_ID });
 
   const nativeDefer = isNativeDeferralSupported(input.modelId, input.providerKind, input.settings);

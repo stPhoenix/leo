@@ -12,7 +12,7 @@ This folder is your local, LLM-maintained knowledge base. Leo files factual cont
 - \`log.md\` — append-only chronological record of ingest and lint runs.
 - \`introduction.md\` — this file.
 
-The vault root contains \`wiki-inbox.md\`, a checklist of pending ingest items.
+The vault root contains \`wiki-inbox.md\`, a markdown table of pending ingest items with columns \`Source | Status | Note\`.
 
 ## Source intake
 
@@ -20,7 +20,7 @@ You add ingest sources three ways:
 
 - Drop a URL, vault path, or chat attachment into the agent and ask it to file the result.
 - Run \`/wiki-ingest\` to start an interactive ingest from the composer.
-- Append a line to \`wiki-inbox.md\` (\`- [ ] <ref>  <!-- optional note -->\`) and run \`/wiki-ingest\` later to drain it.
+- Append a row to the \`wiki-inbox.md\` table (\`| <ref> | open | <note?> |\`) and run \`/wiki-ingest\` later to drain it.
 
 Every ingest is gated by an explicit confirmation. Nothing is fetched, persisted, or rewritten without your action.
 

@@ -45,11 +45,7 @@ export async function persistRaw(
   return { rawPath, sha256, fetchedAt, bytes: input.fetched.bytes };
 }
 
-function renderRawFile(
-  fetched: FetchedSource,
-  fetchedAt: string,
-  sha256: string,
-): string {
+function renderRawFile(fetched: FetchedSource, fetchedAt: string, sha256: string): string {
   const lines: string[] = [];
   lines.push('---');
   lines.push(`source: ${escapeYaml(fetched.sourceRef)}`);

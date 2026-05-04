@@ -2164,7 +2164,7 @@ function resolveInlineEndpoint(providerId: string, store: SettingsStore): string
     return settings.provider.endpoint;
   }
   return defaultEndpointFor(
-    providerId as 'lmstudio' | 'openai' | 'anthropic' | 'ollama' | 'custom',
+    providerId as 'lmstudio' | 'openai' | 'anthropic' | 'ollama' | 'ollama-cloud' | 'custom',
   );
 }
 

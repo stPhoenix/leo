@@ -73,6 +73,7 @@ const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
   ollama: 'Ollama (local)',
+  'ollama-cloud': 'Ollama Cloud',
   custom: 'Custom (OpenAI-compatible)',
 };
 
@@ -372,8 +373,9 @@ export class SettingsTab extends PluginSettingTab {
     if (kindRequiresApiKey(settings.provider.kind) && this.deps.safeStorage !== undefined) {
       const safeStorage = this.deps.safeStorage;
       const key = `provider.${settings.provider.kind}.apiKey`;
+      const apiKeySlot = body.createDiv();
       void safeStorage.get(key).then((existing) => {
-        new Setting(body)
+        new Setting(apiKeySlot)
           .setName('API key')
           .setDesc(
             safeStorage.keyringAvailable()

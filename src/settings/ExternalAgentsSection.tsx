@@ -17,6 +17,7 @@ const PROVIDER_KIND_SET: ReadonlySet<ProviderKind> = new Set([
   'openai',
   'anthropic',
   'ollama',
+  'ollama-cloud',
   'custom',
 ]);
 

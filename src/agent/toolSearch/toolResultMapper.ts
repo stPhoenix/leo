@@ -12,10 +12,7 @@ export function buildToolSearchToolMessageContent(
 ): ToolSearchResultWire {
   if (invocation.matches.length === 0) {
     const lines: string[] = ['No matching deferred tools found.'];
-    if (
-      invocation.pending_mcp_servers !== undefined &&
-      invocation.pending_mcp_servers.length > 0
-    ) {
+    if (invocation.pending_mcp_servers !== undefined && invocation.pending_mcp_servers.length > 0) {
       lines.push(
         `Some MCP servers are still connecting: ${invocation.pending_mcp_servers.join(', ')}. Their tools will become available shortly — try searching again.`,
       );

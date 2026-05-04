@@ -13,7 +13,13 @@ export type SectionId =
   | 'appearance'
   | 'advanced';
 
-export type ProviderKind = 'lmstudio' | 'openai' | 'anthropic' | 'ollama' | 'custom';
+export type ProviderKind =
+  | 'lmstudio'
+  | 'openai'
+  | 'anthropic'
+  | 'ollama'
+  | 'ollama-cloud'
+  | 'custom';
 
 export type RagMode = 'auto' | 'no-focus' | 'off';
 
@@ -127,6 +133,7 @@ export const PROVIDER_KINDS: readonly ProviderKind[] = [
   'openai',
   'anthropic',
   'ollama',
+  'ollama-cloud',
   'custom',
 ];
 
