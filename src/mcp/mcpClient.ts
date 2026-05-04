@@ -253,7 +253,7 @@ export class MCPClient {
     ctx: ToolCtx,
   ): Promise<ToolResult<unknown>> {
     const runtime = this.servers.get(serverId);
-    if (runtime === undefined || runtime.connection === undefined) {
+    if (runtime?.connection === undefined) {
       return { ok: false, error: `mcp server not connected: ${serverId}` };
     }
     const start = this.clock();
@@ -287,7 +287,7 @@ export class MCPClient {
     signal?: AbortSignal,
   ): Promise<{ ok: true; data: McpResourceContent } | { ok: false; error: string }> {
     const runtime = this.servers.get(serverId);
-    if (runtime === undefined || runtime.connection === undefined) {
+    if (runtime?.connection === undefined) {
       return { ok: false, error: `mcp server not connected: ${serverId}` };
     }
     if (runtime.connection.readResource === undefined) {
@@ -323,7 +323,7 @@ export class MCPClient {
     signal?: AbortSignal,
   ): Promise<{ ok: true; data: McpPromptContent } | { ok: false; error: string }> {
     const runtime = this.servers.get(serverId);
-    if (runtime === undefined || runtime.connection === undefined) {
+    if (runtime?.connection === undefined) {
       return { ok: false, error: `mcp server not connected: ${serverId}` };
     }
     if (runtime.connection.getPrompt === undefined) {
@@ -436,6 +436,7 @@ export class MCPClient {
       parameters: tool.inputSchema,
       requiresConfirmation: true,
       source: 'mcp',
+      isMcp: true,
       mcpServerId: serverId,
       validate: (raw): ToolResult<unknown> => ({ ok: true, data: raw }),
       invoke: async (args, ctx): Promise<ToolResult<unknown>> =>

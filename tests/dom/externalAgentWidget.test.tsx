@@ -35,7 +35,8 @@ const baseVm = (overrides: Partial<WidgetViewModel> = {}): WidgetViewModel => ({
   originalAsk: 'ask',
   adapters: [{ id: 'mock', label: 'Mock', defaultTimeoutMs: 30_000 }],
   draftAdapterId: 'mock',
-  draftTimeoutMs: 60_000,
+  draftTimeoutMs: 300_000,
+  draftTimeoutMinutes: 5,
   draftRefineBudget: 3,
   clarifyingQuestion: null,
   logEvents: [],
@@ -155,11 +156,11 @@ describe('ExternalAgentWidget — phase rendering', () => {
       baseVm({
         phase: 'ready',
         refinedPrompt: 'x',
-        validationError: 'timeoutMs out of range',
+        validationError: 'timeout out of range [1, 1440] minutes',
       }),
     );
     const { container } = render(<ExternalAgentWidget controller={controller} />);
     const alert = container.querySelector('[role="alert"]');
-    expect(alert?.textContent).toContain('timeoutMs');
+    expect(alert?.textContent).toContain('minutes');
   });
 });

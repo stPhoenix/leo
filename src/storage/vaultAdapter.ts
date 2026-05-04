@@ -8,6 +8,7 @@ export interface VaultListing {
 export interface VaultStat {
   readonly mtimeMs: number;
   readonly size: number;
+  readonly kind?: 'file' | 'folder';
 }
 
 export interface VaultAdapter {
@@ -78,7 +79,8 @@ export function createObsidianVaultAdapter(adapter: DataAdapter, app?: App): Vau
         if (raw === null || raw === undefined) return null;
         const mtimeMs = typeof raw.mtime === 'number' ? raw.mtime : 0;
         const size = typeof raw.size === 'number' ? raw.size : 0;
-        return { mtimeMs, size };
+        const kind: 'file' | 'folder' = raw.type === 'folder' ? 'folder' : 'file';
+        return { mtimeMs, size, kind };
       } catch {
         return null;
       }

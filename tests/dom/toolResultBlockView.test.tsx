@@ -126,7 +126,8 @@ describe('ToolResultBlockView — aria (F05 AC5)', () => {
     );
     const panel = container.querySelector('[data-slot="tool-result"]');
     expect(panel?.getAttribute('aria-label')).toBe('tool result');
-    expect(panel?.getAttribute('role')).toBe('group');
+    // panel is a <section> with implicit role region (Sonar S6819 — explicit role="group" on a section is redundant)
+    expect(panel?.tagName).toBe('SECTION');
     const btn = container.querySelector('[data-slot="tool-result-toggle"]');
     expect(btn?.getAttribute('aria-expanded')).toBe('false');
   });

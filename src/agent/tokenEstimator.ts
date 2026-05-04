@@ -1,3 +1,5 @@
+// Block-typed token tally built on `estimateTokens` (chars/4). Rationale for not using
+// `BaseChatModel.getNumTokens()` lives in `src/agent/tokenCount.ts` (bundle-size cap).
 export type TokenBlock =
   | { readonly type: 'text'; readonly text: string }
   | { readonly type: 'image' }
@@ -134,7 +136,7 @@ export function tokenCountWithEstimation(messages: readonly TokenMessage[]): num
 
 export function estimateTokens(messages: readonly TokenMessage[]): EstimateResult {
   const tail = messages[messages.length - 1];
-  if (tail !== undefined && tail.role === 'assistant' && tail.usage !== undefined) {
+  if (tail?.role === 'assistant' && tail.usage !== undefined) {
     const usageTotal = apiUsageTokens(messages);
     if (usageTotal !== null) return { total: usageTotal, tier: 'usage' };
   }

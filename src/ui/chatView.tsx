@@ -58,8 +58,15 @@ import { createSlashRegistry, type SlashRegistry } from './chat/slashCommands';
 import { createContextCommand, type ContextCommandHandle } from './contextCommand';
 import { createRagCommand, type RagCommandHandle } from './ragCommand';
 import type { RagSnapshot } from '@/rag/ragSnapshot';
+import {
+  createWikiStatusCommand,
+  WIKI_STATUS_WIDGET_KIND,
+  type WikiStatusCommandHandle,
+} from './wikiStatusCommand';
+import type { WikiStatus } from '@/agent/wiki/wikiStatus';
 import './chat/widgets/ContextWidget';
 import './chat/widgets/RagWidget';
+import './chat/widgets/WikiStatusWidget';
 import type { MessageActions } from './chat/MessageActionBar';
 import type { IndexStatusSource } from './chat/IndexStatusBlock';
 import type { DrainListener } from '@/indexer/vaultIndexer';
@@ -101,6 +108,7 @@ export interface ChatViewDeps {
   readonly analyzeContext?: (signal: AbortSignal) => Promise<ContextData>;
   readonly contextSnapshot?: ContextSnapshotStore;
   readonly collectRagSnapshot?: (signal: AbortSignal) => Promise<RagSnapshot>;
+  readonly collectWikiStatus?: (signal: AbortSignal) => Promise<WikiStatus>;
   readonly indexStatusSource?: IndexStatusSource;
   readonly indexDrainSubscribe?: (listener: DrainListener) => () => void;
   readonly onReindexAll?: () => void;
@@ -137,18 +145,19 @@ export class ChatView extends ItemView {
   readonly runStateStore: RunStateStore = new RunStateStore();
   private root: Root | null = null;
   private resizeObserver: ResizeObserver | null = null;
-  private widthListeners = new Set<(w: number) => void>();
-  private renderComponents = new Set<Component>();
+  private readonly widthListeners = new Set<(w: number) => void>();
+  private readonly renderComponents = new Set<Component>();
   private streamingController: StreamingTurnController | null = null;
   private turnDispatcher: TurnDispatcher | null = null;
   private slashRegistry: SlashRegistry | null = null;
   private contextCommand: ContextCommandHandle | null = null;
   private ragCommand: RagCommandHandle | null = null;
+  private wikiStatusCommand: WikiStatusCommandHandle | null = null;
   private liveRegionEl: HTMLElement | null = null;
-  private phaseListeners = new Set<(p: StreamingPhase) => void>();
+  private readonly phaseListeners = new Set<(p: StreamingPhase) => void>();
   private lastPhase: StreamingPhase = 'idle';
   private attachmentRejections: AttachmentRejection[] = [];
-  private rejectionListeners = new Set<() => void>();
+  private readonly rejectionListeners = new Set<() => void>();
   private attachmentsUnsubscribe: (() => void) | null = null;
   private buildChatRootProps: (() => Parameters<typeof ChatRoot>[0]) | null = null;
 
@@ -182,7 +191,7 @@ export class ChatView extends ItemView {
     liveRegion.setAttribute('role', 'status');
     liveRegion.setAttribute('aria-live', 'assertive');
     liveRegion.setAttribute('aria-atomic', 'true');
-    liveRegion.setAttribute('data-slot', 'stream-live-region');
+    liveRegion.dataset.slot = 'stream-live-region';
     this.liveRegionEl = liveRegion;
 
     this.streamingController = new StreamingTurnController({
@@ -590,6 +599,45 @@ export class ChatView extends ItemView {
         run: () => handle.invoke(),
       });
     }
+    const collectWikiStatus = this.deps.collectWikiStatus;
+    if (collectWikiStatus !== undefined) {
+      this.wikiStatusCommand = createWikiStatusCommand({
+        collect: collectWikiStatus,
+        render: (status) => this.renderWikiStatusAsWidget(status),
+        onError: (err) => new Notice(`Wiki status: ${err.message}`),
+        ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
+      });
+      const handle = this.wikiStatusCommand;
+      registry.register({
+        name: 'wiki-status',
+        description: 'Show wiki health summary',
+        run: () => handle.invoke(),
+      });
+    }
+    registry.register({
+      name: 'wiki-ingest',
+      description: 'Ingest a URL, vault note, or attachment into the wiki',
+      run: (ctx) => {
+        const args = ctx.args.trim();
+        const seed =
+          args.length > 0
+            ? `Ingest the following into the wiki: ${args}`
+            : 'Ingest a knowledge source into the wiki. Ask me for the URL, vault path, or attachment id, then call delegate_wiki_ingest.';
+        this.beginTurn(seed);
+      },
+    });
+    registry.register({
+      name: 'wiki-lint',
+      description: 'Lint the wiki: scan, check, propose fixes',
+      run: (ctx) => {
+        const args = ctx.args.trim();
+        const seed =
+          args.length > 0
+            ? `Lint the wiki with scope: ${args}`
+            : 'Lint the wiki. Call delegate_wiki_lint with the default scope.';
+        this.beginTurn(seed);
+      },
+    });
     return registry;
   }
 
@@ -646,6 +694,17 @@ export class ChatView extends ItemView {
     });
   }
 
+  private renderWikiStatusAsWidget(status: WikiStatus): void {
+    const now = new Date().toISOString();
+    this.messageStore.append({
+      id: `wiki-status-${Date.now()}`,
+      role: 'widget',
+      content: '',
+      createdAt: now,
+      widget: { kind: WIKI_STATUS_WIDGET_KIND, props: { status } },
+    });
+  }
+
   private openOverflowMenu(_anchor: HTMLElement): void {
     /* later features extend through addAction or via dependency injection */
   }
@@ -679,7 +738,7 @@ export class ChatView extends ItemView {
   private renderEditDiffIfAvailable(block: ToolUseBlock): JSX.Element | null {
     if (!EDIT_TOOL_NAMES.has(block.name)) return null;
     const result = this.runStateStore.getSnapshot().toolResults.get(block.id);
-    if (result === undefined || result.ok !== true) return null;
+    if (result?.ok !== true) return null;
     const data = result.data as { before?: unknown; after?: unknown; path?: unknown };
     if (typeof data?.before !== 'string' || typeof data?.after !== 'string') return null;
     return createElement(DiffView, {

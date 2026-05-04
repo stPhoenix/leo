@@ -71,5 +71,9 @@ export interface ToolSpec<TArgs = unknown, TData = unknown> extends ToolSpecBase
   readonly requiresConfirmation: boolean;
   readonly source: ToolSource;
   readonly validate: ToolValidate<TArgs>;
+  readonly isMcp?: boolean;
+  readonly shouldDefer?: boolean;
+  readonly alwaysLoad?: boolean;
+  readonly searchHint?: string;
   invoke(args: TArgs, ctx: ToolCtx): Promise<ToolResult<TData>>;
 }

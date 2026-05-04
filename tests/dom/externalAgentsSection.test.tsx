@@ -167,6 +167,103 @@ describe('ExternalAgentsSection', () => {
     expect(after.type).toBe('text');
   });
 
+  it('inline-agent renders provider apiKey field directly under providerId dropdown', () => {
+    class InlineMock extends ExternalAgentAdapter {
+      readonly id = 'inline-agent';
+      readonly label = 'Inline Agent';
+      readonly defaultTimeoutMs = 1000;
+      readonly capabilities = { files: false, stream: true } as const;
+      readonly configSchema = z.object({
+        providerId: z.string().default('lmstudio'),
+        model: z.string().default(''),
+        temperature: z.number().default(0.2),
+      });
+      start(_i: ExternalAgentInput): AsyncIterable<ExternalEvent> {
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: async () => ({ value: undefined as unknown as ExternalEvent, done: true }),
+          }),
+        };
+      }
+    }
+    const r = makeRegistry([new InlineMock()]);
+    const providerOptions = [
+      { id: 'lmstudio', label: 'LM Studio' },
+      { id: 'anthropic', label: 'Anthropic' },
+    ];
+    const { container } = render(
+      <ExternalAgentsSection
+        registry={r}
+        settings={{
+          defaultAdapterId: 'inline-agent',
+          adapters: {
+            'inline-agent': {
+              enabled: true,
+              config: { providerId: 'anthropic', model: '', temperature: 0.2 },
+            },
+          },
+        }}
+        onChange={() => undefined}
+        providerOptions={providerOptions}
+        readSecret={async () => ''}
+        writeSecret={async () => undefined}
+      />,
+    );
+    const body = container.querySelector(
+      '[data-adapter-id="inline-agent"] .leo-eas-adapter-body',
+    ) as HTMLElement;
+    const children = Array.from(body.children) as HTMLElement[];
+    const providerIdIdx = children.findIndex(
+      (c) => c.querySelector('select[aria-label="inline-agent.providerId"]') !== null,
+    );
+    const apiKeyIdx = children.findIndex(
+      (c) => c.getAttribute('data-slot') === 'external-agents-provider-apikey',
+    );
+    expect(providerIdIdx).toBeGreaterThanOrEqual(0);
+    expect(apiKeyIdx).toBe(providerIdIdx + 1);
+    expect(
+      (
+        container.querySelector(
+          '[data-slot="external-agents-provider-apikey"]',
+        ) as HTMLElement | null
+      )?.getAttribute('data-provider-kind'),
+    ).toBe('anthropic');
+  });
+
+  it('inline-agent omits apiKey field when provider does not require one (lmstudio)', () => {
+    class InlineMock extends ExternalAgentAdapter {
+      readonly id = 'inline-agent';
+      readonly label = 'Inline Agent';
+      readonly defaultTimeoutMs = 1000;
+      readonly capabilities = { files: false, stream: true } as const;
+      readonly configSchema = z.object({
+        providerId: z.string().default('lmstudio'),
+      });
+      start(_i: ExternalAgentInput): AsyncIterable<ExternalEvent> {
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: async () => ({ value: undefined as unknown as ExternalEvent, done: true }),
+          }),
+        };
+      }
+    }
+    const r = makeRegistry([new InlineMock()]);
+    const { container } = render(
+      <ExternalAgentsSection
+        registry={r}
+        settings={{
+          defaultAdapterId: 'inline-agent',
+          adapters: {
+            'inline-agent': { enabled: true, config: { providerId: 'lmstudio' } },
+          },
+        }}
+        onChange={() => undefined}
+        providerOptions={[{ id: 'lmstudio', label: 'LM Studio' }]}
+      />,
+    );
+    expect(container.querySelector('[data-slot="external-agents-provider-apikey"]')).toBeNull();
+  });
+
   it('shows warning when configured default is disabled', () => {
     const r = makeRegistry([new MockA(), new MockB()]);
     const { container } = render(

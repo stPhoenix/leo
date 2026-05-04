@@ -1,7 +1,9 @@
-import { memo, useEffect, useMemo, useState } from 'react';
+import { Fragment, memo, useEffect, useMemo, useState } from 'react';
 import type { z } from 'zod';
 import type { AdapterRegistry } from '@/agent/externalAgent/adapterRegistry';
 import type { ExternalAgentAdapter } from '@/agent/externalAgent/adapters/base';
+import { kindRequiresApiKey } from '@/providers/registry';
+import type { ProviderKind } from './settingsStore';
 import type { SafeStorage } from '@/storage/safeStorage';
 import {
   describeConfigSchema,
@@ -9,6 +11,15 @@ import {
   type ZodFieldDescriptor,
 } from './externalAgentResolver';
 import type { ExternalAgentInstanceSettings, ExternalAgentsSettings } from './settingsStore';
+
+const PROVIDER_KIND_SET: ReadonlySet<ProviderKind> = new Set([
+  'lmstudio',
+  'openai',
+  'anthropic',
+  'ollama',
+  'ollama-cloud',
+  'custom',
+]);
 
 export interface ProviderOption {
   readonly id: string;
@@ -24,6 +35,7 @@ export interface ExternalAgentsSectionProps {
   readonly writeSecret?: (key: string, value: string) => Promise<void>;
   readonly providerOptions?: readonly ProviderOption[];
   readonly discoveredModels?: readonly { readonly id: string }[];
+  readonly onProviderApiKeyChanged?: () => Promise<void> | void;
 }
 
 const EMPTY_NOTE =
@@ -118,6 +130,9 @@ function ExternalAgentsSectionImpl(props: ExternalAgentsSectionProps): JSX.Eleme
               {...(props.discoveredModels !== undefined
                 ? { discoveredModels: props.discoveredModels }
                 : {})}
+              {...(props.onProviderApiKeyChanged !== undefined
+                ? { onProviderApiKeyChanged: props.onProviderApiKeyChanged }
+                : {})}
             />
           ))}
         </ul>
@@ -136,6 +151,7 @@ interface AdapterBlockProps {
   readonly writeSecret?: (key: string, value: string) => Promise<void>;
   readonly providerOptions?: readonly ProviderOption[];
   readonly discoveredModels?: readonly { readonly id: string }[];
+  readonly onProviderApiKeyChanged?: () => Promise<void> | void;
 }
 
 function AdapterBlock(props: AdapterBlockProps): JSX.Element {
@@ -146,6 +162,17 @@ function AdapterBlock(props: AdapterBlockProps): JSX.Element {
     const config = setIn(instance.config, path, next);
     onChange({ config: config as Record<string, unknown> });
   };
+
+  let inlineProviderId: string | null = null;
+  if (adapter.id === 'inline-agent') {
+    const cfg = instance.config as { providerId?: unknown };
+    inlineProviderId = typeof cfg.providerId === 'string' ? cfg.providerId : 'lmstudio';
+  }
+  const inlineProviderKind: ProviderKind | null =
+    inlineProviderId !== null && PROVIDER_KIND_SET.has(inlineProviderId as ProviderKind)
+      ? (inlineProviderId as ProviderKind)
+      : null;
+  const showInlineApiKey = inlineProviderKind !== null && kindRequiresApiKey(inlineProviderKind);
 
   return (
     <li
@@ -168,27 +195,114 @@ function AdapterBlock(props: AdapterBlockProps): JSX.Element {
         {fields.length === 0 ? (
           <p className="leo-eas-no-fields">No configurable fields.</p>
         ) : (
-          fields.map((f) => (
-            <FieldRow
-              key={f.path.join('.')}
-              field={f}
-              value={getIn(instance.config, f.path)}
-              schema={adapter.configSchema}
-              adapterId={adapter.id}
-              onChange={(v) => setConfigPath(f.path, v)}
-              {...(props.readSecret !== undefined ? { readSecret: props.readSecret } : {})}
-              {...(props.writeSecret !== undefined ? { writeSecret: props.writeSecret } : {})}
-              {...(props.providerOptions !== undefined
-                ? { providerOptions: props.providerOptions }
-                : {})}
-              {...(props.discoveredModels !== undefined
-                ? { discoveredModels: props.discoveredModels }
-                : {})}
-            />
-          ))
+          fields.map((f) => {
+            const isProviderIdField =
+              adapter.id === 'inline-agent' && f.path.length === 1 && f.path[0] === 'providerId';
+            return (
+              <Fragment key={f.path.join('.')}>
+                <FieldRow
+                  field={f}
+                  value={getIn(instance.config, f.path)}
+                  schema={adapter.configSchema}
+                  adapterId={adapter.id}
+                  onChange={(v) => setConfigPath(f.path, v)}
+                  {...(props.readSecret !== undefined ? { readSecret: props.readSecret } : {})}
+                  {...(props.writeSecret !== undefined ? { writeSecret: props.writeSecret } : {})}
+                  {...(props.providerOptions !== undefined
+                    ? { providerOptions: props.providerOptions }
+                    : {})}
+                  {...(props.discoveredModels !== undefined
+                    ? { discoveredModels: props.discoveredModels }
+                    : {})}
+                />
+                {isProviderIdField && showInlineApiKey && inlineProviderKind !== null ? (
+                  <ProviderApiKeyField
+                    providerKind={inlineProviderKind}
+                    adapterId={adapter.id}
+                    readSecret={props.readSecret}
+                    writeSecret={props.writeSecret}
+                    onProviderApiKeyChanged={props.onProviderApiKeyChanged}
+                  />
+                ) : null}
+              </Fragment>
+            );
+          })
         )}
       </div>
     </li>
+  );
+}
+
+interface ProviderApiKeyFieldProps {
+  readonly providerKind: ProviderKind;
+  readonly adapterId: string;
+  readonly readSecret?: (key: string) => Promise<string>;
+  readonly writeSecret?: (key: string, value: string) => Promise<void>;
+  readonly onProviderApiKeyChanged?: () => Promise<void> | void;
+}
+
+function ProviderApiKeyField(props: ProviderApiKeyFieldProps): JSX.Element {
+  const storageKey = `provider.${props.providerKind}.apiKey`;
+  const [draft, setDraft] = useState<string>('');
+  const [stored, setStored] = useState<boolean>(false);
+  const [reveal, setReveal] = useState(false);
+
+  useEffect(() => {
+    setDraft('');
+    let cancelled = false;
+    if (props.readSecret !== undefined) {
+      void props.readSecret(storageKey).then((v) => {
+        if (!cancelled) setStored(v.length > 0);
+      });
+    } else {
+      setStored(false);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [storageKey, props.readSecret]);
+
+  const save = async (): Promise<void> => {
+    if (props.writeSecret === undefined) return;
+    await props.writeSecret(storageKey, draft);
+    setStored(draft.length > 0);
+    setDraft('');
+    if (props.onProviderApiKeyChanged !== undefined) {
+      await props.onProviderApiKeyChanged();
+    }
+  };
+
+  const labelText = `apiKey (provider: ${props.providerKind})`;
+  return (
+    <label
+      className="leo-eas-field leo-eas-field-secret"
+      data-slot="external-agents-provider-apikey"
+      data-provider-kind={props.providerKind}
+    >
+      <span>{labelText}</span>
+      <input
+        type={reveal ? 'text' : 'password'}
+        className="leo-eas-input"
+        aria-label={`${props.adapterId}.${labelText}`}
+        placeholder={stored ? '(stored — leave blank to keep)' : ''}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft.length > 0) void save();
+        }}
+      />
+      <button
+        type="button"
+        className="leo-eas-reveal"
+        aria-label={`Toggle reveal for ${labelText}`}
+        onClick={() => setReveal((v) => !v)}
+      >
+        {reveal ? 'Hide' : 'Reveal'}
+      </button>
+      <small className="leo-eas-help">
+        Shared with the main provider settings. Stored via SafeStorage.
+      </small>
+    </label>
   );
 }
 
@@ -204,68 +318,75 @@ interface FieldRowProps {
   readonly discoveredModels?: readonly { readonly id: string }[];
 }
 
+function renderInlineAgentSpecialField(props: FieldRowProps, label: string): JSX.Element | null {
+  if (props.adapterId !== 'inline-agent' || props.field.path.length !== 1) return null;
+  if (props.field.path[0] === 'providerId' && (props.providerOptions?.length ?? 0) > 0) {
+    return renderProviderIdSelect(props, label);
+  }
+  if (props.field.path[0] === 'model' && (props.discoveredModels?.length ?? 0) > 0) {
+    return renderInlineModelSelect(props, label);
+  }
+  return null;
+}
+
+function renderProviderIdSelect(props: FieldRowProps, label: string): JSX.Element {
+  const opts = props.providerOptions ?? [];
+  return (
+    <label className="leo-eas-field" key={label}>
+      <span>{label}</span>
+      <select
+        className="leo-eas-select"
+        aria-label={`${props.adapterId}.${label}`}
+        value={typeof props.value === 'string' ? props.value : ''}
+        onChange={(e) => props.onChange(e.target.value)}
+      >
+        {opts.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {props.field.description !== undefined ? (
+        <small className="leo-eas-help">{props.field.description}</small>
+      ) : null}
+    </label>
+  );
+}
+
+function renderInlineModelSelect(props: FieldRowProps, label: string): JSX.Element {
+  const models = props.discoveredModels ?? [];
+  const current = typeof props.value === 'string' ? props.value : '';
+  const known = models.some((m) => m.id === current);
+  return (
+    <label className="leo-eas-field" key={label}>
+      <span>{label}</span>
+      <select
+        className="leo-eas-select"
+        aria-label={`${props.adapterId}.${label}`}
+        value={current}
+        onChange={(e) => props.onChange(e.target.value)}
+      >
+        <option value="">(use default)</option>
+        {!known && current.length > 0 ? (
+          <option value={current}>{current} (not in list)</option>
+        ) : null}
+        {models.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.id}
+          </option>
+        ))}
+      </select>
+      {props.field.description !== undefined ? (
+        <small className="leo-eas-help">{props.field.description}</small>
+      ) : null}
+    </label>
+  );
+}
+
 function FieldRow(props: FieldRowProps): JSX.Element {
   const label = props.field.path.join('.');
-  const isInlineProviderId =
-    props.adapterId === 'inline-agent' &&
-    props.field.path.length === 1 &&
-    props.field.path[0] === 'providerId';
-  const isInlineModel =
-    props.adapterId === 'inline-agent' &&
-    props.field.path.length === 1 &&
-    props.field.path[0] === 'model';
-  if (isInlineProviderId && (props.providerOptions?.length ?? 0) > 0) {
-    const opts = props.providerOptions ?? [];
-    return (
-      <label className="leo-eas-field" key={label}>
-        <span>{label}</span>
-        <select
-          className="leo-eas-select"
-          aria-label={`${props.adapterId}.${label}`}
-          value={typeof props.value === 'string' ? props.value : ''}
-          onChange={(e) => props.onChange(e.target.value)}
-        >
-          {opts.map((o) => (
-            <option key={o.id} value={o.id}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-        {props.field.description !== undefined ? (
-          <small className="leo-eas-help">{props.field.description}</small>
-        ) : null}
-      </label>
-    );
-  }
-  if (isInlineModel && (props.discoveredModels?.length ?? 0) > 0) {
-    const models = props.discoveredModels ?? [];
-    const current = typeof props.value === 'string' ? props.value : '';
-    const known = models.some((m) => m.id === current);
-    return (
-      <label className="leo-eas-field" key={label}>
-        <span>{label}</span>
-        <select
-          className="leo-eas-select"
-          aria-label={`${props.adapterId}.${label}`}
-          value={current}
-          onChange={(e) => props.onChange(e.target.value)}
-        >
-          <option value="">(use default)</option>
-          {!known && current.length > 0 ? (
-            <option value={current}>{current} (not in list)</option>
-          ) : null}
-          {models.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.id}
-            </option>
-          ))}
-        </select>
-        {props.field.description !== undefined ? (
-          <small className="leo-eas-help">{props.field.description}</small>
-        ) : null}
-      </label>
-    );
-  }
+  const inlineSpecial = renderInlineAgentSpecialField(props, label);
+  if (inlineSpecial !== null) return inlineSpecial;
   switch (props.field.kind) {
     case 'string':
       return (
@@ -296,6 +417,9 @@ function FieldRow(props: FieldRowProps): JSX.Element {
             value={typeof props.value === 'number' ? props.value : 0}
             onChange={(e) => props.onChange(Number(e.target.value))}
           />
+          {props.field.description !== undefined ? (
+            <small className="leo-eas-help">{props.field.description}</small>
+          ) : null}
         </label>
       );
     case 'boolean':
@@ -308,6 +432,9 @@ function FieldRow(props: FieldRowProps): JSX.Element {
             onChange={(e) => props.onChange(e.target.checked)}
           />
           <span>{label}</span>
+          {props.field.description !== undefined ? (
+            <small className="leo-eas-help">{props.field.description}</small>
+          ) : null}
         </label>
       );
     case 'string-array':
@@ -328,6 +455,9 @@ function FieldRow(props: FieldRowProps): JSX.Element {
               )
             }
           />
+          {props.field.description !== undefined ? (
+            <small className="leo-eas-help">{props.field.description}</small>
+          ) : null}
         </label>
       );
     case 'object':

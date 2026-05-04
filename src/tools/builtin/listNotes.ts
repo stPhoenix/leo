@@ -61,52 +61,77 @@ export function createListNotesTool(): ToolSpec<ListNotesArgs, ListNotesResult> 
         if (root.length > 0 && !(await ctx.vault.exists(root))) {
           return { ok: false, error: `folder not found: ${root}` };
         }
-        if (args.recursive !== true) {
-          const listing = await ctx.vault.list(root);
-          return {
-            ok: true,
-            data: {
-              path: root,
-              files: listing.files.filter((f) => !hasHiddenSegment(f)),
-              folders: listing.folders.filter((d) => !hasHiddenSegment(d)),
-            },
-          };
-        }
-        const files: string[] = [];
-        const folders: string[] = [];
-        const queue: string[] = [root];
-        let truncated = false;
-        while (queue.length > 0) {
-          if (ctx.signal.aborted) return { ok: false, error: 'aborted' };
-          const cur = queue.shift() as string;
-          const listing = await ctx.vault.list(cur);
-          for (const f of listing.files) {
-            if (hasHiddenSegment(f)) continue;
-            if (files.length + folders.length >= MAX_ENTRIES) {
-              truncated = true;
-              break;
-            }
-            files.push(f);
-          }
-          if (truncated) break;
-          for (const d of listing.folders) {
-            if (hasHiddenSegment(d)) continue;
-            if (files.length + folders.length >= MAX_ENTRIES) {
-              truncated = true;
-              break;
-            }
-            folders.push(d);
-            queue.push(d);
-          }
-          if (truncated) break;
-        }
-        return {
-          ok: true,
-          data: { path: root, files, folders, ...(truncated ? { truncated: true } : {}) },
-        };
+        if (args.recursive !== true) return await listShallow(root, ctx);
+        return await listRecursive(root, ctx);
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
   };
+}
+
+interface ListVaultCtx {
+  readonly vault: {
+    list(p: string): Promise<{ files: readonly string[]; folders: readonly string[] }>;
+  };
+  readonly signal: AbortSignal;
+}
+
+async function listShallow(
+  root: string,
+  ctx: ListVaultCtx,
+): Promise<{ ok: true; data: { path: string; files: string[]; folders: string[] } }> {
+  const listing = await ctx.vault.list(root);
+  return {
+    ok: true,
+    data: {
+      path: root,
+      files: listing.files.filter((f) => !hasHiddenSegment(f)),
+      folders: listing.folders.filter((d) => !hasHiddenSegment(d)),
+    },
+  };
+}
+
+async function listRecursive(
+  root: string,
+  ctx: ListVaultCtx,
+): Promise<
+  | { ok: true; data: { path: string; files: string[]; folders: string[]; truncated?: true } }
+  | { ok: false; error: string }
+> {
+  const files: string[] = [];
+  const folders: string[] = [];
+  const queue: string[] = [root];
+  let truncated = false;
+  while (queue.length > 0 && !truncated) {
+    if (ctx.signal.aborted) return { ok: false, error: 'aborted' };
+    const cur = queue.shift() as string;
+    const listing = await ctx.vault.list(cur);
+    truncated = collectListingEntries(listing, files, folders, queue);
+  }
+  return {
+    ok: true,
+    data: { path: root, files, folders, ...(truncated ? { truncated: true } : {}) },
+  };
+}
+
+// Returns true when MAX_ENTRIES is hit and the caller should stop.
+function collectListingEntries(
+  listing: { files: readonly string[]; folders: readonly string[] },
+  files: string[],
+  folders: string[],
+  queue: string[],
+): boolean {
+  for (const f of listing.files) {
+    if (hasHiddenSegment(f)) continue;
+    if (files.length + folders.length >= MAX_ENTRIES) return true;
+    files.push(f);
+  }
+  for (const d of listing.folders) {
+    if (hasHiddenSegment(d)) continue;
+    if (files.length + folders.length >= MAX_ENTRIES) return true;
+    folders.push(d);
+    queue.push(d);
+  }
+  return false;
 }

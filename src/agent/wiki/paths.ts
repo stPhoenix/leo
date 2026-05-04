@@ -1,0 +1,10 @@
+export const WIKI_DIR = 'wiki';
+export const WIKI_DIR_PREFIX = 'wiki/';
+export const WIKI_RAW_DIR = 'wiki/raw';
+export const WIKI_SOURCES_DIR = 'wiki/sources';
+export const WIKI_PAGES_DIR = 'wiki/pages';
+export const WIKI_INBOX_PATH = 'wiki-inbox.md';
+export const WIKI_INTRODUCTION_PATH = 'wiki/introduction.md';
+export const WIKI_SCHEMA_PATH = 'wiki/SCHEMA.md';
+export const WIKI_INDEX_PATH = 'wiki/index.md';
+export const WIKI_LOG_PATH = 'wiki/log.md';

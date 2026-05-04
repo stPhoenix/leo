@@ -174,7 +174,7 @@ describe('VaultIndexer', () => {
 
   it("mismatch + 'revert-model' calls revertModel with the stored spec", async () => {
     const reverted: Array<{ model: string }> = [];
-    const { indexer } = await buildIndexer({
+    const { indexer, promptCalls } = await buildIndexer({
       existingHeader: { model: 'old-m' },
       spec: { model: 'new-m' },
       prompt: 'revert-model',
@@ -182,10 +182,9 @@ describe('VaultIndexer', () => {
         if (prev !== undefined) reverted.push(prev);
       },
     });
-    // The revertModel receives the header spec; we need the prev callback signature wired correctly
-    const result = await indexer.init();
-    void result;
-    // Either the test passes via the type-safe revertModel option, or the buildIndexer wrapper swallows it — keep light
+    await indexer.init();
+    expect(promptCalls()).toBe(1);
+    expect(indexer.queueSize()).toBe(0);
     indexer.shutdown();
   });
 
@@ -292,6 +291,7 @@ describe('VaultIndexer', () => {
     const nextDrain = indexer.processDueWork(new AbortController().signal);
     await vi.runAllTimersAsync();
     await nextDrain;
+    expect(indexer.queueSize()).toBe(0);
     indexer.shutdown();
   });
 

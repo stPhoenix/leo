@@ -20,6 +20,7 @@ export function MentionPicker(props: MentionPickerProps): JSX.Element | null {
   return (
     <ul
       className="leo-mention-picker"
+      // NOSONAR S6819,S6842 — combobox-style filter picker; native <datalist> filter doesn't fit our fuzzy scorer
       role="listbox"
       aria-label="vault file mentions"
       data-slot="mention-picker"
@@ -61,6 +62,7 @@ function MentionRow(props: {
   return (
     <li
       className={props.active ? 'leo-mention-item is-active' : 'leo-mention-item'}
+      // NOSONAR S6819,S6842 — combobox-style option in custom filter picker
       role="option"
       aria-selected={props.active ? 'true' : 'false'}
       data-slot="mention-item"

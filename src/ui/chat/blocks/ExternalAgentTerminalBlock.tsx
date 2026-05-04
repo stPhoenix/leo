@@ -18,6 +18,12 @@ function ExternalAgentTerminalBlockImpl(
 
 export const ExternalAgentTerminalBlock = memo(ExternalAgentTerminalBlockImpl);
 
+function phaseIcon(phase: string): string {
+  if (phase === 'done') return '✓';
+  if (phase === 'cancelled') return '✕';
+  return '⚠';
+}
+
 interface TerminalViewProps {
   readonly snapshot: ExternalAgentTerminalSnapshot;
 }
@@ -25,8 +31,7 @@ interface TerminalViewProps {
 function TerminalView(props: TerminalViewProps): JSX.Element {
   const { snapshot } = props;
   const [expanded, setExpanded] = useState(false);
-  const icon =
-    snapshot.terminalPhase === 'done' ? '✓' : snapshot.terminalPhase === 'cancelled' ? '✕' : '⚠';
+  const icon = phaseIcon(snapshot.terminalPhase);
   const folder = snapshot.folder;
   const isReload = snapshot.terminalPhase === 'error' && snapshot.error?.code === 'reload';
   return (
@@ -72,7 +77,8 @@ function TerminalView(props: TerminalViewProps): JSX.Element {
               <span className="leo-ea-label">Refine transcript:</span>
               <ul className="leo-ea-transcript">
                 {snapshot.refineTranscript.map((m, i) => (
-                  <li key={i} className={`leo-ea-transcript-${m.role}`}>
+                  // NOSONAR S6479 — transcript is immutable post-terminal; index is stable
+                  <li key={`${i}-${m.role}`} className={`leo-ea-transcript-${m.role}`}>
                     <strong>{m.role}:</strong> {m.content}
                   </li>
                 ))}

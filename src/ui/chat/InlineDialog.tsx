@@ -53,6 +53,7 @@ export function InlineDialog(props: InlineDialogProps): JSX.Element {
   return (
     <div
       className="leo-inline-dialog leo-accept-reject"
+      // NOSONAR S6819 — inline chat-flow modal; native <dialog> default styling conflicts with chat-list layout
       role="dialog"
       aria-modal="true"
       aria-label={`review ${proposal.toolId} edit`}

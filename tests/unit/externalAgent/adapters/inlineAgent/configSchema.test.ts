@@ -55,7 +55,7 @@ describe('inlineAgentConfigSchema (F02)', () => {
     expect(out.providerId).toBe('lmstudio');
     expect(out.temperature).toBe(0.2);
     expect(out.routing.mode).toBe('auto');
-    expect(out.planner.planMaxSteps).toBe(8);
+    expect(out.planner.planMaxSteps).toBe(4);
     expect(out.budgets.maxIterationsSimple).toBe(12);
     expect(out.budgets.maxIterationsMultistep).toBe(32);
     expect(out.budgets.maxTokens).toBe(100_000);

@@ -246,7 +246,8 @@ function buildSkill(args: {
   readonly path: string;
   readonly vault: VaultAdapter;
 }): Skill {
-  const { blueprint, skillRoot, path, vault } = args;
+  // `vault` arg is reserved for future asset reads; not destructured yet to avoid an unused binding.
+  const { blueprint, skillRoot, path } = args;
   const body = blueprint.body;
   return {
     type: 'prompt',
@@ -300,7 +301,6 @@ function buildSkill(args: {
           marker: `<command-name>${blueprint.name}</command-name>`,
         },
       ];
-      void vault; // reserved for future asset reads
       return { messages, finalContent, path };
     },
   };

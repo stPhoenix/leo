@@ -3,11 +3,16 @@ import type { InlineRoute } from './runState';
 export const HARD_MAX_ITERATIONS = 64;
 export const SYNTHESIZE_RESERVE_DEFAULT = 4;
 
+export const DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768;
+export const DEFAULT_AUTOCOMPACT_THRESHOLD_PCT = 0.75;
+
 export interface InlineAgentBudgetsConfig {
   readonly maxIterationsSimple: number;
   readonly maxIterationsMultistep: number;
   readonly maxTokens: number;
   readonly wallClockMs: number;
+  readonly contextWindowTokens?: number;
+  readonly autocompactThresholdPct?: number;
 }
 
 export function selectMaxIterations(route: InlineRoute, config: InlineAgentBudgetsConfig): number {

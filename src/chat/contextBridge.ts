@@ -41,10 +41,19 @@ function toTokenBlock(b: ContentBlock): TokenBlock {
     case 'tool_use':
       return { type: 'tool_use', name: b.name, input: b.input };
     case 'tool_result':
+      if (typeof b.content === 'string') {
+        return { type: 'tool_result', content: [{ type: 'text', text: b.content }] };
+      }
       return {
         type: 'tool_result',
-        content: [{ type: 'text', text: typeof b.content === 'string' ? b.content : '' }],
+        content: b.content.map((inner) =>
+          inner.type === 'text'
+            ? ({ type: 'text', text: inner.text } as const)
+            : ({ type: 'text', text: inner.tool_name } as const),
+        ),
       };
+    case 'tool_reference':
+      return { type: 'text', text: b.tool_name };
     case 'redacted_thinking':
       return { type: 'redacted_thinking', data: b.data };
   }

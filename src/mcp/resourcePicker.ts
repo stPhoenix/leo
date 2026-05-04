@@ -62,7 +62,8 @@ export function composeResourceContent(results: readonly ResolvedResource[]): {
       failed.push(r.staged.uri);
       continue;
     }
-    const header = `[mcp.resource ${r.staged.serverId}:${content.uri}${content.mimeType !== undefined ? ` (${content.mimeType})` : ''}]`;
+    const mimeSuffix = content.mimeType !== undefined ? ` (${content.mimeType})` : '';
+    const header = `[mcp.resource ${r.staged.serverId}:${content.uri}${mimeSuffix}]`;
     const body = content.text ?? `<binary ${content.blob?.byteLength ?? 0} bytes>`;
     blocks.push(`${header}\n${body}`);
   }

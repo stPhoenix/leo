@@ -114,6 +114,7 @@ export function PlanApprovalDialog(props: PlanApprovalDialogProps): JSX.Element 
     return (
       <div
         className="leo-plan-approval"
+        // NOSONAR S6819 — inline chat-flow modal; native <dialog> default styling conflicts with chat-list layout
         role="dialog"
         aria-modal="true"
         aria-label="plan approval"
@@ -127,6 +128,7 @@ export function PlanApprovalDialog(props: PlanApprovalDialogProps): JSX.Element 
     return (
       <div
         className="leo-plan-approval leo-plan-approval-view"
+        // NOSONAR S6819 — inline chat-flow modal; native <dialog> default styling conflicts with chat-list layout
         role="dialog"
         aria-modal="true"
         aria-label="Plan approval"
@@ -178,6 +180,7 @@ export function PlanApprovalDialog(props: PlanApprovalDialogProps): JSX.Element 
   return (
     <div
       className="leo-plan-approval leo-plan-approval-edit"
+      // NOSONAR S6819 — inline chat-flow modal; native <dialog> default styling conflicts with chat-list layout
       role="dialog"
       aria-modal="true"
       aria-label="Edit plan"

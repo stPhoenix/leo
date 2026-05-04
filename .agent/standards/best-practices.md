@@ -5,6 +5,7 @@ This guide gives practical guardrails so code remains readable, testable, and ea
 ## Core Principles
 
 - **KISS (Keep It Simple, Stupid)**: Prefer the least complex approach that satisfies the requirement; resist premature abstractions and speculative features.
+- **Framework First**: Reach for primitives shipped by frameworks already in the stack (LangChain Runnables, LangGraph state, Zod schemas, Obsidian APIs) before writing new code. Reinventing what a framework provides ships boilerplate, doubles failure surface, and rots when the framework evolves. Hand-roll only when (a) no framework primitive matches, or (b) a documented platform constraint blocks the primitive — and write a comment citing the constraint.
 - **DRY (Don’t Repeat Yourself)**: Consolidate duplicated knowledge into a single source of truth; use shared helpers, libraries, or configuration instead of copy/paste.
 - **Single Responsibility**: Every component (function, struct, service) should have one reason to change; split logic when a unit mixes concerns.
 - **Fail Fast**: Validate inputs early, panic only when invariants break, and surface errors at boundaries; it tightens feedback loops and simplifies debugging.

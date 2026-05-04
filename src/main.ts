@@ -53,6 +53,8 @@ import { LEO_PREAMBLE, PLAN_MODE_RULE } from '@/agent/types';
 import type { ChatMessage } from '@/providers/types';
 import { ToolRegistry } from '@/tools/toolRegistry';
 import { createReadNoteTool } from '@/tools/builtin/readNote';
+import { createToolSearchTool } from '@/tools/toolSearch/toolSearchTool';
+import { ToolSearchSession } from '@/agent/toolSearch/toolSearchSession';
 import { createListNotesTool } from '@/tools/builtin/listNotes';
 import { createReadFileTool } from '@/tools/builtin/readFile';
 import { createGlobVaultTool } from '@/tools/builtin/globVault';
@@ -85,9 +87,35 @@ import { ChatMessageStore } from '@/chat/messageStore';
 import { DEFAULT_THREAD_ID, type ConversationStore } from '@/storage/conversationStore';
 import { createObsidianVaultAdapter } from '@/storage/vaultAdapter';
 import type { StoredMessage } from '@/storage/conversationSchema';
-import type { ChatMessageRecord } from '@/chat/types';
+import type { BannerKind, ChatMessageRecord } from '@/chat/types';
 import { recordsToAnalyzerInputs } from '@/chat/contextBridge';
 import { wireIndexerRag, type AppLike, type IndexerRagWiring } from '@/indexer/wireIndexerRag';
+import { bootstrapWiki } from '@/agent/wiki/bootstrap';
+import { collectWikiStatus } from '@/agent/wiki/wikiStatus';
+import { WIKI_MUTEX_IDLE } from '@/agent/wiki/mutexTypes';
+import { WikiMutex } from '@/agent/wiki/mutex';
+import { createWikiBusyNotifier } from '@/agent/wiki/searchWarning';
+import { startIngestRun } from '@/agent/wiki/ingest/subgraph';
+import {
+  createDelegateWikiIngestTool,
+  type PickerOutcome,
+} from '@/tools/builtin/delegateWikiIngest';
+import { createInboxAddTool } from '@/tools/builtin/inboxAdd';
+import {
+  WIKI_LIVE_KIND,
+  registerWikiLiveController,
+  releaseWikiLiveController,
+} from '@/agent/wiki/liveControllerRegistry';
+import { createLlmJsonInvoker } from '@/agent/wiki/ingest/llmAdapter';
+import { startLintRun } from '@/agent/wiki/lint/subgraph';
+import { createDelegateWikiLintTool } from '@/tools/builtin/delegateWikiLint';
+import { createWikiSandbox, restrictedVaultAdapter } from '@/agent/wiki/restrictedVaultAdapter';
+import { generateWikiRunId } from '@/agent/wiki/runIdRegistry';
+import { WikiWidgetController, type WikiPickerDeps } from '@/agent/wiki/widgetController';
+import type { ProviderOverride } from '@/agent/wiki/ingest/types';
+import { PROVIDER_KINDS, type ProviderKind } from '@/settings/settingsStore';
+import { kindRequiresApiKey } from '@/providers/registry';
+import type { ProviderModel } from '@/providers/types';
 import { IndexerStatusTap } from '@/indexer/indexerStatusTap';
 import { createRagSnapshotCollector, type RagSnapshotCollector } from '@/rag/ragSnapshot';
 import { RAG_PALETTE_COMMAND_ID, RAG_PALETTE_COMMAND_NAME } from '@/ui/ragCommand';
@@ -96,6 +124,7 @@ import {
   filenameMatch,
   type SearchVaultHit,
 } from '@/tools/builtin/searchVault';
+import { createSearchWikiTool } from '@/tools/builtin/searchWiki';
 import { EditLockController } from '@/editor/editLock';
 import { HighlightController } from '@/editor/highlights';
 import { createLockDecorationExtension } from '@/editor/cm6LockDecoration';
@@ -138,6 +167,8 @@ import {
 } from '@/agent/externalAgent/terminalSnapshot';
 import { ExternalAgentTerminalBlock } from '@/ui/chat/blocks/ExternalAgentTerminalBlock';
 import { ExternalAgentLiveBlock } from '@/ui/chat/blocks/ExternalAgentLiveBlock';
+import '@/ui/chat/blocks/WikiLiveBlock';
+import '@/ui/chat/blocks/WikiTerminalBlock';
 import { registerWidget } from '@/ui/chat/widgets/registry';
 import { resolveAdapterConfig } from '@/settings/externalAgentResolver';
 import {
@@ -153,6 +184,7 @@ import {
   type AssistantStep as InlineAgentAssistantStep,
   type RewriteMessage as InlineAgentRewriteMessage,
   type InlineAgentConfig,
+  type InvokeTraceConfig as InlineAgentInvokeTraceConfig,
 } from '@/agent/externalAgent/adapters/inlineAgent';
 import { ChatOpenAI } from '@langchain/openai';
 import { ChatAnthropic } from '@langchain/anthropic';
@@ -166,8 +198,13 @@ import {
   writeFileInputSchema,
   listDirInputSchema,
   deleteFileInputSchema,
+  appendFileInputSchema,
+  grepInputSchema,
+  globInputSchema,
+  downloadToFileInputSchema,
   publishArtifactInputSchema,
   extractNoteInputSchema,
+  todoWriteInputSchema,
 } from '@/agent/externalAgent/adapters/inlineAgent/tools/schemas';
 import { defaultEndpointFor } from '@/providers/registry';
 import { SAFE_STORAGE_PREFIX } from '@/settings/externalAgentResolver';
@@ -300,6 +337,7 @@ export default class LeoPlugin extends Plugin {
   private contextSnapshotKeepalive: (() => void) | null = null;
   private indexerStatusTap: IndexerStatusTap | null = null;
   private ragCollector: RagSnapshotCollector | null = null;
+  private wikiMutex: WikiMutex | null = null;
   private vectorStoreUnavailableReason: string | null = null;
   private vectorStoreCorruptionUnsub: (() => void) | null = null;
   private threadsSubUnsub: (() => void) | null = null;
@@ -309,7 +347,17 @@ export default class LeoPlugin extends Plugin {
   private providerStatusEl: HTMLElement | null = null;
   private connectionUnsub: (() => void) | null = null;
   private indexerStatusEl: HTMLElement | null = null;
-  private autocompactTracking = createTrackingState();
+  private readonly autocompactTracking = createTrackingState();
+  private readonly inlineProviderKeys: Record<string, string> = {};
+  private readonly inlineTavilyKey: { value: string } = { value: '' };
+
+  private async refreshInlineProviderSecrets(): Promise<void> {
+    for (const kind of INLINE_KNOWN_PROVIDER_KINDS) {
+      this.inlineProviderKeys[kind] = (await this.safeStorage.get(`provider.${kind}.apiKey`)) ?? '';
+    }
+    this.inlineTavilyKey.value =
+      (await this.safeStorage.get('externalAgents.inline-agent.tavilyApiKey')) ?? '';
+  }
 
   private getActiveThreadId(): string {
     return this.threadsStore?.activeIdOrNull() ?? DEFAULT_THREAD_ID;
@@ -440,19 +488,10 @@ export default class LeoPlugin extends Plugin {
         return map;
       },
     });
-    const inlineProviderKeys: Record<string, string> = {};
-    const inlineTavilyKey = { value: '' };
-    const refreshInlineSecrets = async (): Promise<void> => {
-      for (const kind of INLINE_KNOWN_PROVIDER_KINDS) {
-        inlineProviderKeys[kind] = (await this.safeStorage.get(`provider.${kind}.apiKey`)) ?? '';
-      }
-      inlineTavilyKey.value =
-        (await this.safeStorage.get('externalAgents.inline-agent.tavilyApiKey')) ?? '';
-    };
-    await refreshInlineSecrets();
+    await this.refreshInlineProviderSecrets();
     this.register(
       this.store.on(() => {
-        void refreshInlineSecrets();
+        void this.refreshInlineProviderSecrets();
       }),
     );
     const inlineAgentProviderFactory: InlineAgentProviderFactory = (providerId, model, opts) =>
@@ -461,15 +500,35 @@ export default class LeoPlugin extends Plugin {
         model,
         ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
         endpoint: resolveInlineEndpoint(providerId, this.store),
-        apiKey: inlineProviderKeys[providerId] ?? '',
+        apiKey: this.inlineProviderKeys[providerId] ?? '',
+        disableThinking: this.store.get().provider.disableThinking,
       });
+    const tracerRef = this.tracer;
     this.adapterRegistry.register(
       new InlineAgentAdapter({
         providerFactory: inlineAgentProviderFactory,
         logger: this.logger,
         chatModelAdapter: bindInlineChatModelAdapter,
         resolveSearchWebApiKey: (config) =>
-          resolveInlineSearchWebKey(config, inlineTavilyKey.value),
+          resolveInlineSearchWebKey(config, this.inlineTavilyKey.value),
+        beginTurn: ({ sessionId, runId }) => {
+          if (tracerRef?.isEnabled() !== true) return null;
+          const handle = tracerRef.beginTurn({
+            sessionId,
+            metadata: { runId, agentId: 'inline-agent' },
+            tags: ['leo', 'agent:inline-agent'],
+            name: 'leo.inline-agent.turn',
+          });
+          const callbacks = handle.traceContext.callbacks;
+          return {
+            traceConfig: {
+              ...(callbacks !== undefined ? { callbacks } : {}),
+              metadata: handle.traceContext.metadata,
+              tags: handle.traceContext.tags,
+            },
+            end: () => handle.end(),
+          };
+        },
       }),
     );
     this.toolRegistry.register(createReadNoteTool() as unknown as ToolSpec<unknown, unknown>);
@@ -692,6 +751,24 @@ export default class LeoPlugin extends Plugin {
           adapterId,
         }),
       persistSnapshot: persistExternalAgentSnapshot,
+      beginTrace: ({ runId, threadId }) => {
+        if (!this.tracer.isEnabled()) return null;
+        const handle = this.tracer.beginTurn({
+          sessionId: threadId,
+          metadata: { runId, agentId: 'external-agent' },
+          tags: ['leo', 'agent:external-agent'],
+          name: 'leo.external-agent.run',
+        });
+        const ctx = handle.traceContext;
+        return {
+          traceConfig: {
+            ...(ctx.callbacks !== undefined ? { callbacks: ctx.callbacks } : {}),
+            metadata: ctx.metadata,
+            tags: ctx.tags,
+          },
+          end: () => handle.end(),
+        };
+      },
     });
     this.toolRegistry.register(
       createDelegateExternalTool({
@@ -723,6 +800,217 @@ export default class LeoPlugin extends Plugin {
               error: err instanceof Error ? err.message : String(err),
             });
           }
+        },
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+
+    const wikiLlmInvoker = createLlmJsonInvoker({
+      chatModel: () => {
+        const s = this.store.get();
+        return buildInlineChatModel({
+          providerId: s.provider.kind,
+          model: s.provider.chatModel,
+          endpoint: resolveInlineEndpoint(s.provider.kind, this.store),
+          apiKey: this.inlineProviderKeys[s.provider.kind] ?? '',
+          ...(s.provider.temperature !== undefined ? { temperature: s.provider.temperature } : {}),
+          disableThinking: s.provider.disableThinking,
+        });
+      },
+    });
+    const wikiContextWindow = (): number => {
+      const s = this.store.get();
+      return resolveContextWindow({
+        model: s.provider.chatModel,
+        ...(s.contextWindowOverride !== undefined ? { userOverride: s.contextWindowOverride } : {}),
+      });
+    };
+    const wikiMaxOutputTokens = (): number => this.store.get().provider.maxTokens;
+
+    const wikiSandbox = createWikiSandbox();
+    const wikiVault = restrictedVaultAdapter(vaultAdapter, wikiSandbox.allow);
+
+    const buildWikiOverrideInvoker = (override: ProviderOverride) =>
+      createLlmJsonInvoker({
+        chatModel: () => {
+          const s = this.store.get();
+          return buildInlineChatModel({
+            providerId: override.providerId,
+            model: override.model,
+            endpoint: resolveInlineEndpoint(override.providerId, this.store),
+            apiKey: this.inlineProviderKeys[override.providerId] ?? '',
+            ...(s.provider.temperature !== undefined
+              ? { temperature: s.provider.temperature }
+              : {}),
+            disableThinking: s.provider.disableThinking,
+          });
+        },
+      });
+
+    const listModelsForProvider = async (
+      providerId: ProviderKind,
+      signal: AbortSignal,
+    ): Promise<readonly ProviderModel[]> => {
+      const provider = createProviderForKind(providerId, {
+        endpoint: () => resolveInlineEndpoint(providerId, this.store),
+        apiKey: () => this.inlineProviderKeys[providerId] ?? '',
+      });
+      return provider.listModels(signal);
+    };
+
+    const wikiPickerDeps: WikiPickerDeps = {
+      listModelsForProvider,
+      requiresApiKey: (providerId) => kindRequiresApiKey(providerId),
+      hasApiKey: (providerId) => (this.inlineProviderKeys[providerId] ?? '').length > 0,
+    };
+
+    const beginWikiPickerFlow = async (args: {
+      readonly threadId: string;
+      readonly originalAsk: string;
+      readonly sourcesSummary: string;
+      readonly op: 'ingest' | 'lint';
+    }): Promise<PickerOutcome | null> => {
+      const runId = generateWikiRunId({});
+      const controller = new WikiWidgetController({
+        runId,
+        threadId: args.threadId,
+        op: args.op,
+      });
+      registerWikiLiveController(runId, controller);
+      try {
+        this.chatMessageStore.append({
+          id: `wiki-${args.op}-${runId}`,
+          role: 'widget',
+          content: '',
+          createdAt: new Date().toISOString(),
+          widget: {
+            kind: WIKI_LIVE_KIND,
+            props: { runId, threadId: args.threadId, op: args.op },
+          },
+        });
+      } catch (err) {
+        this.logger.warn(`wiki.${args.op}.live.append-failed`, {
+          runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      const s = this.store.get();
+      const override = await controller.startConfigPhase(wikiPickerDeps, {
+        providers: PROVIDER_KINDS,
+        defaultProviderId: s.provider.kind,
+        defaultModel: s.provider.chatModel,
+        originalAsk: args.originalAsk,
+        sourcesSummary: args.sourcesSummary,
+      });
+      if (override === null) {
+        controller.setPhase('cancelled');
+        releaseWikiLiveController(runId);
+        return null;
+      }
+      return { override, runId, controller };
+    };
+
+    this.toolRegistry.register(
+      createDelegateWikiIngestTool({
+        vault: wikiVault,
+        beginPickerFlow: (args) => beginWikiPickerFlow({ ...args, op: 'ingest' }),
+        isAllowedVaultPath: wikiSandbox.allow,
+        inbox: { vault: wikiVault, logger: this.logger },
+        startRun: (input, runId, controller) => {
+          const turn = this.tracer.isEnabled()
+            ? this.tracer.beginTurn({
+                sessionId: input.threadId,
+                metadata: { runId, op: 'wiki.ingest' },
+                tags: ['leo', 'wiki:ingest'],
+                name: 'leo.wiki.ingest.run',
+              })
+            : null;
+          const traceConfig =
+            turn !== null
+              ? {
+                  ...(turn.traceContext.callbacks !== undefined
+                    ? { callbacks: turn.traceContext.callbacks }
+                    : {}),
+                  metadata: turn.traceContext.metadata,
+                  tags: turn.traceContext.tags,
+                }
+              : undefined;
+          const result = startIngestRun(input, {
+            vault: wikiVault,
+            mutex: this.wikiMutex!,
+            logger: this.logger,
+            llm:
+              input.providerOverride !== undefined
+                ? buildWikiOverrideInvoker(input.providerOverride)
+                : wikiLlmInvoker,
+            fetch: {},
+            requestDuplicateChoice: async () => 'skip',
+            contextWindow: wikiContextWindow(),
+            maxOutputTokens: wikiMaxOutputTokens(),
+            existingRunId: runId,
+            existingController: controller,
+            ...(traceConfig !== undefined ? { traceConfig } : {}),
+          });
+          if (turn !== null) {
+            if (result.ok) {
+              const wrappedTerminal = result.handle.terminal.finally(() => turn.end());
+              return { ok: true, handle: { ...result.handle, terminal: wrappedTerminal } };
+            }
+            void turn.end();
+          }
+          return result;
+        },
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+
+    this.toolRegistry.register(
+      createInboxAddTool({ vault: vaultAdapter }) as unknown as ToolSpec<unknown, unknown>,
+    );
+
+    this.toolRegistry.register(
+      createDelegateWikiLintTool({
+        beginPickerFlow: (args) => beginWikiPickerFlow({ ...args, op: 'lint' }),
+        startRun: (input, runId, controller, requestConfirmation) => {
+          const turn = this.tracer.isEnabled()
+            ? this.tracer.beginTurn({
+                sessionId: input.threadId,
+                metadata: { runId, op: 'wiki.lint' },
+                tags: ['leo', 'wiki:lint'],
+                name: 'leo.wiki.lint.run',
+              })
+            : null;
+          const traceConfig =
+            turn !== null
+              ? {
+                  ...(turn.traceContext.callbacks !== undefined
+                    ? { callbacks: turn.traceContext.callbacks }
+                    : {}),
+                  metadata: turn.traceContext.metadata,
+                  tags: turn.traceContext.tags,
+                }
+              : undefined;
+          const result = startLintRun(input, {
+            vault: wikiVault,
+            mutex: this.wikiMutex!,
+            llm:
+              input.providerOverride !== undefined
+                ? buildWikiOverrideInvoker(input.providerOverride)
+                : wikiLlmInvoker,
+            logger: this.logger,
+            requestConfirmation,
+            contextWindow: wikiContextWindow(),
+            maxOutputTokens: wikiMaxOutputTokens(),
+            existingRunId: runId,
+            existingController: controller,
+            ...(traceConfig !== undefined ? { traceConfig } : {}),
+          });
+          if (turn !== null) {
+            if (result.ok) {
+              const wrappedTerminal = result.handle.terminal.finally(() => turn.end());
+              return { ok: true, handle: { ...result.handle, terminal: wrappedTerminal } };
+            }
+            void turn.end();
+          }
+          return result;
         },
       }) as unknown as ToolSpec<unknown, unknown>,
     );
@@ -815,6 +1103,7 @@ export default class LeoPlugin extends Plugin {
       mcpClient: this.mcp?.client,
       tracer: this.tracer,
       adapterRegistry: this.adapterRegistry,
+      refreshInlineProviderSecrets: () => this.refreshInlineProviderSecrets(),
     });
     this.addSettingTab(settingsTab);
 
@@ -873,6 +1162,19 @@ export default class LeoPlugin extends Plugin {
       logger: this.logger,
     });
 
+    try {
+      await bootstrapWiki({
+        vault: vaultAdapter,
+        excludeStore: this.indexerRag.excludeStore,
+        logger: this.logger,
+      });
+    } catch (err) {
+      this.logger.warn('wiki.bootstrap.failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    this.wikiMutex = new WikiMutex({ logger: this.logger });
+
     this.app.workspace.onLayoutReady(() => {
       void this.indexerRag.vaultIndexer.init().catch((err) => {
         this.logger.warn('indexer.init.failed', {
@@ -894,7 +1196,7 @@ export default class LeoPlugin extends Plugin {
           ...(opts?.signal !== undefined ? { signal: opts.signal } : {}),
         });
         if (hits.length > 0) return { hits: hits as readonly SearchVaultHit[] };
-        if (this.indexStatus !== null && this.indexStatus.hasIndex()) {
+        if (this.indexStatus?.hasIndex() === true) {
           return { hits: [] };
         }
         const fallback = await filenameMatch(vaultAdapter, text, opts?.signal);
@@ -906,6 +1208,16 @@ export default class LeoPlugin extends Plugin {
       },
     });
     this.toolRegistry.register(searchVaultTool as unknown as ToolSpec<unknown, unknown>);
+
+    const wikiBusyNotifier = createWikiBusyNotifier({
+      notify: (msg) => new Notice(msg),
+    });
+    const searchWikiTool = createSearchWikiTool({
+      vault: vaultAdapter,
+      getMutexState: () => this.wikiMutex?.active() ?? WIKI_MUTEX_IDLE,
+      notifyBusy: wikiBusyNotifier,
+    });
+    this.toolRegistry.register(searchWikiTool as unknown as ToolSpec<unknown, unknown>);
 
     const userToolsEvents: UserToolsFileEvents = {
       on: (cb) => {
@@ -1056,6 +1368,18 @@ export default class LeoPlugin extends Plugin {
       return cachedExcludeFn(path);
     };
 
+    const toolSearchSession = new ToolSearchSession({
+      settings: () => this.store.get().toolSearch,
+      providerKind: () => this.store.get().provider.kind,
+      modelId: () => this.store.get().provider.chatModel,
+      registry: () => this.toolRegistry,
+    });
+    this.toolRegistry.register(
+      createToolSearchTool(() =>
+        toolSearchSession.snapshotFor(this.getActiveThreadId()),
+      ) as unknown as ToolSpec<unknown, unknown>,
+    );
+
     this.agentRunner = new AgentRunner({
       provider: this.providerManager,
       focusedContext: this.focusedContext,
@@ -1105,6 +1429,9 @@ export default class LeoPlugin extends Plugin {
         });
       },
       tracer: this.tracer,
+      toolSearch: toolSearchSession,
+      disableParallelToolCalls: () => this.store.get().provider.disableParallelToolCalls,
+      disableThinking: () => this.store.get().provider.disableThinking,
     });
 
     const confirmationController = this.confirmationController;
@@ -1216,6 +1543,11 @@ export default class LeoPlugin extends Plugin {
           ...(this.ragCollector !== null
             ? { collectRagSnapshot: (signal: AbortSignal) => this.ragCollector!.collect(signal) }
             : {}),
+          collectWikiStatus: async (_signal: AbortSignal) =>
+            collectWikiStatus({
+              vault: vaultAdapter,
+              getMutexState: () => this.wikiMutex?.active() ?? WIKI_MUTEX_IDLE,
+            }),
           compactRunner,
           getContextWindow: () => {
             const s = this.store.get();
@@ -1331,7 +1663,11 @@ export default class LeoPlugin extends Plugin {
     });
   }
 
-  override async onunload(): Promise<void> {
+  override onunload(): void {
+    void this.shutdown();
+  }
+
+  private async shutdown(): Promise<void> {
     this.logger?.info('plugin.unload', {});
     // Reload-flush: write a final snapshot per non-terminal in-flight subgraph
     // so the widget rehydrates as ERROR{code:'reload'} on next thread open.
@@ -1562,18 +1898,29 @@ export default class LeoPlugin extends Plugin {
   }
 }
 
+function extractContentText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((c) => {
+      if (typeof c === 'string') return c;
+      if (c !== null && typeof c === 'object' && 'text' in c) return (c as { text: string }).text;
+      return '';
+    })
+    .join('');
+}
+
+function resolveBannerKind(kind: string): BannerKind {
+  if (kind === 'error' || kind === 'info' || kind === 'compact') return kind;
+  return 'cancelled';
+}
+
 function storedToRecords(messages: readonly StoredMessage[]): ChatMessageRecord[] {
   const out: ChatMessageRecord[] = [];
   for (const m of messages) {
     if (m.role === 'tool') continue;
-    const role =
-      m.role === 'banner'
-        ? 'banner'
-        : m.role === 'widget'
-          ? 'widget'
-          : m.role === 'assistant'
-            ? 'assistant'
-            : 'user';
+    const role: ChatMessageRecord['role'] =
+      m.role === 'banner' || m.role === 'widget' || m.role === 'assistant' ? m.role : 'user';
     const status = isAssistantStatus(m.status) ? m.status : undefined;
     const record: ChatMessageRecord = {
       id: m.id,
@@ -1593,14 +1940,7 @@ function storedToRecords(messages: readonly StoredMessage[]): ChatMessageRecord[
       ...(m.banner !== undefined
         ? {
             banner: {
-              kind:
-                m.banner.kind === 'error'
-                  ? 'error'
-                  : m.banner.kind === 'info'
-                    ? 'info'
-                    : m.banner.kind === 'compact'
-                      ? 'compact'
-                      : 'cancelled',
+              kind: resolveBannerKind(m.banner.kind),
               ...(m.banner.toolCount !== undefined ? { toolCount: m.banner.toolCount } : {}),
               ...(m.banner.message !== undefined ? { message: m.banner.message } : {}),
             },
@@ -1687,7 +2027,7 @@ function resolveElectronSafeStorage(): SafeStorageLike | null {
     const w = globalThis as { require?: (id: string) => unknown };
     if (typeof w.require !== 'function') return null;
     const mod = w.require('electron') as { safeStorage?: SafeStorageLike } | null;
-    if (mod === null || mod.safeStorage === undefined) return null;
+    if (mod?.safeStorage === undefined) return null;
     return mod.safeStorage;
   } catch {
     return null;
@@ -1725,8 +2065,15 @@ const INLINE_TOOL_DEFS: ReadonlyArray<{
   },
   {
     name: 'write_file',
-    description: 'Write a file to the per-run sandbox (utf-8 or base64).',
+    description:
+      'Write a file to the per-run sandbox (utf-8 or base64). Overwrites existing content.',
     schema: writeFileInputSchema,
+  },
+  {
+    name: 'append_file',
+    description:
+      'Append content to a file in the per-run sandbox (utf-8 or base64). Creates the file if missing. Caller adds any trailing newline.',
+    schema: appendFileInputSchema,
   },
   {
     name: 'list_dir',
@@ -1739,6 +2086,24 @@ const INLINE_TOOL_DEFS: ReadonlyArray<{
     schema: deleteFileInputSchema,
   },
   {
+    name: 'grep',
+    description:
+      'Search for a pattern in sandbox files. Substring by default; set regex=true for JS regex. Returns {path,line,text} matches up to maxMatches (default 200). Skips binary files.',
+    schema: grepInputSchema,
+  },
+  {
+    name: 'glob',
+    description:
+      'List sandbox files matching a glob pattern (e.g. "**/*.md", "canon/**"). Returns relative paths up to maxResults (default 500).',
+    schema: globInputSchema,
+  },
+  {
+    name: 'download_to_file',
+    description:
+      'Fetch a URL and save the body directly to a sandbox path WITHOUT streaming bytes through the model. Strongly preferred over fetch_url+write_file when you only want to save bytes verbatim. Returns {relPath,bytesWritten,status,url}. Same SSRF/DNS/size guards as fetch_url.',
+    schema: downloadToFileInputSchema,
+  },
+  {
     name: 'publish_artifact',
     description: 'Nominate a sandbox file as a final output artifact (with optional summary).',
     schema: publishArtifactInputSchema,
@@ -1748,6 +2113,12 @@ const INLINE_TOOL_DEFS: ReadonlyArray<{
     description:
       'Save a research note (title, summary, source URL, relevance) for later synthesis. Multistep route only.',
     schema: extractNoteInputSchema,
+  },
+  {
+    name: 'todo_write',
+    description:
+      'Track structured progress on multi-item tasks. Pass the COMPLETE todos list each call (replaces prior). Use when the task has 3+ steps; max one in_progress at a time.',
+    schema: todoWriteInputSchema,
   },
 ];
 
@@ -1759,10 +2130,11 @@ interface BuildInlineChatModelInput {
   readonly endpoint: string;
   readonly apiKey: string;
   readonly temperature?: number;
+  readonly disableThinking?: boolean;
 }
 
 function buildInlineChatModel(input: BuildInlineChatModelInput): BaseChatModel {
-  const { providerId, model, endpoint, apiKey, temperature } = input;
+  const { providerId, model, endpoint, apiKey, temperature, disableThinking } = input;
   if (providerId === 'anthropic') {
     return new ChatAnthropic({
       model,
@@ -1784,6 +2156,9 @@ function buildInlineChatModel(input: BuildInlineChatModelInput): BaseChatModel {
     ...(temperature !== undefined ? { temperature } : {}),
     streaming: false,
     streamUsage: true,
+    ...(disableThinking === true && providerId === 'lmstudio'
+      ? { modelKwargs: { extra_body: { chat_template_kwargs: { enable_thinking: false } } } }
+      : {}),
     configuration: {
       baseURL,
       dangerouslyAllowBrowser: true,
@@ -1797,7 +2172,7 @@ function resolveInlineEndpoint(providerId: string, store: SettingsStore): string
     return settings.provider.endpoint;
   }
   return defaultEndpointFor(
-    providerId as 'lmstudio' | 'openai' | 'anthropic' | 'ollama' | 'custom',
+    providerId as 'lmstudio' | 'openai' | 'anthropic' | 'ollama' | 'ollama-cloud' | 'custom',
   );
 }
 
@@ -1807,7 +2182,10 @@ function resolveInlineSearchWebKey(config: InlineAgentConfig, tavilyCached: stri
   return ref;
 }
 
-function bindInlineChatModelAdapter(model: BaseChatModel): InlineAgentManualChatModelAdapter {
+function bindInlineChatModelAdapter(
+  model: BaseChatModel,
+  traceConfig?: InlineAgentInvokeTraceConfig,
+): InlineAgentManualChatModelAdapter {
   return {
     async invokeTurn({ messages, toolNames, signal }): Promise<InlineAgentAssistantStep> {
       const lcMessages = inlineRewriteToLangchain(messages);
@@ -1816,19 +2194,21 @@ function bindInlineChatModelAdapter(model: BaseChatModel): InlineAgentManualChat
         .filter((def): def is (typeof INLINE_TOOL_DEFS)[number] => def !== undefined);
       const callable =
         tools.length > 0
-          ? (model as unknown as { bindTools: (defs: unknown[]) => BaseChatModel }).bindTools(
+          ? (
+              model as unknown as {
+                bindTools: (defs: unknown[], opts?: Record<string, unknown>) => BaseChatModel;
+              }
+            ).bindTools(
               tools.map((t) => ({ name: t.name, description: t.description, schema: t.schema })),
+              { parallel_tool_calls: false },
             )
           : model;
-      const result = (await callable.invoke(lcMessages, { signal })) as AIMessage;
-      const text =
-        typeof result.content === 'string'
-          ? result.content
-          : Array.isArray(result.content)
-            ? result.content
-                .map((c) => (typeof c === 'string' ? c : 'text' in c ? c.text : ''))
-                .join('')
-            : '';
+      const invokeOpts: Record<string, unknown> = { signal };
+      if (traceConfig?.callbacks !== undefined) invokeOpts.callbacks = traceConfig.callbacks;
+      if (traceConfig?.metadata !== undefined) invokeOpts.metadata = traceConfig.metadata;
+      if (traceConfig?.tags !== undefined) invokeOpts.tags = traceConfig.tags;
+      const result = (await callable.invoke(lcMessages, invokeOpts)) as AIMessage;
+      const text = extractContentText(result.content);
       const rawCalls =
         (
           result as unknown as {

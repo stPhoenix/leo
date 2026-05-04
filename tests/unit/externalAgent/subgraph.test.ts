@@ -49,6 +49,49 @@ async function nextTick(): Promise<void> {
   await new Promise<void>((r) => setImmediate(r));
 }
 
+describe('startExternalAgentRun — resolvedConfig plumbing', () => {
+  it('passes resolvedConfig through to adapter (instead of Zod defaults)', async () => {
+    const adapter = new ScriptedAdapter({ events: [{ type: 'done' }] });
+    const registry = new AdapterRegistry({ enabledSource: () => ({ mock: true }) });
+    registry.register(adapter);
+    const deps = makeDeps({ registry });
+    const handle = startExternalAgentRun(deps, {
+      runId: 'run-cfg',
+      threadId: 't-cfg',
+      originalAsk: 'a',
+      selectedAdapterId: 'mock',
+      timeoutMs: 5_000,
+      resolvedConfig: { providerId: 'anthropic', model: 'claude-sonnet-4-6' },
+    });
+    while (handle.state().phase !== 'ready') await nextTick();
+    handle.applyReadyAction({ type: 'send' });
+    await handle.done();
+    expect(adapter.receivedInputs[0]?.config).toEqual({
+      providerId: 'anthropic',
+      model: 'claude-sonnet-4-6',
+    });
+  });
+
+  it('awaits a Promise<resolvedConfig> before invoking the adapter', async () => {
+    const adapter = new ScriptedAdapter({ events: [{ type: 'done' }] });
+    const registry = new AdapterRegistry({ enabledSource: () => ({ mock: true }) });
+    registry.register(adapter);
+    const deps = makeDeps({ registry });
+    const handle = startExternalAgentRun(deps, {
+      runId: 'run-cfg-p',
+      threadId: 't-cfg-p',
+      originalAsk: 'a',
+      selectedAdapterId: 'mock',
+      timeoutMs: 5_000,
+      resolvedConfig: Promise.resolve({ providerId: 'openai' }),
+    });
+    while (handle.state().phase !== 'ready') await nextTick();
+    handle.applyReadyAction({ type: 'send' });
+    await handle.done();
+    expect(adapter.receivedInputs[0]?.config).toEqual({ providerId: 'openai' });
+  });
+});
+
 describe('startExternalAgentRun — happy path', () => {
   it('walks preparing → ready → running → writing → done with mock adapter', async () => {
     const adapter = new ScriptedAdapter({
@@ -337,5 +380,89 @@ describe('startExternalAgentRun — terminal-state stickiness', () => {
     handle.applyReadyAction({ type: 'cancel' });
     handle.resumeClarify({ answer: 'should be ignored' });
     expect(handle.state().phase).toBe('done');
+  });
+});
+
+describe('startExternalAgentRun — beginTrace plumbing', () => {
+  it('calls beginTrace once with {runId, threadId} and forwards traceConfig to refine', async () => {
+    const refineSeen: Array<{ traceConfig: unknown }> = [];
+    const refineImpl: RefineDeps = {
+      refine: async ({ traceConfig }) => {
+        refineSeen.push({ traceConfig });
+        return {
+          type: 'final_prompt',
+          text: 'final',
+          refinedPrompt: 'refined',
+          assistantMessage: { role: 'assistant', content: 'refined' },
+        };
+      },
+    };
+    const adapter = new ScriptedAdapter({ events: [{ type: 'done' }] });
+    const registry = new AdapterRegistry({ enabledSource: () => ({ mock: true }) });
+    registry.register(adapter);
+    const beginCalls: Array<{ runId: string; threadId: string }> = [];
+    let endCount = 0;
+    const traceCfg = {
+      callbacks: [{ name: 'fake' } as unknown],
+      metadata: { runId: 'run-trace', agentId: 'external-agent' },
+      tags: ['leo', 'agent:external-agent'],
+    };
+    const deps: SubgraphDeps = {
+      ...makeDeps({ registry, refine: refineImpl }),
+      beginTrace: ({ runId, threadId }) => {
+        beginCalls.push({ runId, threadId });
+        return {
+          traceConfig: traceCfg,
+          end: async () => {
+            endCount += 1;
+          },
+        };
+      },
+    };
+    const handle = startExternalAgentRun(deps, {
+      runId: 'run-trace',
+      threadId: 't-trace',
+      originalAsk: 'a',
+      selectedAdapterId: 'mock',
+      timeoutMs: 5_000,
+    });
+    while (handle.state().phase !== 'ready') await nextTick();
+    handle.applyReadyAction({ type: 'send' });
+    await handle.done();
+    await nextTick();
+    expect(beginCalls).toEqual([{ runId: 'run-trace', threadId: 't-trace' }]);
+    expect(refineSeen[0]?.traceConfig).toEqual(traceCfg);
+    expect(endCount).toBe(1);
+  });
+
+  it('calls trace.end() exactly once on cancellation', async () => {
+    const adapter = new HangingAdapter();
+    const registry = new AdapterRegistry({ enabledSource: () => ({ hang: true }) });
+    registry.register(adapter);
+    let endCount = 0;
+    const deps: SubgraphDeps = {
+      ...makeDeps({ registry }),
+      abortGraceMs: 50,
+      beginTrace: () => ({
+        traceConfig: { metadata: { x: 1 } },
+        end: async () => {
+          endCount += 1;
+        },
+      }),
+    };
+    const handle = startExternalAgentRun(deps, {
+      runId: 'run-cancel',
+      threadId: 't-cancel',
+      originalAsk: 'a',
+      selectedAdapterId: 'hang',
+      timeoutMs: 5_000,
+    });
+    while (handle.state().phase !== 'ready') await nextTick();
+    handle.applyReadyAction({ type: 'send' });
+    while (handle.state().phase !== 'running') await nextTick();
+    handle.cancel();
+    await handle.done();
+    await nextTick();
+    expect(endCount).toBe(1);
   });
 });

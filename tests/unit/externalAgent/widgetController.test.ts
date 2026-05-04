@@ -146,9 +146,28 @@ describe('ExternalAgentWidgetController — validation', () => {
       registry: h.registry,
       findHandle: (id) => h.orchestrator.findHandle(id),
     });
-    controller.onSetTimeout(50); // below 1_000 min
+    controller.onSetTimeout(50); // below 1_000 ms
     const vm = controller.viewModel();
-    expect(vm.validationError).toContain('timeoutMs');
+    expect(vm.validationError).toContain('minutes');
+    start.handle.cancel();
+    controller.dispose();
+  });
+
+  it('exposes draftTimeoutMinutes derived from draftTimeoutMs', () => {
+    const h = makeHarness();
+    const start = h.orchestrator.start({ threadId: 't1', originalAsk: 'a' });
+    if (!start.ok) throw new Error('start failed');
+    const controller = new ExternalAgentWidgetController({
+      runId: start.handle.runId,
+      threadId: 't1',
+      slots: h.slots,
+      registry: h.registry,
+      findHandle: (id) => h.orchestrator.findHandle(id),
+    });
+    controller.onSetTimeout(180_000);
+    const vm = controller.viewModel();
+    expect(vm.draftTimeoutMs).toBe(180_000);
+    expect(vm.draftTimeoutMinutes).toBe(3);
     start.handle.cancel();
     controller.dispose();
   });

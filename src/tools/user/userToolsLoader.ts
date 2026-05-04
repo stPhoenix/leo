@@ -58,64 +58,84 @@ export async function loadUserTools(opts: UserToolsLoaderOptions): Promise<numbe
   } catch {
     /* best effort */
   }
-  let listing: { readonly files: readonly string[]; readonly folders: readonly string[] };
+  const listing = await listUserToolsDir(opts, dir);
+  if (listing === null) return 0;
+  let registered = 0;
+  for (const raw of listing.files) {
+    const path = raw.startsWith(`${dir}/`) ? raw : `${dir}/${raw}`;
+    if (!path.endsWith('.json')) continue;
+    if (await loadAndRegisterTool(path, opts)) registered += 1;
+  }
+  return registered;
+}
+
+async function listUserToolsDir(
+  opts: UserToolsLoaderOptions,
+  dir: string,
+): Promise<{ readonly files: readonly string[]; readonly folders: readonly string[] } | null> {
   try {
-    listing = await opts.vault.list(dir);
+    return await opts.vault.list(dir);
   } catch (err) {
     opts.logger?.warn('tool.user.load.error', {
       dir,
       error: err instanceof Error ? err.message : String(err),
     });
-    return 0;
+    return null;
   }
-  let registered = 0;
-  for (const raw of listing.files) {
-    const path = raw.startsWith(`${dir}/`) ? raw : `${dir}/${raw}`;
-    if (!path.endsWith('.json')) continue;
-    let content: string;
-    try {
-      content = await opts.vault.read(path);
-    } catch (err) {
-      reportLoadError(opts, path, err instanceof Error ? err.message : String(err));
-      continue;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(content);
-    } catch (err) {
-      reportLoadError(
-        opts,
-        path,
-        `invalid json: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      continue;
-    }
-    const decl = parseDeclaration(parsed);
-    if (!decl.ok) {
-      reportLoadError(opts, path, decl.error);
-      continue;
-    }
-    if (opts.registry.lookup(decl.decl.id) !== undefined) {
-      reportLoadError(opts, path, `id collision: "${decl.decl.id}"`);
-      continue;
-    }
-    let spec: ToolSpec<unknown, unknown>;
-    try {
-      spec = buildSpec(decl.decl, opts);
-    } catch (err) {
-      reportLoadError(opts, path, err instanceof Error ? err.message : String(err));
-      continue;
-    }
-    try {
-      opts.registry.register(spec);
-    } catch (err) {
-      reportLoadError(opts, path, err instanceof Error ? err.message : String(err));
-      continue;
-    }
-    opts.logger?.info('tool.user.load.ok', { toolId: spec.id, source: spec.source });
-    registered += 1;
+}
+
+async function loadAndRegisterTool(path: string, opts: UserToolsLoaderOptions): Promise<boolean> {
+  const parsed = await readAndParseDecl(path, opts);
+  if (parsed === null) return false;
+  if (opts.registry.lookup(parsed.id) !== undefined) {
+    reportLoadError(opts, path, `id collision: "${parsed.id}"`);
+    return false;
   }
-  return registered;
+  let spec: ToolSpec<unknown, unknown>;
+  try {
+    spec = buildSpec(parsed, opts);
+  } catch (err) {
+    reportLoadError(opts, path, err instanceof Error ? err.message : String(err));
+    return false;
+  }
+  try {
+    opts.registry.register(spec);
+  } catch (err) {
+    reportLoadError(opts, path, err instanceof Error ? err.message : String(err));
+    return false;
+  }
+  opts.logger?.info('tool.user.load.ok', { toolId: spec.id, source: spec.source });
+  return true;
+}
+
+async function readAndParseDecl(
+  path: string,
+  opts: UserToolsLoaderOptions,
+): Promise<UserToolDeclaration | null> {
+  let content: string;
+  try {
+    content = await opts.vault.read(path);
+  } catch (err) {
+    reportLoadError(opts, path, err instanceof Error ? err.message : String(err));
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (err) {
+    reportLoadError(
+      opts,
+      path,
+      `invalid json: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+  const decl = parseDeclaration(parsed);
+  if (!decl.ok) {
+    reportLoadError(opts, path, decl.error);
+    return null;
+  }
+  return decl.decl;
 }
 
 function reportLoadError(opts: UserToolsLoaderOptions, path: string, issue: string): void {
@@ -126,6 +146,29 @@ function reportLoadError(opts: UserToolsLoaderOptions, path: string, issue: stri
 export function parseDeclaration(
   raw: unknown,
 ): { ok: true; decl: UserToolDeclaration } | { ok: false; error: string } {
+  const baseCheck = parseDeclarationBase(raw);
+  if (!baseCheck.ok) return baseCheck;
+  const { id, description, parameters, requiresConfirmation, implObj } = baseCheck;
+  const kind = implObj.kind;
+  if (kind === 'vault-op') {
+    return parseVaultOpDecl({ id, description, parameters, requiresConfirmation, implObj });
+  }
+  if (kind === 'js') {
+    return parseJsDecl({ id, description, parameters, requiresConfirmation, implObj });
+  }
+  return { ok: false, error: `impl.kind must be "vault-op" or "js", got: ${JSON.stringify(kind)}` };
+}
+
+interface DeclBase {
+  readonly ok: true;
+  readonly id: string;
+  readonly description: string;
+  readonly parameters: JsonSchema;
+  readonly requiresConfirmation: boolean | undefined;
+  readonly implObj: Record<string, unknown>;
+}
+
+function parseDeclarationBase(raw: unknown): DeclBase | { ok: false; error: string } {
   if (raw === null || typeof raw !== 'object')
     return { ok: false, error: 'declaration must be an object' };
   const obj = raw as Record<string, unknown>;
@@ -136,7 +179,6 @@ export function parseDeclaration(
   if (obj.parameters === null || typeof obj.parameters !== 'object') {
     return { ok: false, error: 'parameters must be an object (JSON Schema)' };
   }
-  const parameters = obj.parameters as JsonSchema;
   let requiresConfirmation: boolean | undefined;
   if (obj.requiresConfirmation !== undefined) {
     if (typeof obj.requiresConfirmation !== 'boolean') {
@@ -147,50 +189,71 @@ export function parseDeclaration(
   const implRaw = obj.impl;
   if (implRaw === null || typeof implRaw !== 'object')
     return { ok: false, error: 'impl must be an object' };
-  const implObj = implRaw as Record<string, unknown>;
-  const kind = implObj.kind;
-  if (kind === 'vault-op') {
-    const op = implObj.op;
-    if (op !== 'read' && op !== 'create' && op !== 'append') {
-      return { ok: false, error: 'impl.op must be one of "read" | "create" | "append"' };
-    }
-    if (typeof implObj.pathArg !== 'string' || implObj.pathArg.length === 0) {
-      return { ok: false, error: 'impl.pathArg must be a non-empty string' };
-    }
-    if (implObj.contentArg !== undefined && typeof implObj.contentArg !== 'string') {
-      return { ok: false, error: 'impl.contentArg must be a string when present' };
-    }
-    if ((op === 'create' || op === 'append') && typeof implObj.contentArg !== 'string') {
-      return { ok: false, error: `impl.contentArg is required for op=${op}` };
-    }
-    const decl: UserToolDeclaration = {
-      id: obj.id,
-      description: obj.description,
-      parameters,
-      ...(requiresConfirmation !== undefined ? { requiresConfirmation } : {}),
-      impl: {
-        kind: 'vault-op',
-        op,
-        pathArg: implObj.pathArg,
-        ...(implObj.contentArg !== undefined ? { contentArg: implObj.contentArg } : {}),
-      },
-    };
-    return { ok: true, decl };
+  return {
+    ok: true,
+    id: obj.id,
+    description: obj.description,
+    parameters: obj.parameters as JsonSchema,
+    requiresConfirmation,
+    implObj: implRaw as Record<string, unknown>,
+  };
+}
+
+interface DeclParsedFields {
+  readonly id: string;
+  readonly description: string;
+  readonly parameters: JsonSchema;
+  readonly requiresConfirmation: boolean | undefined;
+  readonly implObj: Record<string, unknown>;
+}
+
+function parseVaultOpDecl(
+  fields: DeclParsedFields,
+): { ok: true; decl: UserToolDeclaration } | { ok: false; error: string } {
+  const { id, description, parameters, requiresConfirmation, implObj } = fields;
+  const op = implObj.op;
+  if (op !== 'read' && op !== 'create' && op !== 'append') {
+    return { ok: false, error: 'impl.op must be one of "read" | "create" | "append"' };
   }
-  if (kind === 'js') {
-    if (typeof implObj.source !== 'string' || implObj.source.length === 0) {
-      return { ok: false, error: 'impl.source must be a non-empty string' };
-    }
-    const decl: UserToolDeclaration = {
-      id: obj.id,
-      description: obj.description,
-      parameters,
-      ...(requiresConfirmation !== undefined ? { requiresConfirmation } : {}),
-      impl: { kind: 'js', source: implObj.source },
-    };
-    return { ok: true, decl };
+  if (typeof implObj.pathArg !== 'string' || implObj.pathArg.length === 0) {
+    return { ok: false, error: 'impl.pathArg must be a non-empty string' };
   }
-  return { ok: false, error: `impl.kind must be "vault-op" or "js", got: ${JSON.stringify(kind)}` };
+  if (implObj.contentArg !== undefined && typeof implObj.contentArg !== 'string') {
+    return { ok: false, error: 'impl.contentArg must be a string when present' };
+  }
+  if ((op === 'create' || op === 'append') && typeof implObj.contentArg !== 'string') {
+    return { ok: false, error: `impl.contentArg is required for op=${op}` };
+  }
+  const decl: UserToolDeclaration = {
+    id,
+    description,
+    parameters,
+    ...(requiresConfirmation !== undefined ? { requiresConfirmation } : {}),
+    impl: {
+      kind: 'vault-op',
+      op,
+      pathArg: implObj.pathArg,
+      ...(implObj.contentArg !== undefined ? { contentArg: implObj.contentArg } : {}),
+    },
+  };
+  return { ok: true, decl };
+}
+
+function parseJsDecl(
+  fields: DeclParsedFields,
+): { ok: true; decl: UserToolDeclaration } | { ok: false; error: string } {
+  const { id, description, parameters, requiresConfirmation, implObj } = fields;
+  if (typeof implObj.source !== 'string' || implObj.source.length === 0) {
+    return { ok: false, error: 'impl.source must be a non-empty string' };
+  }
+  const decl: UserToolDeclaration = {
+    id,
+    description,
+    parameters,
+    ...(requiresConfirmation !== undefined ? { requiresConfirmation } : {}),
+    impl: { kind: 'js', source: implObj.source },
+  };
+  return { ok: true, decl };
 }
 
 export function buildSpec(
@@ -269,8 +332,13 @@ async function invokeVaultOp(
       return { ok: true, data: { path, bytes: content.length, op: 'create' } };
     }
     const prior = (await vault.exists(path)) ? await vault.read(path) : '';
-    const joined =
-      prior.length === 0 ? content : `${prior}${prior.endsWith('\n') ? '' : '\n'}${content}`;
+    let joined: string;
+    if (prior.length === 0) {
+      joined = content;
+    } else {
+      const sep = prior.endsWith('\n') ? '' : '\n';
+      joined = `${prior}${sep}${content}`;
+    }
     await vault.write(path, joined);
     return { ok: true, data: { path, bytes: joined.length, op: 'append' } };
   } catch (err) {

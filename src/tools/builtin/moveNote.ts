@@ -42,6 +42,7 @@ export function createMoveNoteTool(
     parameters: jsonSchemaFromZod(MoveNoteSchema),
     requiresConfirmation: true,
     source: 'builtin',
+    shouldDefer: true,
     validate: validateFromZod(MoveNoteSchema),
     invoke(args, ctx) {
       return runRename(ctx, args, opts, 'move');

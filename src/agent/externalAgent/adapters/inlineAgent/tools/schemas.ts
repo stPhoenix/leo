@@ -64,6 +64,66 @@ export const deleteFileInputSchema = z
   .strict();
 export type DeleteFileInput = z.infer<typeof deleteFileInputSchema>;
 
+export const appendFileInputSchema = z
+  .object({
+    relPath: z.string().describe('Path relative to the sandbox root.'),
+    content: z.string().describe('Content to append. Caller adds any trailing newline.'),
+    encoding: z.enum(['utf-8', 'base64']).optional().describe("Default 'utf-8'."),
+  })
+  .strict();
+export type AppendFileInput = z.infer<typeof appendFileInputSchema>;
+
+export const GREP_DEFAULT_MAX_MATCHES = 200;
+
+export const grepInputSchema = z
+  .object({
+    pattern: z
+      .string()
+      .min(1)
+      .max(2_000)
+      .describe('Substring (default) or JavaScript regex when regex=true.'),
+    relPath: z
+      .string()
+      .optional()
+      .describe('Relative directory or file under the sandbox. Default: sandbox root.'),
+    regex: z.boolean().optional().describe('Treat pattern as a JS regex. Default false.'),
+    ignoreCase: z.boolean().optional().describe('Case-insensitive match. Default false.'),
+    maxMatches: z
+      .number()
+      .int()
+      .min(1)
+      .max(2_000)
+      .optional()
+      .describe(`Cap match count (default ${GREP_DEFAULT_MAX_MATCHES}).`),
+  })
+  .strict();
+export type GrepInput = z.infer<typeof grepInputSchema>;
+
+export const downloadToFileInputSchema = z
+  .object({
+    url: z.string().describe('Absolute http: or https: URL.'),
+    relPath: z.string().describe('Sandbox path (relative to root) to save the body to.'),
+    method: z.enum(['GET', 'POST']).default('GET').describe('HTTP method.'),
+    headers: z.record(z.string(), z.string()).optional(),
+    body: z.string().optional().describe('Request body (POST only).'),
+  })
+  .strict();
+export type DownloadToFileInput = z.infer<typeof downloadToFileInputSchema>;
+
+export const GLOB_DEFAULT_MAX_RESULTS = 500;
+
+export const globInputSchema = z
+  .object({
+    pattern: z
+      .string()
+      .min(1)
+      .max(500)
+      .describe('Glob pattern relative to sandbox root (e.g. "**/*.md", "canon/**").'),
+    maxResults: z.number().int().min(1).max(5_000).optional(),
+  })
+  .strict();
+export type GlobInput = z.infer<typeof globInputSchema>;
+
 export const publishArtifactInputSchema = z
   .object({
     relPath: z.string(),
@@ -90,6 +150,25 @@ export const classifyTaskOutputSchema = z
   })
   .strict();
 export type ClassifyTaskOutput = z.infer<typeof classifyTaskOutputSchema>;
+
+export const TODO_MAX_ITEMS = 64;
+
+export const todoWriteInputSchema = z
+  .object({
+    todos: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(64),
+            content: z.string().min(1).max(500),
+            status: z.enum(['pending', 'in_progress', 'completed']),
+          })
+          .strict(),
+      )
+      .max(TODO_MAX_ITEMS),
+  })
+  .strict();
+export type TodoWriteInput = z.infer<typeof todoWriteInputSchema>;
 
 export const plannerOutputSchema = z
   .object({

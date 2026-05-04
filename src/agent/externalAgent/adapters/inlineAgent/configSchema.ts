@@ -146,8 +146,10 @@ const plannerSchema = z
       .int()
       .min(1)
       .max(16)
-      .default(8)
-      .describe('Maximum plan length (clamped). Default 8.'),
+      .default(4)
+      .describe(
+        'Maximum plan length (clamped). Default 4. Each step pays a re-discovery cost — favor fewer.',
+      ),
   })
   .describe('Planner config');
 
@@ -173,14 +175,33 @@ const budgetsSchema = z
       .min(1_000)
       .max(1_000_000)
       .default(100_000)
-      .describe('Cumulative input+output token cap.'),
+      .describe(
+        'Cumulative input+output token cap across the whole run. Default 100000. Bump to 250000+ for deep-research / multi-file tasks; max 1000000.',
+      ),
     wallClockMs: z
       .number()
       .int()
       .min(1_000)
       .max(60 * 60 * 1000)
       .default(300_000)
-      .describe('Wall-clock cap. Default 5 min.'),
+      .describe(
+        'Wall-clock cap in MILLISECONDS. Default 300000 (= 5 min). Examples: 60000=1min, 300000=5min, 1800000=30min, 3600000=1h (max).',
+      ),
+    contextWindowTokens: z
+      .number()
+      .int()
+      .min(2_048)
+      .max(2_000_000)
+      .default(32_768)
+      .describe(
+        "Model's context-window size in tokens. Inline agent autocompacts mid-history when estimated context usage exceeds 75% of this value.",
+      ),
+    autocompactThresholdPct: z
+      .number()
+      .min(0.1)
+      .max(0.95)
+      .default(0.75)
+      .describe('Autocompact trigger as fraction of contextWindowTokens. Default 0.75.'),
   })
   .describe('Run budgets');
 
@@ -215,12 +236,14 @@ export const inlineAgentConfigSchema = z
     model: z.string().default('').describe('Model id passed to the configured provider.'),
     temperature: z.number().min(0).max(2).default(0.2).describe('Sampling temperature in [0, 2].'),
     routing: routingSchema.default({ mode: 'auto' }),
-    planner: plannerSchema.default({ planMaxSteps: 8 }),
+    planner: plannerSchema.default({ planMaxSteps: 4 }),
     budgets: budgetsSchema.default({
       maxIterationsSimple: 12,
       maxIterationsMultistep: 32,
       maxTokens: 100_000,
       wallClockMs: 300_000,
+      contextWindowTokens: 32_768,
+      autocompactThresholdPct: 0.75,
     }),
     sandbox: sandboxSchema.default({
       quotaBytes: 50 * 1024 * 1024,

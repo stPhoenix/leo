@@ -2,11 +2,12 @@ import type { Logger } from '@/platform/Logger';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import { debounce } from '@/util/debounce';
 import { EXTERNAL_AGENT_RESULTS_PREFIX } from '@/agent/externalAgent/resultWriter';
+import { WIKI_DIR_PREFIX } from '@/agent/wiki/paths';
 
 export const DIRTY_QUEUE_PATH = '.leo/index/queue.json';
 export const DIRTY_QUEUE_SCHEMA_VERSION = 1;
 const PERSIST_DEBOUNCE_MS = 50;
-const DROP_PREFIXES: readonly string[] = [EXTERNAL_AGENT_RESULTS_PREFIX];
+const DROP_PREFIXES: readonly string[] = [EXTERNAL_AGENT_RESULTS_PREFIX, WIKI_DIR_PREFIX];
 
 export interface DirtyQueueOptions {
   readonly vault: VaultAdapter;

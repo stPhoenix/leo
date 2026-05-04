@@ -50,7 +50,7 @@ function normalizeContent(content: ChatMessageContent): ChatMessageContent {
   const out: ContentBlock[] = [];
   const appendText = (text: string): void => {
     const last = out[out.length - 1];
-    if (last !== undefined && last.type === 'text') {
+    if (last?.type === 'text') {
       out[out.length - 1] = { type: 'text', text: last.text + text };
     } else {
       out.push({ type: 'text', text });

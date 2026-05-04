@@ -38,10 +38,17 @@ export interface ToolUseBlock {
   readonly decision?: ConfirmationDecisionTag;
 }
 
+export interface ToolReferenceBlock {
+  readonly type: 'tool_reference';
+  readonly tool_name: string;
+}
+
+export type ToolResultContent = string | readonly (TextBlock | ToolReferenceBlock)[];
+
 export interface ToolResultBlock {
   readonly type: 'tool_result';
   readonly tool_use_id: string;
-  readonly content: string;
+  readonly content: ToolResultContent;
   readonly is_error?: boolean;
 }
 
@@ -73,6 +80,7 @@ export type ContentBlock =
   | RedactedThinkingBlock
   | ToolUseBlock
   | ToolResultBlock
+  | ToolReferenceBlock
   | ImageBlock
   | DocumentBlock;
 
@@ -90,6 +98,16 @@ export interface ChatMessageRecord {
   };
   readonly widget?: WidgetPayload;
   readonly blocks?: readonly ContentBlock[];
+}
+
+export function toolResultContentToText(content: ToolResultContent): string {
+  if (typeof content === 'string') return content;
+  const parts: string[] = [];
+  for (const b of content) {
+    if (b.type === 'text') parts.push(b.text);
+    else parts.push(b.tool_name);
+  }
+  return parts.join('');
 }
 
 export function toLegacyContent(record: ChatMessageRecord): string {

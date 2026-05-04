@@ -191,46 +191,14 @@ async function runOneChunk(
     ...(opts.temperature !== undefined ? { temperature: opts.temperature() } : {}),
     tools: [REPORT_TOOL],
   };
-  let textBuffer = '';
-  const toolCalls: Array<{ name: string; argsJson: string }> = [];
+  const accum = { textBuffer: '', toolCalls: [] as Array<{ name: string; argsJson: string }> };
   const toolBufs = new Map<number, { id: string; name: string; args: string }>();
   try {
     for await (const event of opts.provider.stream(req, signal)) {
       if (signal.aborted) break;
-      switch (event.type) {
-        case 'token':
-          textBuffer += event.text;
-          break;
-        case 'tool_call':
-          toolCalls.push({ name: event.call.name, argsJson: event.call.argsJson });
-          break;
-        case 'block_start':
-          if (event.block.type === 'tool_use') {
-            toolBufs.set(event.index, { id: event.block.id, name: event.block.name, args: '' });
-          }
-          break;
-        case 'block_delta':
-          if (event.delta.type === 'text_delta') {
-            textBuffer += event.delta.text;
-          } else if (event.delta.type === 'input_json_delta') {
-            const buf = toolBufs.get(event.index);
-            if (buf !== undefined) buf.args += event.delta.partial_json;
-          }
-          break;
-        case 'block_stop': {
-          const buf = toolBufs.get(event.index);
-          if (buf !== undefined) {
-            toolCalls.push({ name: buf.name, argsJson: buf.args.length === 0 ? '{}' : buf.args });
-            toolBufs.delete(event.index);
-          }
-          break;
-        }
-        case 'error':
-          throw event.error;
-        case 'done':
-          return parseChunkOutput(toolCalls, textBuffer, opts.logger, chunk.index);
-        default:
-          break;
+      const outcome = applyPiiStreamEvent(event, accum, toolBufs);
+      if (outcome === 'done') {
+        return parseChunkOutput(accum.toolCalls, accum.textBuffer, opts.logger, chunk.index);
       }
     }
   } catch (err) {
@@ -241,7 +209,66 @@ async function runOneChunk(
     });
     throw err instanceof Error ? err : new Error(String(err));
   }
-  return parseChunkOutput(toolCalls, textBuffer, opts.logger, chunk.index);
+  return parseChunkOutput(accum.toolCalls, accum.textBuffer, opts.logger, chunk.index);
+}
+
+interface PiiStreamAccum {
+  textBuffer: string;
+  toolCalls: Array<{ name: string; argsJson: string }>;
+}
+
+function applyPiiStreamEvent(
+  event: StreamEvent,
+  accum: PiiStreamAccum,
+  toolBufs: Map<number, { id: string; name: string; args: string }>,
+): 'continue' | 'done' {
+  if (event.type === 'token') {
+    accum.textBuffer += event.text;
+    return 'continue';
+  }
+  if (event.type === 'tool_call') {
+    accum.toolCalls.push({ name: event.call.name, argsJson: event.call.argsJson });
+    return 'continue';
+  }
+  if (event.type === 'block_start') {
+    if (event.block.type === 'tool_use') {
+      toolBufs.set(event.index, { id: event.block.id, name: event.block.name, args: '' });
+    }
+    return 'continue';
+  }
+  if (event.type === 'block_delta') {
+    applyPiiBlockDelta(event, accum, toolBufs);
+    return 'continue';
+  }
+  if (event.type === 'block_stop') {
+    const buf = toolBufs.get(event.index);
+    if (buf !== undefined) {
+      accum.toolCalls.push({
+        name: buf.name,
+        argsJson: buf.args.length === 0 ? '{}' : buf.args,
+      });
+      toolBufs.delete(event.index);
+    }
+    return 'continue';
+  }
+  if (event.type === 'error') throw event.error;
+  if (event.type === 'done') return 'done';
+  return 'continue';
+}
+
+function applyPiiBlockDelta(
+  event: Extract<StreamEvent, { type: 'block_delta' }>,
+  accum: PiiStreamAccum,
+  toolBufs: Map<number, { id: string; name: string; args: string }>,
+): void {
+  if (event.delta.type === 'text_delta') {
+    accum.textBuffer += event.delta.text;
+    return;
+  }
+  if (event.delta.type === 'input_json_delta') {
+    const buf = toolBufs.get(event.index);
+    if (buf !== undefined) buf.args += event.delta.partial_json;
+  }
 }
 
 function parseChunkOutput(
@@ -255,8 +282,8 @@ function parseChunkOutput(
     logger?.warn(EXTERNAL_AGENT_LOG.piiCheck.error, {
       code: 'pii_detect_invalid_tool',
       chunkIndex,
+      textBufferLen: textBuffer.length,
     });
-    void textBuffer;
     throw new PiiDetectError(
       'pii_detect_invalid_tool',
       'pii_detect_invalid_tool: PII detector did not call report_findings',
@@ -368,7 +395,8 @@ async function runWithLimit<T, R>(
 }
 
 function stableId(kind: PiiKind, start: number, end: number): string {
-  return `${kind}-${fnv1a32(`${kind}:${start}:${end}`)}`;
+  const hashInput = `${kind}:${start}:${end}`;
+  return `${kind}-${fnv1a32(hashInput)}`;
 }
 
 function fnv1a32(input: string): string {

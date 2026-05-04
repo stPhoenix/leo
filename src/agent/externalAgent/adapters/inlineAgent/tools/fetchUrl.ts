@@ -145,184 +145,230 @@ interface RunInput {
 
 async function runFetchUrl(run: RunInput): Promise<FetchUrlResult> {
   const start = run.now();
-  const followRedirects = run.config.followRedirects !== false;
-  const maxRedirects = run.config.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
 
-  let currentUrl: URL;
+  const validated = parseAndGuardUrl(run.input.url);
+  if (!validated.ok) return validated.error;
+  let currentUrl = validated.url;
+
+  const hostBlocked = await guardHost(currentUrl, run);
+  if (hostBlocked !== null) return hostBlocked;
+
+  const ctrl = setupAbortController(run);
+  let redirects = 0;
   try {
-    currentUrl = new URL(run.input.url);
+    const followResult = await followRedirectChain(currentUrl, redirects, run, ctrl.composed);
+    if ('error' in followResult) return followResult.error;
+    currentUrl = followResult.currentUrl;
+    redirects = followResult.redirects;
+    return await processFinalResponse(followResult.lastResponse, currentUrl, redirects, run, start);
+  } finally {
+    clearTimeout(ctrl.timer);
+    run.signal.removeEventListener('abort', ctrl.onParentAbort);
+  }
+}
+
+function parseAndGuardUrl(
+  raw: string,
+): { ok: true; url: URL } | { ok: false; error: FetchUrlResult } {
+  let url: URL;
+  try {
+    url = new URL(raw);
   } catch {
-    return { ok: false, error: 'invalid_url' };
+    return { ok: false, error: { ok: false, error: 'invalid_url' } };
   }
-  if (currentUrl.protocol !== 'http:' && currentUrl.protocol !== 'https:') {
-    return { ok: false, error: 'invalid_url' };
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { ok: false, error: { ok: false, error: 'invalid_url' } };
   }
+  return { ok: true, url };
+}
 
-  {
-    const hostBlocked = await guardHost(currentUrl, run);
-    if (hostBlocked !== null) return hostBlocked;
-  }
-
+function setupAbortController(run: RunInput): {
+  composed: AbortController;
+  timer: ReturnType<typeof setTimeout>;
+  onParentAbort: () => void;
+} {
   const composed = new AbortController();
   const onParentAbort = (): void => composed.abort();
   if (run.signal.aborted) composed.abort();
   else run.signal.addEventListener('abort', onParentAbort, { once: true });
   const timer = setTimeout(() => composed.abort(), Math.max(1, run.config.timeoutMs));
+  return { composed, timer, onParentAbort };
+}
 
-  let redirects = 0;
-  let lastResponse: Response | null = null;
-  try {
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const reqInit: RequestInit = {
-        method: run.input.method,
-        signal: composed.signal,
-        redirect: 'manual',
-      };
-      const filteredHeaders = filterHeaders(
-        run.input.headers,
-        run.config.headerDenylist,
-        run.logger,
-      );
-      if (filteredHeaders !== undefined) reqInit.headers = filteredHeaders;
-      if (run.input.method === 'POST' && run.input.body !== undefined)
-        reqInit.body = run.input.body;
+function buildRequestInit(run: RunInput, signal: AbortSignal): RequestInit {
+  const reqInit: RequestInit = {
+    method: run.input.method,
+    signal,
+    redirect: 'manual',
+  };
+  const filteredHeaders = filterHeaders(run.input.headers, run.config.headerDenylist, run.logger);
+  if (filteredHeaders !== undefined) reqInit.headers = filteredHeaders;
+  if (run.input.method === 'POST' && run.input.body !== undefined) reqInit.body = run.input.body;
+  return reqInit;
+}
 
-      let response: Response;
-      try {
-        response = await run.fetchImpl(currentUrl.toString(), reqInit);
-      } catch (err) {
-        if (composed.signal.aborted && !run.signal.aborted) {
-          return { ok: false, error: 'timeout', url: currentUrl.toString() };
-        }
-        if (run.signal.aborted) {
-          return { ok: false, error: 'timeout', url: currentUrl.toString() };
-        }
-        return {
-          ok: false,
-          error: 'http_error',
-          status: 0,
-          url: currentUrl.toString(),
-        };
+async function followRedirectChain(
+  startUrl: URL,
+  startRedirects: number,
+  run: RunInput,
+  composed: AbortController,
+): Promise<
+  { lastResponse: Response; currentUrl: URL; redirects: number } | { error: FetchUrlResult }
+> {
+  const followRedirects = run.config.followRedirects !== false;
+  const maxRedirects = run.config.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
+  let currentUrl = startUrl;
+  let redirects = startRedirects;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const reqInit = buildRequestInit(run, composed.signal);
+    let response: Response;
+    try {
+      response = await run.fetchImpl(currentUrl.toString(), reqInit);
+    } catch {
+      if (composed.signal.aborted || run.signal.aborted) {
+        return { error: { ok: false, error: 'timeout', url: currentUrl.toString() } };
       }
-      lastResponse = response;
-
-      if (followRedirects && response.status >= 300 && response.status < 400) {
-        const loc = response.headers.get('location');
-        if (loc === null) {
-          // No location, treat as final response.
-          break;
-        }
-        if (redirects >= maxRedirects) {
-          return {
-            ok: false,
-            error: 'http_error',
-            status: response.status,
-            url: currentUrl.toString(),
-          };
-        }
-        let nextUrl: URL;
-        try {
-          nextUrl = new URL(loc, currentUrl);
-        } catch {
-          return {
-            ok: false,
-            error: 'http_error',
-            status: response.status,
-            url: currentUrl.toString(),
-          };
-        }
-        if (nextUrl.protocol !== 'http:' && nextUrl.protocol !== 'https:') {
-          return { ok: false, error: 'invalid_url', url: nextUrl.toString() };
-        }
-        const redirectBlocked = await guardHost(nextUrl, run);
-        if (redirectBlocked !== null) return redirectBlocked;
-        redirects += 1;
-        currentUrl = nextUrl;
-        continue;
-      }
-      break;
-    }
-
-    if (lastResponse === null) {
-      return { ok: false, error: 'http_error', status: 0, url: currentUrl.toString() };
-    }
-
-    const status = lastResponse.status;
-    if (status >= 400) {
-      const headers = collectHeaders(lastResponse.headers);
-      const { totalBytes } = await consumeAndDiscard(lastResponse, run.config.maxBytes);
-      report(run, {
-        url: currentUrl.toString(),
-        method: run.input.method,
-        status,
-        durationMs: run.now() - start,
-        bytes: totalBytes,
-        ...(redirects > 0 ? { redirects } : {}),
-      });
-      void headers; // not surfaced for HTTP errors
       return {
+        error: { ok: false, error: 'http_error', status: 0, url: currentUrl.toString() },
+      };
+    }
+    if (!followRedirects || response.status < 300 || response.status >= 400) {
+      return { lastResponse: response, currentUrl, redirects };
+    }
+    const next = await resolveRedirect(response, currentUrl, redirects, maxRedirects, run);
+    if (next.kind === 'final') return { lastResponse: response, currentUrl, redirects };
+    if (next.kind === 'error') return { error: next.result };
+    currentUrl = next.nextUrl;
+    redirects = next.redirects;
+  }
+}
+
+async function resolveRedirect(
+  response: Response,
+  currentUrl: URL,
+  redirects: number,
+  maxRedirects: number,
+  run: RunInput,
+): Promise<
+  | { kind: 'final' }
+  | { kind: 'continue'; nextUrl: URL; redirects: number }
+  | { kind: 'error'; result: FetchUrlResult }
+> {
+  const loc = response.headers.get('location');
+  if (loc === null) return { kind: 'final' };
+  if (redirects >= maxRedirects) {
+    return {
+      kind: 'error',
+      result: {
         ok: false,
         error: 'http_error',
-        status,
+        status: response.status,
         url: currentUrl.toString(),
-      };
-    }
+      },
+    };
+  }
+  let nextUrl: URL;
+  try {
+    nextUrl = new URL(loc, currentUrl);
+  } catch {
+    return {
+      kind: 'error',
+      result: {
+        ok: false,
+        error: 'http_error',
+        status: response.status,
+        url: currentUrl.toString(),
+      },
+    };
+  }
+  if (nextUrl.protocol !== 'http:' && nextUrl.protocol !== 'https:') {
+    return {
+      kind: 'error',
+      result: { ok: false, error: 'invalid_url', url: nextUrl.toString() },
+    };
+  }
+  const redirectBlocked = await guardHost(nextUrl, run);
+  if (redirectBlocked !== null) return { kind: 'error', result: redirectBlocked };
+  return { kind: 'continue', nextUrl, redirects: redirects + 1 };
+}
 
-    const { body, totalBytes, truncated } = await readBoundedBody(
-      lastResponse,
-      run.config.maxBytes,
-    );
-    const headers = collectHeaders(lastResponse.headers);
-    const cleanBody = sanitizeBody(body, headers['content-type']);
-
+async function processFinalResponse(
+  lastResponse: Response,
+  currentUrl: URL,
+  redirects: number,
+  run: RunInput,
+  start: number,
+): Promise<FetchUrlResult> {
+  const status = lastResponse.status;
+  if (status >= 400) {
+    // Headers are intentionally not surfaced for HTTP errors.
+    const { totalBytes } = await consumeAndDiscard(lastResponse, run.config.maxBytes);
     report(run, {
       url: currentUrl.toString(),
       method: run.input.method,
       status,
       durationMs: run.now() - start,
       bytes: totalBytes,
-      ...(truncated ? { truncated } : {}),
       ...(redirects > 0 ? { redirects } : {}),
     });
+    return { ok: false, error: 'http_error', status, url: currentUrl.toString() };
+  }
 
-    if (run.input.responseFormat === 'json') {
-      try {
-        const parsed = JSON.parse(cleanBody);
-        return {
-          ok: true,
-          data: {
-            status,
-            headers,
-            body: parsed,
-            ...(truncated ? { truncated } : {}),
-            totalBytes,
-            url: currentUrl.toString(),
-          },
-        };
-      } catch {
-        return {
-          ok: false,
-          error: 'invalid_json',
-          status,
-          url: currentUrl.toString(),
-        };
-      }
-    }
+  const { body, totalBytes, truncated } = await readBoundedBody(lastResponse, run.config.maxBytes);
+  const headers = collectHeaders(lastResponse.headers);
+  const cleanBody = sanitizeBody(body, headers['content-type']);
+
+  report(run, {
+    url: currentUrl.toString(),
+    method: run.input.method,
+    status,
+    durationMs: run.now() - start,
+    bytes: totalBytes,
+    ...(truncated ? { truncated } : {}),
+    ...(redirects > 0 ? { redirects } : {}),
+  });
+
+  if (run.input.responseFormat === 'json') {
+    return parseJsonBody(cleanBody, status, headers, truncated, totalBytes, currentUrl);
+  }
+  return {
+    ok: true,
+    data: {
+      status,
+      headers,
+      body: cleanBody,
+      ...(truncated ? { truncated } : {}),
+      totalBytes,
+      url: currentUrl.toString(),
+    },
+  };
+}
+
+function parseJsonBody(
+  cleanBody: string,
+  status: number,
+  headers: Record<string, string>,
+  truncated: boolean,
+  totalBytes: number,
+  currentUrl: URL,
+): FetchUrlResult {
+  try {
+    const parsed = JSON.parse(cleanBody);
     return {
       ok: true,
       data: {
         status,
         headers,
-        body: cleanBody,
+        body: parsed,
         ...(truncated ? { truncated } : {}),
         totalBytes,
         url: currentUrl.toString(),
       },
     };
-  } finally {
-    clearTimeout(timer);
-    run.signal.removeEventListener('abort', onParentAbort);
+  } catch {
+    return { ok: false, error: 'invalid_json', status, url: currentUrl.toString() };
   }
 }
 
@@ -335,18 +381,36 @@ async function readBoundedBody(
   maxBytes: number,
 ): Promise<{ body: string; totalBytes: number; truncated: boolean }> {
   const reader = response.body?.getReader();
-  if (reader === undefined) {
-    const text = await response.text();
-    const totalBytes = Buffer.byteLength(text, 'utf8');
-    if (totalBytes > maxBytes) {
-      const sliced = Buffer.from(text, 'utf8').slice(0, maxBytes).toString('utf8');
-      return { body: sliced, totalBytes, truncated: true };
-    }
-    return { body: text, totalBytes, truncated: false };
+  if (reader === undefined) return readWholeText(response, maxBytes);
+  const drained = await drainReader(reader, maxBytes);
+  if (drained.truncated) {
+    drained.totalBytes = adjustTotalBytesFromHeader(response, drained.totalBytes);
   }
+  const body = Buffer.concat(
+    drained.chunks.map((c) => Buffer.from(c.buffer, c.byteOffset, c.byteLength)),
+  ).toString('utf8');
+  return { body, totalBytes: drained.totalBytes, truncated: drained.truncated };
+}
+
+async function readWholeText(
+  response: Response,
+  maxBytes: number,
+): Promise<{ body: string; totalBytes: number; truncated: boolean }> {
+  const text = await response.text();
+  const totalBytes = Buffer.byteLength(text, 'utf8');
+  if (totalBytes > maxBytes) {
+    const sliced = Buffer.from(text, 'utf8').slice(0, maxBytes).toString('utf8');
+    return { body: sliced, totalBytes, truncated: true };
+  }
+  return { body: text, totalBytes, truncated: false };
+}
+
+async function drainReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  maxBytes: number,
+): Promise<{ chunks: Uint8Array[]; totalBytes: number; truncated: boolean }> {
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
-  let truncated = false;
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const step = await reader.read();
@@ -358,28 +422,24 @@ async function readBoundedBody(
       const overflow = totalBytes - maxBytes;
       const usable = value.byteLength - overflow;
       if (usable > 0) chunks.push(value.slice(0, usable));
-      truncated = true;
       try {
         await reader.cancel();
       } catch {
         /* ignore */
       }
-      // Continue reading to compute totalBytes — but we cancelled, so read returns done next.
-      // Drain remaining bytes by reading directly from the underlying response if possible.
-      // For accuracy, fall back to header content-length when present.
-      const lengthHeader = response.headers.get('content-length');
-      const declared = lengthHeader !== null ? Number(lengthHeader) : NaN;
-      if (Number.isFinite(declared) && declared > totalBytes) {
-        totalBytes = declared;
-      }
-      break;
+      return { chunks, totalBytes, truncated: true };
     }
     chunks.push(value);
   }
-  const body = Buffer.concat(
-    chunks.map((c) => Buffer.from(c.buffer, c.byteOffset, c.byteLength)),
-  ).toString('utf8');
-  return { body, totalBytes, truncated };
+  return { chunks, totalBytes, truncated: false };
+}
+
+// When the body is truncated and the server declared a content-length header,
+// surface the declared total so callers can report accurate sizes.
+function adjustTotalBytesFromHeader(response: Response, observedBytes: number): number {
+  const lengthHeader = response.headers.get('content-length');
+  const declared = lengthHeader !== null ? Number(lengthHeader) : NaN;
+  return Number.isFinite(declared) && declared > observedBytes ? declared : observedBytes;
 }
 
 async function consumeAndDiscard(
@@ -469,12 +529,11 @@ async function guardHost(target: URL, run: RunInput): Promise<FetchUrlErr | null
     host,
     reason: check.reason,
   });
-  const reason: FetchUrlErr['reason'] =
-    check.reason === 'private'
-      ? 'private_ip'
-      : check.reason === 'resolve_failed'
-        ? 'dns_resolve_failed'
-        : 'dns_unsupported';
+  const REASON_MAP: Record<string, FetchUrlErr['reason']> = {
+    private: 'private_ip',
+    resolve_failed: 'dns_resolve_failed',
+  };
+  const reason: FetchUrlErr['reason'] = REASON_MAP[check.reason] ?? 'dns_unsupported';
   return { ok: false, error: 'blocked', url: target.toString(), reason };
 }
 

@@ -1,12 +1,13 @@
 {
   "name": "leo",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Local-first Obsidian chat, RAG, and agent plugin.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
     "check:bundle": "node scripts/checkBundle.mjs",
+    "release:bundle": "pnpm build && node scripts/bundleRelease.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:llm": "vitest run --config vitest.llm.config.ts",

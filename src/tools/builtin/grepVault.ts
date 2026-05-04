@@ -95,6 +95,39 @@ const GrepVaultSchema = z
   })
   .strict();
 
+interface ScanResult {
+  readonly contentMatches: readonly ContentMatch[];
+  readonly fileMatchSet: ReadonlySet<string>;
+  readonly countByFile: ReadonlyMap<string, number>;
+}
+
+interface ScanContext {
+  readonly mode: GrepOutputMode;
+  readonly multiline: boolean;
+  readonly regex: RegExp;
+  readonly signal: AbortSignal;
+  readonly vault: GrepVault;
+}
+
+interface GrepVault {
+  read(p: string): Promise<string>;
+  stat(p: string): Promise<{ readonly size: number; readonly mtimeMs: number } | null>;
+  exists(p: string): Promise<boolean>;
+  list(
+    p: string,
+  ): Promise<{ readonly files: readonly string[]; readonly folders: readonly string[] }>;
+}
+
+interface DecodedOptions {
+  readonly mode: GrepOutputMode;
+  readonly showLineNumbers: boolean;
+  readonly offset: number;
+  readonly headLimit: number | undefined;
+  readonly contextBefore: number;
+  readonly contextAfter: number;
+  readonly multiline: boolean;
+}
+
 function hasHiddenSegment(p: string): boolean {
   if (p.length === 0) return false;
   for (const seg of p.split('/')) {
@@ -134,6 +167,35 @@ interface ContentMatch {
   readonly text: string;
 }
 
+function decodeOptions(args: GrepVaultArgs): DecodedOptions {
+  const contextC = args.context ?? args['-C'];
+  return {
+    mode: args.output_mode ?? 'files_with_matches',
+    showLineNumbers: args['-n'] !== false,
+    offset: args.offset ?? 0,
+    headLimit: args.head_limit,
+    contextBefore: contextC ?? args['-B'] ?? 0,
+    contextAfter: contextC ?? args['-A'] ?? 0,
+    multiline: args.multiline === true,
+  };
+}
+
+function compileRegex(
+  args: GrepVaultArgs,
+): { ok: true; regex: RegExp } | { ok: false; error: string } {
+  let flags = 'g';
+  if (args['-i'] === true) flags += 'i';
+  if (args.multiline === true) flags += 'sm';
+  try {
+    return { ok: true, regex: new RegExp(args.pattern, flags) };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `invalid regex: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
 export function createGrepVaultTool(): ToolSpec<GrepVaultArgs, GrepVaultResult> {
   return {
     id: 'grep_vault',
@@ -148,26 +210,10 @@ export function createGrepVaultTool(): ToolSpec<GrepVaultArgs, GrepVaultResult> 
     async invoke(args, ctx) {
       if (ctx.signal.aborted) return { ok: false, error: 'aborted' };
       const start = now();
+      const opts = decodeOptions(args);
+      const compiled = compileRegex(args);
+      if (!compiled.ok) return { ok: false, error: compiled.error };
       const root = args.path ?? '';
-      const mode: GrepOutputMode = args.output_mode ?? 'files_with_matches';
-      const showLineNumbers = args['-n'] !== false; // default true
-      const offset = args.offset ?? 0;
-      const headLimit = args.head_limit;
-      const contextC = args.context ?? args['-C'];
-      const contextBefore = contextC ?? args['-B'] ?? 0;
-      const contextAfter = contextC ?? args['-A'] ?? 0;
-      let flags = 'g';
-      if (args['-i'] === true) flags += 'i';
-      if (args.multiline === true) flags += 'sm';
-      let regex: RegExp;
-      try {
-        regex = new RegExp(args.pattern, flags);
-      } catch (err) {
-        return {
-          ok: false,
-          error: `invalid regex: ${err instanceof Error ? err.message : String(err)}`,
-        };
-      }
       try {
         if (root.length > 0 && !(await ctx.vault.exists(root))) {
           return { ok: false, error: `path not found: ${root}` };
@@ -175,133 +221,231 @@ export function createGrepVaultTool(): ToolSpec<GrepVaultArgs, GrepVaultResult> 
         const globPatterns = args.glob !== undefined ? splitGlobPatterns(args.glob) : null;
         const candidates = await collectCandidates(ctx, root, globPatterns);
         if (candidates === 'aborted') return { ok: false, error: 'aborted' };
-        let bytesScanned = 0;
-        let filesScanned = 0;
-        const contentMatches: ContentMatch[] = [];
-        const fileMatchSet = new Set<string>();
-        const countByFile = new Map<string, number>();
-        for (const file of candidates) {
-          if (ctx.signal.aborted) return { ok: false, error: 'aborted' };
-          if (filesScanned >= MAX_FILES_SCANNED) break;
-          if (bytesScanned >= MAX_BYTES_SCANNED) break;
-          const stat = await ctx.vault.stat(file);
-          if (stat !== null && stat.size > MAX_FILE_SIZE_BYTES) continue;
-          let raw: string;
-          try {
-            raw = await ctx.vault.read(file);
-          } catch {
-            continue;
-          }
-          if (looksBinary(raw)) continue;
-          filesScanned += 1;
-          bytesScanned += byteLength(raw);
-          if (args.multiline === true) {
-            regex.lastIndex = 0;
-            let m: RegExpExecArray | null;
-            while ((m = regex.exec(raw)) !== null) {
-              const lineNum = countLinesUpTo(raw, m.index) + 1;
-              const lineText = lineAt(raw, m.index);
-              if (mode === 'files_with_matches') {
-                fileMatchSet.add(file);
-                break;
-              } else if (mode === 'count') {
-                countByFile.set(file, (countByFile.get(file) ?? 0) + 1);
-              } else {
-                contentMatches.push({ file, line: lineNum, text: lineText });
-                if (contentMatches.length >= MAX_FILES_SCANNED * 100) break;
-              }
-              if (m.index === regex.lastIndex) regex.lastIndex += 1;
-            }
-          } else {
-            const lines = raw.split('\n');
-            for (let i = 0; i < lines.length; i += 1) {
-              regex.lastIndex = 0;
-              if (!regex.test(lines[i] ?? '')) continue;
-              if (mode === 'files_with_matches') {
-                fileMatchSet.add(file);
-                break;
-              } else if (mode === 'count') {
-                countByFile.set(file, (countByFile.get(file) ?? 0) + 1);
-              } else {
-                contentMatches.push({ file, line: i + 1, text: lines[i] ?? '' });
-              }
-            }
-          }
-        }
-        const durationMs = Math.round(now() - start);
-        if (mode === 'files_with_matches') {
-          const matched = [...fileMatchSet];
-          const stats = await Promise.allSettled(matched.map((p) => ctx.vault.stat(p)));
-          const decorated = matched.map((p, i) => {
-            const r = stats[i];
-            const mtime = r?.status === 'fulfilled' && r.value !== null ? r.value.mtimeMs : 0;
-            return { path: p, mtime };
-          });
-          decorated.sort((a, b) => {
-            if (b.mtime !== a.mtime) return b.mtime - a.mtime;
-            return a.path.localeCompare(b.path);
-          });
-          const sorted = decorated.map((d) => d.path);
-          const { items, appliedLimit } = applyHeadLimit(sorted, headLimit, offset);
-          return {
-            ok: true,
-            data: {
-              mode,
-              numFiles: items.length,
-              filenames: items,
-              durationMs,
-              ...(appliedLimit !== undefined ? { appliedLimit, truncated: true } : {}),
-              ...(offset > 0 ? { appliedOffset: offset } : {}),
-            },
-          };
-        }
-        if (mode === 'count') {
-          const entries = [...countByFile.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-          const { items, appliedLimit } = applyHeadLimit(entries, headLimit, offset);
-          const numMatches = items.reduce((acc, [, n]) => acc + n, 0);
-          const lines = items.map(([p, n]) => `${p}:${n}`);
-          return {
-            ok: true,
-            data: {
-              mode,
-              numFiles: items.length,
-              filenames: [],
-              content: lines.join('\n'),
-              numMatches,
-              durationMs,
-              ...(appliedLimit !== undefined ? { appliedLimit, truncated: true } : {}),
-              ...(offset > 0 ? { appliedOffset: offset } : {}),
-            },
-          };
-        }
-        // content mode
-        const rendered = renderContentMatches(contentMatches, {
-          showLineNumbers,
-          contextBefore,
-          contextAfter,
-          ctxFiles: candidates,
-          vault: ctx.vault,
-        });
-        const lines = await rendered;
-        const { items, appliedLimit } = applyHeadLimit(lines, headLimit, offset);
-        return {
-          ok: true,
-          data: {
-            mode,
-            numFiles: 0,
-            filenames: [],
-            content: items.join('\n'),
-            numLines: items.length,
-            durationMs,
-            ...(appliedLimit !== undefined ? { appliedLimit, truncated: true } : {}),
-            ...(offset > 0 ? { appliedOffset: offset } : {}),
-          },
+
+        const scanCtx: ScanContext = {
+          mode: opts.mode,
+          multiline: opts.multiline,
+          regex: compiled.regex,
+          signal: ctx.signal,
+          vault: ctx.vault as GrepVault,
         };
+        const scan = await scanCandidates(candidates, scanCtx);
+        if (scan === 'aborted') return { ok: false, error: 'aborted' };
+
+        const durationMs = Math.round(now() - start);
+        if (opts.mode === 'files_with_matches') {
+          return await buildFilesResult(
+            scan.fileMatchSet,
+            ctx.vault as GrepVault,
+            opts,
+            durationMs,
+          );
+        }
+        if (opts.mode === 'count') {
+          return buildCountResult(scan.countByFile, opts, durationMs);
+        }
+        return await buildContentResult(
+          scan.contentMatches,
+          candidates,
+          ctx.vault as GrepVault,
+          opts,
+          durationMs,
+        );
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
   };
+}
+
+async function scanCandidates(
+  candidates: readonly string[],
+  ctx: ScanContext,
+): Promise<ScanResult | 'aborted'> {
+  let bytesScanned = 0;
+  let filesScanned = 0;
+  const contentMatches: ContentMatch[] = [];
+  const fileMatchSet = new Set<string>();
+  const countByFile = new Map<string, number>();
+  for (const file of candidates) {
+    if (ctx.signal.aborted) return 'aborted';
+    if (filesScanned >= MAX_FILES_SCANNED) break;
+    if (bytesScanned >= MAX_BYTES_SCANNED) break;
+    const stat = await ctx.vault.stat(file);
+    if (stat !== null && stat.size > MAX_FILE_SIZE_BYTES) continue;
+    let raw: string;
+    try {
+      raw = await ctx.vault.read(file);
+    } catch {
+      continue;
+    }
+    if (looksBinary(raw)) continue;
+    filesScanned += 1;
+    bytesScanned += byteLength(raw);
+    if (ctx.multiline) {
+      scanMultiline(file, raw, ctx, contentMatches, fileMatchSet, countByFile);
+    } else {
+      scanLineByLine(file, raw, ctx, contentMatches, fileMatchSet, countByFile);
+    }
+  }
+  return { contentMatches, fileMatchSet, countByFile };
+}
+
+function scanMultiline(
+  file: string,
+  raw: string,
+  ctx: ScanContext,
+  contentMatches: ContentMatch[],
+  fileMatchSet: Set<string>,
+  countByFile: Map<string, number>,
+): void {
+  ctx.regex.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = ctx.regex.exec(raw)) !== null) {
+    const lineNum = countLinesUpTo(raw, m.index) + 1;
+    const lineText = lineAt(raw, m.index);
+    if (recordMatch(file, lineNum, lineText, ctx.mode, contentMatches, fileMatchSet, countByFile)) {
+      break;
+    }
+    if (m.index === ctx.regex.lastIndex) ctx.regex.lastIndex += 1;
+  }
+}
+
+function scanLineByLine(
+  file: string,
+  raw: string,
+  ctx: ScanContext,
+  contentMatches: ContentMatch[],
+  fileMatchSet: Set<string>,
+  countByFile: Map<string, number>,
+): void {
+  const lines = raw.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    ctx.regex.lastIndex = 0;
+    if (!ctx.regex.test(lines[i] ?? '')) continue;
+    if (
+      recordMatch(file, i + 1, lines[i] ?? '', ctx.mode, contentMatches, fileMatchSet, countByFile)
+    ) {
+      break;
+    }
+  }
+}
+
+// Returns true when the caller should stop scanning the current file
+// (files_with_matches mode short-circuits after the first hit).
+function recordMatch(
+  file: string,
+  line: number,
+  text: string,
+  mode: GrepOutputMode,
+  contentMatches: ContentMatch[],
+  fileMatchSet: Set<string>,
+  countByFile: Map<string, number>,
+): boolean {
+  if (mode === 'files_with_matches') {
+    fileMatchSet.add(file);
+    return true;
+  }
+  if (mode === 'count') {
+    countByFile.set(file, (countByFile.get(file) ?? 0) + 1);
+    return false;
+  }
+  contentMatches.push({ file, line, text });
+  return contentMatches.length >= MAX_FILES_SCANNED * 100;
+}
+
+async function buildFilesResult(
+  fileMatchSet: ReadonlySet<string>,
+  vault: GrepVault,
+  opts: DecodedOptions,
+  durationMs: number,
+): Promise<{ ok: true; data: GrepVaultResult }> {
+  const matched = [...fileMatchSet];
+  const stats = await Promise.allSettled(matched.map((p) => vault.stat(p)));
+  const decorated = matched.map((p, i) => {
+    const r = stats[i];
+    const mtime = r?.status === 'fulfilled' && r.value !== null ? r.value.mtimeMs : 0;
+    return { path: p, mtime };
+  });
+  decorated.sort((a, b) => {
+    if (b.mtime !== a.mtime) return b.mtime - a.mtime;
+    return a.path.localeCompare(b.path);
+  });
+  const sorted = decorated.map((d) => d.path);
+  const { items, appliedLimit } = applyHeadLimit(sorted, opts.headLimit, opts.offset);
+  return {
+    ok: true,
+    data: {
+      mode: opts.mode,
+      numFiles: items.length,
+      filenames: items,
+      durationMs,
+      ...(appliedLimit !== undefined ? { appliedLimit, truncated: true } : {}),
+      ...(opts.offset > 0 ? { appliedOffset: opts.offset } : {}),
+    },
+  };
+}
+
+function buildCountResult(
+  countByFile: ReadonlyMap<string, number>,
+  opts: DecodedOptions,
+  durationMs: number,
+): { ok: true; data: GrepVaultResult } {
+  const entries = [...countByFile.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const { items, appliedLimit } = applyHeadLimit(entries, opts.headLimit, opts.offset);
+  const numMatches = items.reduce((acc, [, n]) => acc + n, 0);
+  const lines = items.map(([p, n]) => `${p}:${n}`);
+  return {
+    ok: true,
+    data: {
+      mode: opts.mode,
+      numFiles: items.length,
+      filenames: [],
+      content: lines.join('\n'),
+      numMatches,
+      durationMs,
+      ...(appliedLimit !== undefined ? { appliedLimit, truncated: true } : {}),
+      ...(opts.offset > 0 ? { appliedOffset: opts.offset } : {}),
+    },
+  };
+}
+
+async function buildContentResult(
+  contentMatches: readonly ContentMatch[],
+  candidates: readonly string[],
+  vault: GrepVault,
+  opts: DecodedOptions,
+  durationMs: number,
+): Promise<{ ok: true; data: GrepVaultResult }> {
+  const lines = await renderContentMatches(contentMatches, {
+    showLineNumbers: opts.showLineNumbers,
+    contextBefore: opts.contextBefore,
+    contextAfter: opts.contextAfter,
+    ctxFiles: candidates,
+    vault,
+  });
+  const { items, appliedLimit } = applyHeadLimit(lines, opts.headLimit, opts.offset);
+  return {
+    ok: true,
+    data: {
+      mode: opts.mode,
+      numFiles: 0,
+      filenames: [],
+      content: items.join('\n'),
+      numLines: items.length,
+      durationMs,
+      ...(appliedLimit !== undefined ? { appliedLimit, truncated: true } : {}),
+      ...(opts.offset > 0 ? { appliedOffset: opts.offset } : {}),
+    },
+  };
+}
+
+function matchesGlob(file: string, root: string, globPatterns: readonly string[]): boolean {
+  const rel = root.length > 0 && file.startsWith(`${root}/`) ? file.slice(root.length + 1) : file;
+  for (const g of globPatterns) {
+    if (minimatch(rel, g, { dot: true, matchBase: false })) return true;
+  }
+  return false;
 }
 
 async function collectCandidates(
@@ -329,18 +473,8 @@ async function collectCandidates(
     visited += 1;
     for (const f of listing.files) {
       if (hasHiddenSegment(f)) continue;
-      if (ctx.excludeMatcher !== undefined && ctx.excludeMatcher(f)) continue;
-      if (globPatterns !== null) {
-        const rel = root.length > 0 && f.startsWith(`${root}/`) ? f.slice(root.length + 1) : f;
-        let matched = false;
-        for (const g of globPatterns) {
-          if (minimatch(rel, g, { dot: true, matchBase: false })) {
-            matched = true;
-            break;
-          }
-        }
-        if (!matched) continue;
-      }
+      if (ctx.excludeMatcher?.(f) === true) continue;
+      if (globPatterns !== null && !matchesGlob(f, root, globPatterns)) continue;
       out.push(f);
     }
     for (const d of listing.folders) {
@@ -366,22 +500,25 @@ async function renderContentMatches(
       opts.showLineNumbers ? `${m.file}:${m.line}:${m.text}` : `${m.file}:${m.text}`,
     );
   }
+  return await renderWithContext(matches, opts);
+}
+
+async function renderWithContext(
+  matches: readonly ContentMatch[],
+  opts: {
+    showLineNumbers: boolean;
+    contextBefore: number;
+    contextAfter: number;
+    vault: { read(p: string): Promise<string> };
+  },
+): Promise<readonly string[]> {
   const fileLines = new Map<string, readonly string[]>();
   const out: string[] = [];
   let prevFile: string | null = null;
   let prevTo = -1;
   for (const m of matches) {
-    let lines = fileLines.get(m.file);
-    if (lines === undefined) {
-      let raw: string;
-      try {
-        raw = await opts.vault.read(m.file);
-      } catch {
-        continue;
-      }
-      lines = raw.split('\n');
-      fileLines.set(m.file, lines);
-    }
+    const lines = await loadFileLines(m.file, fileLines, opts.vault);
+    if (lines === null) continue;
     const from = Math.max(1, m.line - opts.contextBefore);
     const to = Math.min(lines.length, m.line + opts.contextAfter);
     if (prevFile !== null && (prevFile !== m.file || from > prevTo + 1)) {
@@ -395,6 +532,24 @@ async function renderContentMatches(
     prevTo = to;
   }
   return out;
+}
+
+async function loadFileLines(
+  file: string,
+  cache: Map<string, readonly string[]>,
+  vault: { read(p: string): Promise<string> },
+): Promise<readonly string[] | null> {
+  const cached = cache.get(file);
+  if (cached !== undefined) return cached;
+  let raw: string;
+  try {
+    raw = await vault.read(file);
+  } catch {
+    return null;
+  }
+  const lines = raw.split('\n');
+  cache.set(file, lines);
+  return lines;
 }
 
 function countLinesUpTo(text: string, index: number): number {

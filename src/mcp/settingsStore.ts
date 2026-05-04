@@ -42,8 +42,8 @@ export function validateAddition(
   }
   if (candidate.transport === 'stdio') {
     if (candidate.command.length === 0) return 'command required';
-  } else {
-    if (!/^https?:\/\//.test(candidate.url)) return 'url must start with http(s)://';
+  } else if (!/^https?:\/\//.test(candidate.url)) {
+    return 'url must start with http(s)://';
   }
   return null;
 }

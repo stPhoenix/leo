@@ -21,6 +21,9 @@ interface ActiveSlot {
   released: boolean;
 }
 
+// Per-thread slot map (one in-flight external-agent run per thread). The `Semaphore`
+// primitive is single-resource; parity here would need a `Map<threadId, Semaphore>`
+// wrapper with the same release/active/size surface — no net simplification.
 export class SlotManager {
   private readonly slots = new Map<string, ActiveSlot>();
 

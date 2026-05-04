@@ -10,6 +10,12 @@ export interface DiffViewProps {
 
 const COLLAPSE_AT = 30;
 
+function diffMarker(kind: 'add' | 'del' | string): string {
+  if (kind === 'add') return '+';
+  if (kind === 'del') return '-';
+  return ' ';
+}
+
 function DiffViewImpl(props: DiffViewProps): JSX.Element {
   const { lines, stats } = useMemo(
     () => computeUnifiedDiff(props.before, props.after),
@@ -53,7 +59,12 @@ function DiffViewImpl(props: DiffViewProps): JSX.Element {
       <div className="leo-diff-body-wrap">
         <pre className="leo-diff-body" data-slot="diff-body" aria-hidden={!expanded}>
           {lines.map((l, i) => (
-            <div key={i} className={`leo-diff-line leo-diff-${l.kind}`} data-kind={l.kind}>
+            <div
+              // NOSONAR S6479 — diff lines computed once, list immutable for render lifetime
+              key={`${l.kind}:${l.beforeLine ?? '-'}:${l.afterLine ?? '-'}:${i}`}
+              className={`leo-diff-line leo-diff-${l.kind}`}
+              data-kind={l.kind}
+            >
               <span className="leo-diff-gutter-before" data-slot="diff-gutter-before">
                 {l.beforeLine ?? ''}
               </span>
@@ -61,7 +72,7 @@ function DiffViewImpl(props: DiffViewProps): JSX.Element {
                 {l.afterLine ?? ''}
               </span>
               <span className="leo-diff-marker" data-slot="diff-marker">
-                {l.kind === 'add' ? '+' : l.kind === 'del' ? '-' : ' '}
+                {diffMarker(l.kind)}
               </span>
               <span className="leo-diff-text" data-slot="diff-text">
                 {l.text}

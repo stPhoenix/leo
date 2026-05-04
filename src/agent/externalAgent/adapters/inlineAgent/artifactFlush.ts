@@ -60,10 +60,9 @@ export async function* flushPublishedArtifacts(
       continue;
     }
     const mime = mimeFromRelPath(nomination.relPath);
-    const content =
-      mime !== undefined && mime.startsWith('text/')
-        ? buf.toString('utf8')
-        : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    const content = mime?.startsWith('text/')
+      ? buf.toString('utf8')
+      : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
     yield {
       type: 'file',
       relPath: nomination.relPath,

@@ -1,15 +1,27 @@
 import { promises as fs, type Dirent } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
+import { Minimatch } from 'minimatch';
 import {
   readFileInputSchema,
   writeFileInputSchema,
   listDirInputSchema,
   deleteFileInputSchema,
+  appendFileInputSchema,
+  grepInputSchema,
+  globInputSchema,
+  downloadToFileInputSchema,
+  GREP_DEFAULT_MAX_MATCHES,
+  GLOB_DEFAULT_MAX_RESULTS,
   type ReadFileInput,
   type WriteFileInput,
   type ListDirInput,
   type DeleteFileInput,
+  type AppendFileInput,
+  type GrepInput,
+  type GlobInput,
+  type DownloadToFileInput,
 } from './schemas';
+import type { FetchUrlTool } from './fetchUrl';
 import type { Sandbox } from '../sandbox';
 import type { InlineAgentLoggerLite } from '../eventBridge';
 
@@ -78,6 +90,51 @@ export type DeleteFileResult =
         | 'io_error';
     };
 
+export type AppendFileResult =
+  | {
+      readonly ok: true;
+      readonly data: { readonly bytesAppended: number; readonly sandboxBytes: number };
+    }
+  | {
+      readonly ok: false;
+      readonly error:
+        | 'path_outside_sandbox'
+        | 'is_directory'
+        | 'quota_exceeded'
+        | 'invalid_args'
+        | 'io_error';
+    };
+
+export interface GrepMatch {
+  readonly path: string;
+  readonly line: number;
+  readonly text: string;
+}
+
+export type GrepResult =
+  | {
+      readonly ok: true;
+      readonly data: {
+        readonly matches: readonly GrepMatch[];
+        readonly truncated: boolean;
+        readonly filesScanned: number;
+      };
+    }
+  | {
+      readonly ok: false;
+      readonly error: 'path_outside_sandbox' | 'not_found' | 'invalid_pattern' | 'invalid_args';
+    };
+
+export type GlobResult =
+  | {
+      readonly ok: true;
+      readonly data: { readonly paths: readonly string[]; readonly truncated: boolean };
+    }
+  | {
+      readonly ok: false;
+      readonly error: 'invalid_pattern' | 'invalid_args';
+    };
+
 export interface ReadFileTool {
   readonly name: 'read_file';
   invoke(input: unknown): Promise<ReadFileResult>;
@@ -93,6 +150,47 @@ export interface ListDirTool {
 export interface DeleteFileTool {
   readonly name: 'delete_file';
   invoke(input: unknown): Promise<DeleteFileResult>;
+}
+export interface AppendFileTool {
+  readonly name: 'append_file';
+  invoke(input: unknown): Promise<AppendFileResult>;
+}
+export interface GrepTool {
+  readonly name: 'grep';
+  invoke(input: unknown): Promise<GrepResult>;
+}
+export interface GlobTool {
+  readonly name: 'glob';
+  invoke(input: unknown): Promise<GlobResult>;
+}
+
+export type DownloadToFileResult =
+  | {
+      readonly ok: true;
+      readonly data: {
+        readonly relPath: string;
+        readonly bytesWritten: number;
+        readonly status: number;
+        readonly url: string;
+        readonly truncated: boolean;
+        readonly sandboxBytes: number;
+      };
+    }
+  | {
+      readonly ok: false;
+      readonly error:
+        | 'invalid_args'
+        | 'path_outside_sandbox'
+        | 'quota_exceeded'
+        | 'io_error'
+        | 'fetch_failed';
+      readonly fetchError?: string;
+      readonly status?: number;
+    };
+
+export interface DownloadToFileTool {
+  readonly name: 'download_to_file';
+  invoke(input: unknown): Promise<DownloadToFileResult>;
 }
 
 export function createReadFileTool(ctx: FileOpsCtx): ReadFileTool {
@@ -293,6 +391,262 @@ export function createDeleteFileTool(ctx: FileOpsCtx): DeleteFileTool {
         return { ok: false, error: 'io_error' };
       }
       return { ok: true, data: { deleted: true } };
+    },
+  };
+}
+
+export function createAppendFileTool(ctx: FileOpsCtx): AppendFileTool {
+  return {
+    name: 'append_file',
+    async invoke(input): Promise<AppendFileResult> {
+      let parsed: AppendFileInput;
+      try {
+        parsed = appendFileInputSchema.parse(input);
+      } catch {
+        return { ok: false, error: 'invalid_args' };
+      }
+      const resolved = ctx.sandbox.resolve(parsed.relPath);
+      if (!resolved.ok) return { ok: false, error: 'path_outside_sandbox' };
+      const safe = await ctx.sandbox.checkSafe(resolved.absPath);
+      if (!safe.ok && safe.error !== 'not_found') {
+        return { ok: false, error: 'path_outside_sandbox' };
+      }
+      const encoding = parsed.encoding ?? 'utf-8';
+      const buf =
+        encoding === 'base64'
+          ? Buffer.from(parsed.content, 'base64')
+          : Buffer.from(parsed.content, 'utf8');
+
+      try {
+        const stat = await fs.stat(resolved.absPath);
+        if (stat.isDirectory()) return { ok: false, error: 'is_directory' };
+      } catch (err) {
+        if (errorCode(err) !== 'ENOENT') return { ok: false, error: 'io_error' };
+      }
+
+      if (ctx.sandbox.willExceedQuota(buf.byteLength)) {
+        return { ok: false, error: 'quota_exceeded' };
+      }
+      try {
+        await fs.mkdir(dirname(resolved.absPath), { recursive: true });
+        await fs.appendFile(resolved.absPath, buf);
+      } catch {
+        return { ok: false, error: 'io_error' };
+      }
+      ctx.sandbox.addBytes(buf.byteLength);
+      return {
+        ok: true,
+        data: { bytesAppended: buf.byteLength, sandboxBytes: ctx.sandbox.bytes() },
+      };
+    },
+  };
+}
+
+async function* walkSandboxFiles(root: string, start: string): AsyncIterable<string> {
+  const stack: string[] = [start];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const child = join(dir, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        if (child === root || child.startsWith(root + sep)) stack.push(child);
+      } else if (entry.isFile()) {
+        yield child;
+      }
+    }
+  }
+}
+
+export function createGrepTool(ctx: FileOpsCtx): GrepTool {
+  return {
+    name: 'grep',
+    async invoke(input): Promise<GrepResult> {
+      let parsed: GrepInput;
+      try {
+        parsed = grepInputSchema.parse(input);
+      } catch {
+        return { ok: false, error: 'invalid_args' };
+      }
+      const rel = parsed.relPath ?? '';
+      const resolved = ctx.sandbox.resolve(rel);
+      if (!resolved.ok) return { ok: false, error: 'path_outside_sandbox' };
+      const safe = await ctx.sandbox.checkSafe(resolved.absPath);
+      if (!safe.ok) {
+        if (safe.error === 'not_found') return { ok: false, error: 'not_found' };
+        return { ok: false, error: 'path_outside_sandbox' };
+      }
+      const max = parsed.maxMatches ?? GREP_DEFAULT_MAX_MATCHES;
+      let matcher: (line: string) => boolean;
+      if (parsed.regex === true) {
+        let re: RegExp;
+        try {
+          re = new RegExp(parsed.pattern, parsed.ignoreCase === true ? 'i' : '');
+        } catch {
+          return { ok: false, error: 'invalid_pattern' };
+        }
+        matcher = (line) => re.test(line);
+      } else {
+        const needle = parsed.ignoreCase === true ? parsed.pattern.toLowerCase() : parsed.pattern;
+        matcher = (line) =>
+          (parsed.ignoreCase === true ? line.toLowerCase() : line).includes(needle);
+      }
+
+      let stat;
+      try {
+        stat = await fs.stat(resolved.absPath);
+      } catch (err) {
+        if (errorCode(err) === 'ENOENT') return { ok: false, error: 'not_found' };
+        return { ok: false, error: 'path_outside_sandbox' };
+      }
+      const fileIter: AsyncIterable<string> = stat.isFile()
+        ? (async function* (): AsyncIterable<string> {
+            yield resolved.absPath;
+          })()
+        : walkSandboxFiles(ctx.sandbox.root, resolved.absPath);
+
+      const matches: GrepMatch[] = [];
+      let filesScanned = 0;
+      let truncated = false;
+      outer: for await (const abs of fileIter) {
+        if (ctx.signal.aborted) break;
+        filesScanned += 1;
+        let raw: Buffer;
+        try {
+          raw = await fs.readFile(abs);
+        } catch {
+          continue;
+        }
+        if (looksBinary(raw)) continue;
+        const text = raw.toString('utf8');
+        const lines = text.split(/\r?\n/);
+        const relPath = relative(ctx.sandbox.root, abs).split(sep).join('/');
+        for (let i = 0; i < lines.length; i += 1) {
+          const line = lines[i] ?? '';
+          if (matcher(line)) {
+            matches.push({ path: relPath, line: i + 1, text: line.slice(0, 500) });
+            if (matches.length >= max) {
+              truncated = true;
+              break outer;
+            }
+          }
+        }
+      }
+      return { ok: true, data: { matches, truncated, filesScanned } };
+    },
+  };
+}
+
+export function createDownloadToFileTool(
+  ctx: FileOpsCtx & { readonly fetchUrl: FetchUrlTool },
+): DownloadToFileTool {
+  return {
+    name: 'download_to_file',
+    async invoke(input): Promise<DownloadToFileResult> {
+      let parsed: DownloadToFileInput;
+      try {
+        parsed = downloadToFileInputSchema.parse(input);
+      } catch {
+        return { ok: false, error: 'invalid_args' };
+      }
+      const resolved = ctx.sandbox.resolve(parsed.relPath);
+      if (!resolved.ok) return { ok: false, error: 'path_outside_sandbox' };
+      const safe = await ctx.sandbox.checkSafe(resolved.absPath);
+      if (!safe.ok && safe.error !== 'not_found') {
+        return { ok: false, error: 'path_outside_sandbox' };
+      }
+
+      const fetchInput: Record<string, unknown> = {
+        url: parsed.url,
+        method: parsed.method,
+        responseFormat: 'text',
+      };
+      if (parsed.headers !== undefined) fetchInput.headers = parsed.headers;
+      if (parsed.body !== undefined) fetchInput.body = parsed.body;
+      const fetchResult = await ctx.fetchUrl.invoke(fetchInput);
+      if (!fetchResult.ok) {
+        return {
+          ok: false,
+          error: 'fetch_failed',
+          fetchError: fetchResult.error,
+          ...(fetchResult.status !== undefined ? { status: fetchResult.status } : {}),
+        };
+      }
+      const body = fetchResult.data.body;
+      const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
+      const buf = Buffer.from(bodyText, 'utf8');
+
+      let existingBytes = 0;
+      try {
+        const stat = await fs.stat(resolved.absPath);
+        existingBytes = stat.isFile() ? stat.size : 0;
+      } catch (err) {
+        if (errorCode(err) !== 'ENOENT') return { ok: false, error: 'io_error' };
+      }
+      const delta = buf.byteLength - existingBytes;
+      if (delta > 0 && ctx.sandbox.willExceedQuota(delta)) {
+        return { ok: false, error: 'quota_exceeded' };
+      }
+      try {
+        await fs.mkdir(dirname(resolved.absPath), { recursive: true });
+        await fs.writeFile(resolved.absPath, buf);
+      } catch {
+        return { ok: false, error: 'io_error' };
+      }
+      ctx.sandbox.addBytes(delta);
+      return {
+        ok: true,
+        data: {
+          relPath: parsed.relPath,
+          bytesWritten: buf.byteLength,
+          status: fetchResult.data.status,
+          url: fetchResult.data.url,
+          truncated: fetchResult.data.truncated === true,
+          sandboxBytes: ctx.sandbox.bytes(),
+        },
+      };
+    },
+  };
+}
+
+export function createGlobTool(ctx: FileOpsCtx): GlobTool {
+  return {
+    name: 'glob',
+    async invoke(input): Promise<GlobResult> {
+      let parsed: GlobInput;
+      try {
+        parsed = globInputSchema.parse(input);
+      } catch {
+        return { ok: false, error: 'invalid_args' };
+      }
+      let mm: Minimatch;
+      try {
+        mm = new Minimatch(parsed.pattern, { dot: true, nocase: false });
+      } catch {
+        return { ok: false, error: 'invalid_pattern' };
+      }
+      const max = parsed.maxResults ?? GLOB_DEFAULT_MAX_RESULTS;
+      const out: string[] = [];
+      let truncated = false;
+      for await (const abs of walkSandboxFiles(ctx.sandbox.root, ctx.sandbox.root)) {
+        if (ctx.signal.aborted) break;
+        const rel = relative(ctx.sandbox.root, abs).split(sep).join('/');
+        if (mm.match(rel)) {
+          out.push(rel);
+          if (out.length >= max) {
+            truncated = true;
+            break;
+          }
+        }
+      }
+      out.sort((a, b) => a.localeCompare(b));
+      return { ok: true, data: { paths: out, truncated } };
     },
   };
 }

@@ -180,7 +180,11 @@ export class ThreadsStore {
         });
       }
     }
-    summaries.sort((a, b) => (b.updatedAt < a.updatedAt ? -1 : b.updatedAt > a.updatedAt ? 1 : 0));
+    summaries.sort((a, b) => {
+      if (b.updatedAt < a.updatedAt) return -1;
+      if (b.updatedAt > a.updatedAt) return 1;
+      return 0;
+    });
     return summaries;
   }
 

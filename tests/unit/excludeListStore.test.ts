@@ -36,4 +36,19 @@ describe('ExcludeListStore', () => {
     const store = new ExcludeListStore({ initial: [] });
     expect(store.matcher()('any/path.md')).toBe(false);
   });
+
+  it('ensureDefaultPattern adds a literal file path; idempotent', () => {
+    const store = new ExcludeListStore({ initial: [] });
+    expect(store.ensureDefaultPattern('wiki-inbox.md')).toBe(true);
+    expect(store.matcher()('wiki-inbox.md')).toBe(true);
+    expect(store.matcher()('wiki-inbox.md/x.md')).toBe(false);
+    expect(store.ensureDefaultPattern('wiki-inbox.md')).toBe(false);
+  });
+
+  it('ensureDefaultPrefix appends `/**` (folder semantics)', () => {
+    const store = new ExcludeListStore({ initial: [] });
+    expect(store.ensureDefaultPrefix('wiki/')).toBe(true);
+    expect(store.matcher()('wiki/foo.md')).toBe(true);
+    expect(store.matcher()('wiki')).toBe(false);
+  });
 });

@@ -241,9 +241,39 @@ describe('ExternalAgentOrchestrator', () => {
     while (r.handle.state().phase !== 'ready') await nextTick();
     r.handle.applyReadyAction({ type: 'send' });
     await r.terminal;
+    // Single resolveConfig call: same Promise reused for adapter start + snapshot.
     expect(calls).toEqual(['mock']);
     // Empty schema has no fields to surface, but property exists.
     expect(persisted[0]?.adapterConfigSnapshot).toBeDefined();
+  });
+
+  it('resolved config reaches the adapter at start (not Zod defaults)', async () => {
+    const registry = new AdapterRegistry({
+      enabledSource: () => ({ mock: true }),
+      defaultIdSource: () => 'mock',
+    });
+    const adapter = new ScriptedAdapter({ events: [{ type: 'done' }] });
+    registry.register(adapter);
+    const slots = new SlotManager();
+    const orch = new ExternalAgentOrchestrator({
+      registry,
+      slots,
+      refine: makeRefine(),
+      adapterCall: makeAdapterCall(),
+      writer: makeWriter(),
+      systemPrompt: 'T',
+      resolveConfig: async () => ({ providerId: 'anthropic', model: 'claude-sonnet-4-6' }),
+    });
+    const r = orch.start({ threadId: 't-orch-cfg', originalAsk: 'a' });
+    if (!r.ok) throw new Error('expected ok');
+    while (r.handle.state().phase !== 'ready') await nextTick();
+    r.handle.applyReadyAction({ type: 'send' });
+    await r.terminal;
+    expect(adapter.receivedInputs).toHaveLength(1);
+    expect(adapter.receivedInputs[0]?.config).toEqual({
+      providerId: 'anthropic',
+      model: 'claude-sonnet-4-6',
+    });
   });
 
   it('onHandle is invoked synchronously after start', async () => {

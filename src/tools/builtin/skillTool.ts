@@ -52,6 +52,7 @@ export function createSkillTool(
     parameters: jsonSchemaFromZod(SkillToolSchema),
     requiresConfirmation: false,
     source: 'builtin',
+    shouldDefer: true,
     // Validate retains the registry lookup + sentinel checks that pure zod can't express.
     validate(raw): ToolResult<SkillToolArgs> {
       if (raw === null || typeof raw !== 'object') {
