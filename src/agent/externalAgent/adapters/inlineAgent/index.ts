@@ -1,4 +1,5 @@
 import type { z } from 'zod';
+import type { BaseCallbackHandler } from '@langchain/core/callbacks/base';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import {
   ExternalAgentAdapter,
@@ -35,12 +36,32 @@ export type ProviderFactory = (
 
 import type { ManualChatModelAdapter as InlineAgentManualChatModelAdapter } from './manualChatModel';
 
+export interface InvokeTraceConfig {
+  readonly callbacks?: readonly BaseCallbackHandler[];
+  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly tags?: readonly string[];
+}
+
+export interface InlineTurnHandle {
+  readonly traceConfig: InvokeTraceConfig;
+  end(): Promise<void>;
+}
+
+export type BeginInlineTurn = (input: {
+  readonly sessionId: string;
+  readonly runId: string;
+}) => InlineTurnHandle | null;
+
 export interface InlineAgentAdapterDeps {
   readonly providerFactory: ProviderFactory;
   readonly logger: InlineAgentLogger;
   readonly knownProviderIds?: () => readonly string[];
-  readonly chatModelAdapter?: (model: BaseChatModel) => InlineAgentManualChatModelAdapter;
+  readonly chatModelAdapter?: (
+    model: BaseChatModel,
+    traceConfig?: InvokeTraceConfig,
+  ) => InlineAgentManualChatModelAdapter;
   readonly resolveSearchWebApiKey?: (config: InlineAgentConfig) => string;
+  readonly beginTurn?: BeginInlineTurn;
 }
 
 const DEFAULT_KNOWN_PROVIDERS: readonly string[] = [
@@ -76,9 +97,10 @@ export class InlineAgentAdapter extends ExternalAgentAdapter {
   private readonly logger: InlineAgentLogger;
   private readonly knownProviderIds: () => readonly string[];
   private readonly chatModelAdapter:
-    | ((model: BaseChatModel) => InlineAgentManualChatModelAdapter)
+    | ((model: BaseChatModel, traceConfig?: InvokeTraceConfig) => InlineAgentManualChatModelAdapter)
     | undefined;
   private readonly resolveSearchWebApiKey: ((config: InlineAgentConfig) => string) | undefined;
+  private readonly beginTurn: BeginInlineTurn | undefined;
 
   constructor(deps: InlineAgentAdapterDeps) {
     super();
@@ -88,6 +110,7 @@ export class InlineAgentAdapter extends ExternalAgentAdapter {
       deps.knownProviderIds ?? ((): readonly string[] => DEFAULT_KNOWN_PROVIDERS);
     this.chatModelAdapter = deps.chatModelAdapter;
     this.resolveSearchWebApiKey = deps.resolveSearchWebApiKey;
+    this.beginTurn = deps.beginTurn;
     Sandbox.sweepOrphans({ logger: this.logger }).catch((err) => {
       this.logger.warn('externalAgent.adapter.inlineAgent.sandbox.sweep-failed', {
         error: err instanceof Error ? err.message : String(err),
@@ -129,23 +152,43 @@ export class InlineAgentAdapter extends ExternalAgentAdapter {
 
     const { runInlineAgentGraph } = await import('./graph');
     const runId = input.runId ?? `local-${Date.now()}`;
-    yield* runInlineAgentGraph(
-      {
-        providerFactory: this.providerFactory,
-        logger: this.logger,
-        ...(this.chatModelAdapter !== undefined ? { chatModelAdapter: this.chatModelAdapter } : {}),
-        ...(this.resolveSearchWebApiKey !== undefined
-          ? { resolveSearchWebApiKey: this.resolveSearchWebApiKey }
-          : {}),
-      },
-      {
-        refinedAsk: input.refinedAsk,
-        systemPrompt: input.systemPrompt,
-        signal: input.signal,
-        timeoutMs: input.timeoutMs,
-        config: input.config,
-        runId,
-      },
-    );
+    const turnHandle =
+      this.beginTurn !== undefined && input.threadId !== undefined
+        ? this.beginTurn({ sessionId: input.threadId, runId })
+        : null;
+    const traceConfig = turnHandle?.traceConfig;
+    try {
+      yield* runInlineAgentGraph(
+        {
+          providerFactory: this.providerFactory,
+          logger: this.logger,
+          ...(this.chatModelAdapter !== undefined
+            ? { chatModelAdapter: this.chatModelAdapter }
+            : {}),
+          ...(this.resolveSearchWebApiKey !== undefined
+            ? { resolveSearchWebApiKey: this.resolveSearchWebApiKey }
+            : {}),
+          ...(traceConfig !== undefined ? { traceConfig } : {}),
+        },
+        {
+          refinedAsk: input.refinedAsk,
+          systemPrompt: input.systemPrompt,
+          signal: input.signal,
+          timeoutMs: input.timeoutMs,
+          config: input.config,
+          runId,
+        },
+      );
+    } finally {
+      if (turnHandle !== null) {
+        try {
+          await turnHandle.end();
+        } catch (err) {
+          this.logger.warn('externalAgent.adapter.inlineAgent.trace.end-failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
   }
 }

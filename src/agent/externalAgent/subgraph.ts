@@ -1,4 +1,5 @@
 import type { Logger } from '@/platform/Logger';
+import type { ProviderTraceContext } from '@/providers/types';
 import type { ExternalAgentAdapter, ExternalEvent } from './adapters/base';
 import {
   applyExternalEvent,
@@ -21,8 +22,19 @@ export interface RefineDeps {
     readonly state: ExternalAgentState;
     readonly userInput: string | null;
     readonly signal: AbortSignal;
+    readonly traceConfig?: ProviderTraceContext;
   }): Promise<RefineDecision>;
 }
+
+export interface ExternalAgentTraceHandle {
+  readonly traceConfig: ProviderTraceContext;
+  end(): Promise<void>;
+}
+
+export type BeginExternalAgentTrace = (input: {
+  readonly runId: string;
+  readonly threadId: string;
+}) => ExternalAgentTraceHandle | null;
 
 export interface AdapterCallDeps {
   start(input: {
@@ -33,6 +45,7 @@ export interface AdapterCallDeps {
     readonly timeoutMs: number;
     readonly config: unknown;
     readonly runId: string;
+    readonly threadId?: string;
   }): AsyncIterable<ExternalEvent>;
 }
 
@@ -61,6 +74,14 @@ export interface SubgraphDeps {
    * `error.code='abort_timeout'`. Defaults to 2_000 ms (NFR-EXT-01).
    */
   readonly abortGraceMs?: number;
+  /**
+   * Optional Langfuse trace factory. Called once per run; the returned
+   * `traceConfig` is forwarded to the refine sub-agent's ProviderChatRequest
+   * so refine LLM generations are nested under the caller's parent span.
+   * `end()` is invoked exactly once on terminal transition (done | error |
+   * cancelled). The adapter call manages its own trace independently.
+   */
+  readonly beginTrace?: BeginExternalAgentTrace;
 }
 
 export type StateListener = (state: ExternalAgentState) => void;
@@ -95,13 +116,29 @@ export interface RunInput {
   readonly refineBudget?: number;
   readonly timeoutMs?: number;
   readonly selectedAdapterId?: string | null;
+  readonly resolvedConfig?: unknown;
 }
 
+// Hand-rolled FSM driver instead of LangGraph `entrypoint()` + `interrupt()`. The
+// LangGraph functional API re-runs the entrypoint callback from start on every
+// `Command({ resume })`, with previous `task()` results memoized and `interrupt()`
+// returning the resume value on replay. That model conflicts with two load-bearing
+// invariants here:
+//   1. Mid-execution `setState` mutations (per-event textBuffer, per-phase
+//      transitionTo) drive the per-mutation `StateListener` fan-out the widget UI
+//      subscribes to. Replays would re-fire listeners for already-emitted phases.
+//   2. Closure-captured `state` accumulates between user-input gates (clarify,
+//      ready). Re-running pre-interrupt code on resume either re-applies mutations
+//      (e.g. refineIterations doubles) or loses them (if cleared on re-init).
+// JS-native Promise + AbortSignal continuations are the correct framework
+// primitive at this seam — `clarifyResolver` / `readyResolver` are equivalent to
+// `interrupt()` semantically without the replay penalty.
 export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunHandle {
   const now = deps.now ?? ((): number => Date.now());
   const refineBudget = input.refineBudget ?? 3;
   const initialAdapterId = input.selectedAdapterId ?? null;
   const initialTimeoutMs = input.timeoutMs ?? defaultTimeoutFor(deps.registry, initialAdapterId);
+  const resolvedConfig = input.resolvedConfig;
 
   let state: ExternalAgentState = initialState({
     runId: input.runId,
@@ -121,6 +158,24 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
     terminalResolve = res;
   });
 
+  const traceHandle: ExternalAgentTraceHandle | null =
+    deps.beginTrace !== undefined
+      ? deps.beginTrace({ runId: input.runId, threadId: input.threadId })
+      : null;
+  let traceEnded = false;
+  const endTrace = async (): Promise<void> => {
+    if (traceHandle === null || traceEnded) return;
+    traceEnded = true;
+    try {
+      await traceHandle.end();
+    } catch (err) {
+      deps.logger?.warn('externalAgent.subgraph.trace-end-failed', {
+        runId: input.runId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   const setState = (next: ExternalAgentState): void => {
     if (state === next) return;
     state = next;
@@ -134,7 +189,10 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
         });
       }
     }
-    if (isTerminal(state.phase)) terminalResolve(state);
+    if (isTerminal(state.phase)) {
+      terminalResolve(state);
+      void endTrace();
+    }
   };
 
   const transitionTo = (next: ExternalPhase, patch: Partial<ExternalAgentState> = {}): void => {
@@ -241,6 +299,7 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
           state,
           userInput,
           signal: cancelController.signal,
+          ...(traceHandle !== null ? { traceConfig: traceHandle.traceConfig } : {}),
         });
         const abortObserver = waitForAbort(cancelController.signal);
         const winner = await Promise.race([
@@ -306,92 +365,131 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
   const runAdapterPhase = async (adapter: ExternalAgentAdapter): Promise<void> => {
     const startedAt = now();
     transitionTo('running', { startedAt, endedAt: null });
+    const ctx = setupAdapterAbort(state.timeoutMs);
+    const result = await streamAdapterEvents(adapter, ctx);
+    cleanupAdapterAbort(ctx);
 
-    const adapterAbort = new AbortController();
-    const timeoutMs = state.timeoutMs;
-    let timedOut = false;
-    let abortTimedOut = false;
-    const timer =
-      timeoutMs > 0
-        ? setTimeout(() => {
-            timedOut = true;
-            adapterAbort.abort();
-          }, timeoutMs)
-        : null;
-    const onCancel = (): void => adapterAbort.abort();
-    cancelController.signal.addEventListener('abort', onCancel, { once: true });
+    if (result.postDoneEventCount > 0) {
+      deps.logger?.warn('externalAgent.run.events-after-done', {
+        runId: state.runId,
+        adapterId: adapter.id,
+        count: result.postDoneEventCount,
+      });
+    }
 
-    let adapterError: { code: string; message: string } | null = null;
-    let adapterDone = false;
-    let postDoneEventCount = 0;
-    let iterator: AsyncIterator<ExternalEvent> | null = null;
+    const finished = await finalizeAdapterRun(adapter, result, ctx);
+    if (finished) return;
 
+    const endedAt = now();
+    transitionTo('writing', { endedAt });
     try {
+      const writeResult = await deps.writer.write({ state, status: 'done' });
+      if (!writeResult.ok) {
+        transitionTo('error', {
+          error: { code: 'write_failed', message: 'ResultWriter reported failure' },
+          resultFolder: writeResult.folder,
+          writtenFiles: writeResult.writtenFiles,
+          endedAt: state.endedAt ?? now(),
+        });
+        return;
+      }
+      transitionTo('done', {
+        resultFolder: writeResult.folder,
+        writtenFiles: writeResult.writtenFiles,
+        endedAt: state.endedAt ?? now(),
+      });
+    } catch (err) {
+      await finishWithError('write_failed', err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  interface AdapterAbortCtx {
+    readonly adapterAbort: AbortController;
+    readonly timeoutMs: number;
+    readonly timer: ReturnType<typeof setTimeout> | null;
+    readonly onCancel: () => void;
+    readonly adapterRunStartedAt: number;
+    timedOut: boolean;
+  }
+
+  function setupAdapterAbort(timeoutMs: number): AdapterAbortCtx {
+    const adapterAbort = new AbortController();
+    const adapterRunStartedAt = now();
+    const ctx: AdapterAbortCtx = {
+      adapterAbort,
+      timeoutMs,
+      timer: null,
+      adapterRunStartedAt,
+      timedOut: false,
+      onCancel: () => {
+        deps.logger?.warn('externalAgent.subgraph.adapterAbort.fire', {
+          runId: state.runId,
+          source: 'cancelController',
+          elapsedMs: now() - adapterRunStartedAt,
+        });
+        adapterAbort.abort();
+      },
+    };
+    if (timeoutMs > 0) {
+      (ctx as { timer: ReturnType<typeof setTimeout> | null }).timer = setTimeout(() => {
+        ctx.timedOut = true;
+        deps.logger?.warn('externalAgent.subgraph.adapterAbort.fire', {
+          runId: state.runId,
+          source: 'timeout',
+          timeoutMs,
+          elapsedMs: now() - adapterRunStartedAt,
+        });
+        adapterAbort.abort();
+      }, timeoutMs);
+    }
+    cancelController.signal.addEventListener('abort', ctx.onCancel, { once: true });
+    return ctx;
+  }
+
+  function cleanupAdapterAbort(ctx: AdapterAbortCtx): void {
+    if (ctx.timer !== null) clearTimeout(ctx.timer);
+    cancelController.signal.removeEventListener('abort', ctx.onCancel);
+  }
+
+  interface AdapterStreamResult {
+    adapterError: { code: string; message: string } | null;
+    adapterDone: boolean;
+    abortTimedOut: boolean;
+    postDoneEventCount: number;
+  }
+
+  async function streamAdapterEvents(
+    adapter: ExternalAgentAdapter,
+    ctx: AdapterAbortCtx,
+  ): Promise<AdapterStreamResult> {
+    const out: AdapterStreamResult = {
+      adapterError: null,
+      adapterDone: false,
+      abortTimedOut: false,
+      postDoneEventCount: 0,
+    };
+    let iterator: AsyncIterator<ExternalEvent> | null = null;
+    try {
+      const cfg =
+        resolvedConfig !== undefined ? await Promise.resolve(resolvedConfig) : pickConfig(adapter);
       const stream = deps.adapterCall.start({
         adapter,
         refinedAsk: state.refinedPrompt ?? state.originalAsk,
         systemPrompt: deps.systemPrompt,
-        signal: adapterAbort.signal,
-        timeoutMs,
-        config: pickConfig(adapter),
+        signal: ctx.adapterAbort.signal,
+        timeoutMs: ctx.timeoutMs,
+        config: cfg,
         runId: state.runId,
+        threadId: state.threadId,
       });
       iterator = stream[Symbol.asyncIterator]();
-      const graceMs = deps.abortGraceMs ?? 2_000;
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const nextStep = iterator.next();
-        let step: IteratorResult<ExternalEvent>;
-        // Always race against an abort observer so a hanging next() can be
-        // surfaced as `abort_timeout` once cancel/timeout fires.
-        const abortObserver = waitForAbort(adapterAbort.signal);
-        const winner = await Promise.race([
-          nextStep.then((s) => ({ kind: 'next' as const, step: s })),
-          abortObserver.promise.then(() => ({ kind: 'aborted' as const })),
-        ]);
-        abortObserver.cancel();
-        if (winner.kind === 'aborted') {
-          // Adapter still hasn't yielded after abort; give it a grace window.
-          const grace = abortTimeout(graceMs);
-          const after = await Promise.race([
-            nextStep.then((s) => ({ kind: 'next' as const, step: s })),
-            grace.promise.then(() => ({ kind: 'abort_timeout' as const })),
-          ]);
-          grace.cancel();
-          if (after.kind === 'abort_timeout') {
-            abortTimedOut = true;
-            break;
-          }
-          step = after.step;
-        } else {
-          step = winner.step;
-        }
-        if (step.done === true) break;
-        const event = step.value;
-        if (adapterDone) {
-          postDoneEventCount += 1;
-          continue;
-        }
-        setState(applyExternalEvent(state, event, { ts: now }));
-        if (event.type === 'error') {
-          adapterError = event.error;
-          break;
-        }
-        if (event.type === 'done') {
-          adapterDone = true;
-          // Continue draining briefly in case the adapter emits a tiny tail
-          // (we don't transition until iterator closes or aborts).
-          break;
-        }
-      }
+      await drainAdapterIterator(iterator, ctx, out);
     } catch (err) {
-      adapterError = {
+      out.adapterError = {
         code: 'adapter_throw',
         message: err instanceof Error ? err.message : String(err),
       };
     } finally {
-      if (timer !== null) clearTimeout(timer);
-      cancelController.signal.removeEventListener('abort', onCancel);
       if (iterator !== null && typeof iterator.return === 'function') {
         try {
           await iterator.return();
@@ -400,61 +498,99 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
         }
       }
     }
+    return out;
+  }
 
-    if (postDoneEventCount > 0) {
-      deps.logger?.warn('externalAgent.run.events-after-done', {
-        runId: state.runId,
-        adapterId: adapter.id,
-        count: postDoneEventCount,
-      });
+  async function drainAdapterIterator(
+    iterator: AsyncIterator<ExternalEvent>,
+    ctx: AdapterAbortCtx,
+    out: AdapterStreamResult,
+  ): Promise<void> {
+    const graceMs = deps.abortGraceMs ?? 2_000;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const stepOutcome = await raceNextAgainstAbort(iterator, ctx, graceMs);
+      if (stepOutcome.kind === 'abort_timeout') {
+        out.abortTimedOut = true;
+        return;
+      }
+      if (stepOutcome.step.done === true) return;
+      const event = stepOutcome.step.value;
+      if (out.adapterDone) {
+        out.postDoneEventCount += 1;
+        continue;
+      }
+      setState(applyExternalEvent(state, event, { ts: now }));
+      if (event.type === 'error') {
+        out.adapterError = event.error;
+        return;
+      }
+      if (event.type === 'done') {
+        out.adapterDone = true;
+        // Continue draining briefly in case the adapter emits a tiny tail
+        // (we don't transition until iterator closes or aborts).
+        return;
+      }
     }
+  }
 
-    if (abortTimedOut) {
+  // Always race against an abort observer so a hanging next() can be surfaced
+  // as `abort_timeout` once cancel/timeout fires.
+  async function raceNextAgainstAbort(
+    iterator: AsyncIterator<ExternalEvent>,
+    ctx: AdapterAbortCtx,
+    graceMs: number,
+  ): Promise<{ kind: 'step'; step: IteratorResult<ExternalEvent> } | { kind: 'abort_timeout' }> {
+    const nextStep = iterator.next();
+    const abortObserver = waitForAbort(ctx.adapterAbort.signal);
+    const winner = await Promise.race([
+      nextStep.then((s) => ({ kind: 'next' as const, step: s })),
+      abortObserver.promise.then(() => ({ kind: 'aborted' as const })),
+    ]);
+    abortObserver.cancel();
+    if (winner.kind === 'next') return { kind: 'step', step: winner.step };
+    // Adapter still hasn't yielded after abort; give it a grace window.
+    const grace = abortTimeout(graceMs);
+    const after = await Promise.race([
+      nextStep.then((s) => ({ kind: 'next' as const, step: s })),
+      grace.promise.then(() => ({ kind: 'abort_timeout' as const })),
+    ]);
+    grace.cancel();
+    if (after.kind === 'abort_timeout') return { kind: 'abort_timeout' };
+    return { kind: 'step', step: after.step };
+  }
+
+  // Returns true if a terminal phase was reached and caller should bail out.
+  async function finalizeAdapterRun(
+    adapter: ExternalAgentAdapter,
+    result: AdapterStreamResult,
+    ctx: AdapterAbortCtx,
+  ): Promise<boolean> {
+    if (result.abortTimedOut) {
       await finishWithError(
         'abort_timeout',
         `Adapter ${adapter.id} did not respect AbortSignal within grace window`,
       );
-      return;
+      return true;
     }
-    if (cancelController.signal.aborted && !timedOut) {
+    if (cancelController.signal.aborted && !ctx.timedOut) {
       finishCancelled('running');
-      return;
+      return true;
     }
-    if (timedOut) {
-      await finishWithError('timeout', `Adapter ${adapter.id} exceeded ${timeoutMs}ms`);
-      return;
+    if (ctx.timedOut) {
+      await finishWithError('timeout', `Adapter ${adapter.id} exceeded ${ctx.timeoutMs}ms`);
+      return true;
     }
-    if (adapterError !== null) {
-      await finishWithError(adapterError.code, adapterError.message);
-      return;
+    if (result.adapterError !== null) {
+      await finishWithError(result.adapterError.code, result.adapterError.message);
+      return true;
     }
-    if (!adapterDone) {
+    if (!result.adapterDone) {
       await finishWithError('adapter_no_done', `Adapter ${adapter.id} ended without 'done' event`);
-      return;
+      return true;
     }
-
-    const endedAt = now();
-    transitionTo('writing', { endedAt });
-    try {
-      const result = await deps.writer.write({ state, status: 'done' });
-      if (!result.ok) {
-        transitionTo('error', {
-          error: { code: 'write_failed', message: 'ResultWriter reported failure' },
-          resultFolder: result.folder,
-          writtenFiles: result.writtenFiles,
-          endedAt: state.endedAt ?? now(),
-        });
-        return;
-      }
-      transitionTo('done', {
-        resultFolder: result.folder,
-        writtenFiles: result.writtenFiles,
-        endedAt: state.endedAt ?? now(),
-      });
-    } catch (err) {
-      await finishWithError('write_failed', err instanceof Error ? err.message : String(err));
-    }
-  };
+    return false;
+  }
 
   const handle: RunHandle = {
     runId: input.runId,
@@ -477,7 +613,21 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
       fn(action);
     },
     cancel: () => {
-      if (cancelController.signal.aborted || isTerminal(state.phase)) return;
+      if (cancelController.signal.aborted || isTerminal(state.phase)) {
+        deps.logger?.info('externalAgent.subgraph.cancel.noop', {
+          runId: state.runId,
+          alreadyAborted: cancelController.signal.aborted,
+          phase: state.phase,
+        });
+        return;
+      }
+      const stack = new Error('cancel-callsite').stack ?? '';
+      deps.logger?.warn('externalAgent.subgraph.cancel.invoked', {
+        runId: state.runId,
+        threadId: state.threadId,
+        phase: state.phase,
+        stack: stack.split('\n').slice(0, 8).join('\n'),
+      });
       cancelController.abort();
     },
     done: () => terminalPromise,

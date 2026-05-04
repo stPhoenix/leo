@@ -103,37 +103,14 @@ export function MessageList(props: MessageListProps): JSX.Element {
         ) : (
           <ol className="leo-message-list-items">
             {messages.map((m) => (
-              <li
-                key={m.id}
-                className={`leo-message leo-message-${m.role}`}
-                data-role={m.role}
-                role="listitem"
-              >
-                {m.role === 'user' ? (
-                  <UserBubble
-                    record={m}
-                    {...(props.actions !== undefined ? { actions: props.actions } : {})}
-                    {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
-                    editing={editingId === m.id}
-                    onStartEdit={startEdit}
-                    onFinishEdit={endEdit}
-                  />
-                ) : m.role === 'banner' ? (
-                  <BannerRow record={m} />
-                ) : m.role === 'widget' ? (
-                  <WidgetRow record={m} />
-                ) : (
-                  <AssistantBubble
-                    record={m}
-                    renderMarkdown={props.renderMarkdown}
-                    clipboard={props.clipboard}
-                    setIcon={props.setIcon}
-                    {...(props.actions !== undefined ? { actions: props.actions } : {})}
-                    {...(props.toolUseSlots !== undefined
-                      ? { toolUseSlots: props.toolUseSlots }
-                      : {})}
-                  />
-                )}
+              <li key={m.id} className={`leo-message leo-message-${m.role}`} data-role={m.role}>
+                {renderMessageRow({
+                  m,
+                  props,
+                  editing: editingId === m.id,
+                  startEdit,
+                  endEdit,
+                })}
               </li>
             ))}
           </ol>
@@ -150,6 +127,40 @@ export function MessageList(props: MessageListProps): JSX.Element {
         </button>
       ) : null}
     </section>
+  );
+}
+
+function renderMessageRow(args: {
+  readonly m: ChatMessageRecord;
+  readonly props: MessageListProps;
+  readonly editing: boolean;
+  readonly startEdit: (id: string) => void;
+  readonly endEdit: () => void;
+}): JSX.Element {
+  const { m, props, editing, startEdit, endEdit } = args;
+  if (m.role === 'user') {
+    return (
+      <UserBubble
+        record={m}
+        actions={props.actions}
+        setIcon={props.setIcon}
+        editing={editing}
+        onStartEdit={startEdit}
+        onFinishEdit={endEdit}
+      />
+    );
+  }
+  if (m.role === 'banner') return <BannerRow record={m} />;
+  if (m.role === 'widget') return <WidgetRow record={m} />;
+  return (
+    <AssistantBubble
+      record={m}
+      renderMarkdown={props.renderMarkdown}
+      clipboard={props.clipboard}
+      setIcon={props.setIcon}
+      actions={props.actions}
+      toolUseSlots={props.toolUseSlots}
+    />
   );
 }
 
@@ -194,12 +205,7 @@ function UserBubble(props: UserBubbleProps): JSX.Element {
           {formatBubbleTime(record.createdAt)}
         </time>
       </header>
-      {hasAttachments ? (
-        <SentAttachmentList
-          blocks={userBlocks}
-          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
-        />
-      ) : null}
+      {hasAttachments ? <SentAttachmentList blocks={userBlocks} setIcon={props.setIcon} /> : null}
       <div className="leo-bubble-body" data-slot="user-text">
         {record.content}
       </div>
@@ -207,7 +213,7 @@ function UserBubble(props: UserBubbleProps): JSX.Element {
         <MessageActionBar
           record={record}
           actions={props.actions}
-          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+          setIcon={props.setIcon}
           onStartEdit={props.onStartEdit}
         />
       ) : null}
@@ -237,7 +243,7 @@ function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
     const cleanupMarkdown = props.renderMarkdown(props.record.content, host);
     const cleanupCodeButtons = enhanceCodeBlocks(host, {
       clipboard: props.clipboard,
-      ...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {}),
+      setIcon: props.setIcon,
     });
     return () => {
       cleanupCodeButtons();
@@ -281,8 +287,8 @@ function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
           streaming={streaming}
           renderMarkdown={props.renderMarkdown}
           clipboard={props.clipboard}
-          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
-          {...(props.toolUseSlots !== undefined ? { toolUseSlots: props.toolUseSlots } : {})}
+          setIcon={props.setIcon}
+          toolUseSlots={props.toolUseSlots}
         />
       ) : (
         <div className="leo-bubble-body" data-slot="assistant-markdown" ref={hostRef} />
@@ -304,23 +310,13 @@ function AssistantBubble(props: AssistantBubbleProps): JSX.Element {
           total={props.record.tokens.total}
           estimatedInput={props.record.tokens.estimatedInput === true}
           estimatedOutput={props.record.tokens.estimatedOutput === true}
-          {...(props.record.tokens.reasoning !== undefined
-            ? { reasoning: props.record.tokens.reasoning }
-            : {})}
-          {...(props.record.tokens.cacheCreation !== undefined
-            ? { cacheCreation: props.record.tokens.cacheCreation }
-            : {})}
-          {...(props.record.tokens.cacheRead !== undefined
-            ? { cacheRead: props.record.tokens.cacheRead }
-            : {})}
+          reasoning={props.record.tokens.reasoning}
+          cacheCreation={props.record.tokens.cacheCreation}
+          cacheRead={props.record.tokens.cacheRead}
         />
       ) : null}
       {!streaming && props.actions !== undefined ? (
-        <MessageActionBar
-          record={props.record}
-          actions={props.actions}
-          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
-        />
+        <MessageActionBar record={props.record} actions={props.actions} setIcon={props.setIcon} />
       ) : null}
     </div>
   );
@@ -422,7 +418,6 @@ function BannerRow({ record }: { record: ChatMessageRecord }): JSX.Element {
   return (
     <div
       className={`leo-banner leo-banner-${kind}`}
-      role="status"
       data-slot={`banner-${kind}`}
       data-banner-kind={kind}
       data-tool-count={record.banner?.toolCount ?? ''}

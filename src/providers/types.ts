@@ -37,6 +37,22 @@ export interface OpenAITool {
     readonly description: string;
     readonly parameters: unknown;
   };
+  readonly defer_loading?: boolean;
+}
+
+export interface ProviderHints {
+  readonly betas?: readonly string[];
+  readonly nativeDeferral?: boolean;
+  readonly disableParallelToolCalls?: boolean;
+  /**
+   * For Qwen3 / Qwen3.6 family served via LM Studio: sends the canonical
+   * `extra_body: { chat_template_kwargs: { enable_thinking: false } }` so the
+   * model skips its reasoning chain and emits the final answer directly.
+   * Massive latency win, mild quality cost on multi-step tasks. Only applied
+   * when the active provider is LM Studio; whether the model honors it depends
+   * on the chat template baked into the GGUF.
+   */
+  readonly disableThinking?: boolean;
 }
 
 export interface ProviderTraceContext {
@@ -53,6 +69,7 @@ export interface ProviderChatRequest {
   readonly maxTokens?: number;
   readonly tools?: readonly OpenAITool[];
   readonly trace?: ProviderTraceContext;
+  readonly providerHints?: ProviderHints;
 }
 
 export interface ProviderModel {

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { AcceptRejectController, EditNoteProposal } from '@/agent/acceptRejectController';
 import type { Logger } from '@/platform/Logger';
-import type { EditNoteBridge, ToolSpec } from '../types';
+import type { EditNoteBridge, ToolCtx, ToolSpec } from '../types';
 import { isSafeVaultPath } from './readNote';
 import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
 import { ensureFreshRead } from './writeGuard';
@@ -96,125 +96,160 @@ export function createEditNoteTool(
       const start = now();
       const routedVia: 'editor' | 'vault' = ctx.editor.isActiveNote(args.path) ? 'editor' : 'vault';
       opts.logger?.debug('edit_note.route', { path: args.path, routedVia });
-      let beforeText = '';
-      let afterText = '';
-      let commitResult:
-        | { ok: true; bytesWritten: number; revert: () => void | Promise<void> }
-        | { ok: false; error: string };
-      if (routedVia === 'editor') {
-        const guard = await ensureFreshRead(ctx, args.path);
-        if (!guard.ok) return { ok: false, error: guard.error };
-        try {
-          beforeText = await ctx.vault.read(args.path);
-        } catch {
-          // best-effort snapshot; falls through to empty before
-        }
-        const applied = await ctx.editor.applyActiveEdit({
-          path: args.path,
-          lineStart: args.line_start,
-          lineEnd: args.line_end,
-          newContent: args.new_content,
-          signal: ctx.signal,
-        });
-        if (!applied.ok) {
-          return { ok: false, error: applied.error };
-        }
-        const splicedAfter = spliceLines(
-          beforeText,
-          args.line_start,
-          args.line_end,
-          args.new_content,
-        );
-        afterText = splicedAfter.ok ? splicedAfter.next : args.new_content;
-        commitResult = {
-          ok: true,
-          bytesWritten: applied.bytesWritten,
-          revert: () => applied.undo(),
-        };
-      } else {
-        try {
-          const guard = await ensureFreshRead(ctx, args.path);
-          if (!guard.ok) return { ok: false, error: guard.error };
-          const before = await ctx.vault.read(args.path);
-          beforeText = before;
-          const spliced = spliceLines(before, args.line_start, args.line_end, args.new_content);
-          if (!spliced.ok) return { ok: false, error: spliced.error };
-          afterText = spliced.next;
-          await ctx.vault.write(args.path, spliced.next);
-          commitResult = {
-            ok: true,
-            bytesWritten: spliced.bytesWritten,
-            revert: async () => {
-              await ctx.vault.write(args.path, before);
-            },
-          };
-        } catch (err) {
-          return { ok: false, error: err instanceof Error ? err.message : String(err) };
-        }
-      }
-      let reverted = false;
-      const proposal: EditNoteProposal = {
-        toolId: 'edit_note',
-        intent: 'edit',
-        path: args.path,
-        lineStart: args.line_start,
-        lineEnd: args.line_end,
+      const applied =
+        routedVia === 'editor' ? await applyEditorEdit(args, ctx) : await applyVaultEdit(args, ctx);
+      if (!applied.ok) return { ok: false, error: applied.error };
+      const reverted = await maybeReject({
+        opts,
+        ctx,
+        args,
+        commit: applied,
         routedVia,
-      };
-      const decision = await opts.acceptReject.present(proposal);
-      if (decision === 'reject') {
-        try {
-          await commitResult.revert();
-          reverted = true;
-          opts.logger?.info('edit_note.reject', {
-            toolId: 'edit_note',
-            thread: ctx.thread,
-            path: args.path,
-            routedVia,
-            durationMs: Math.round(now() - start),
-          });
-        } catch (err) {
-          opts.logger?.error('edit_note.reject.failed', {
-            path: args.path,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      } else {
-        opts.logger?.info('edit_note.accept', {
-          toolId: 'edit_note',
-          thread: ctx.thread,
-          path: args.path,
-          routedVia,
-          durationMs: Math.round(now() - start),
-        });
-      }
-      if (ctx.readState !== undefined) {
-        if (reverted) {
-          ctx.readState.invalidate(args.path);
-        } else {
-          const stat = await ctx.vault.stat(args.path);
-          ctx.readState.set(args.path, {
-            content: afterText,
-            mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
-            offset: undefined,
-            limit: undefined,
-            isPartialView: false,
-          });
-        }
-      }
+        start,
+      });
+      await syncReadState(ctx, args.path, reverted ? null : applied.afterText);
       return {
         ok: true,
         data: {
           path: args.path,
           routedVia,
-          bytesWritten: commitResult.bytesWritten,
+          bytesWritten: applied.bytesWritten,
           decision: reverted ? 'reject' : 'accept',
-          before: beforeText,
-          after: reverted ? beforeText : afterText,
+          before: applied.beforeText,
+          after: reverted ? applied.beforeText : applied.afterText,
         },
       };
     },
   };
+}
+
+interface AppliedEdit {
+  readonly ok: true;
+  readonly beforeText: string;
+  readonly afterText: string;
+  readonly bytesWritten: number;
+  revert(): void | Promise<void>;
+}
+
+type EditOutcome = AppliedEdit | { readonly ok: false; readonly error: string };
+
+async function applyEditorEdit(args: EditNoteArgs, ctx: ToolCtx): Promise<EditOutcome> {
+  const guard = await ensureFreshRead(ctx, args.path);
+  if (!guard.ok) return { ok: false, error: guard.error };
+  let beforeText = '';
+  try {
+    beforeText = await ctx.vault.read(args.path);
+  } catch {
+    // best-effort snapshot; falls through to empty before
+  }
+  const applied = await ctx.editor.applyActiveEdit({
+    path: args.path,
+    lineStart: args.line_start,
+    lineEnd: args.line_end,
+    newContent: args.new_content,
+    signal: ctx.signal,
+  });
+  if (!applied.ok) return { ok: false, error: applied.error };
+  const splicedAfter = spliceLines(beforeText, args.line_start, args.line_end, args.new_content);
+  return {
+    ok: true,
+    beforeText,
+    afterText: splicedAfter.ok ? splicedAfter.next : args.new_content,
+    bytesWritten: applied.bytesWritten,
+    revert: () => applied.undo(),
+  };
+}
+
+async function applyVaultEdit(args: EditNoteArgs, ctx: ToolCtx): Promise<EditOutcome> {
+  try {
+    const guard = await ensureFreshRead(ctx, args.path);
+    if (!guard.ok) return { ok: false, error: guard.error };
+    const before = await ctx.vault.read(args.path);
+    const spliced = spliceLines(before, args.line_start, args.line_end, args.new_content);
+    if (!spliced.ok) return { ok: false, error: spliced.error };
+    await ctx.vault.write(args.path, spliced.next);
+    return {
+      ok: true,
+      beforeText: before,
+      afterText: spliced.next,
+      bytesWritten: spliced.bytesWritten,
+      revert: async () => {
+        await ctx.vault.write(args.path, before);
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+interface MaybeRejectArgs {
+  readonly opts: {
+    readonly acceptReject: { present(p: EditNoteProposal): Promise<string> };
+    readonly logger?: {
+      info(event: string, fields: Record<string, unknown>): void;
+      error(event: string, fields: Record<string, unknown>): void;
+    };
+  };
+  readonly ctx: ToolCtx;
+  readonly args: EditNoteArgs;
+  readonly commit: AppliedEdit;
+  readonly routedVia: 'editor' | 'vault';
+  readonly start: number;
+}
+
+async function maybeReject(input: MaybeRejectArgs): Promise<boolean> {
+  const proposal: EditNoteProposal = {
+    toolId: 'edit_note',
+    intent: 'edit',
+    path: input.args.path,
+    lineStart: input.args.line_start,
+    lineEnd: input.args.line_end,
+    routedVia: input.routedVia,
+  };
+  const decision = await input.opts.acceptReject.present(proposal);
+  if (decision === 'reject') {
+    try {
+      await input.commit.revert();
+      input.opts.logger?.info('edit_note.reject', {
+        toolId: 'edit_note',
+        thread: input.ctx.thread,
+        path: input.args.path,
+        routedVia: input.routedVia,
+        durationMs: Math.round(now() - input.start),
+      });
+      return true;
+    } catch (err) {
+      input.opts.logger?.error('edit_note.reject.failed', {
+        path: input.args.path,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return true;
+    }
+  }
+  input.opts.logger?.info('edit_note.accept', {
+    toolId: 'edit_note',
+    thread: input.ctx.thread,
+    path: input.args.path,
+    routedVia: input.routedVia,
+    durationMs: Math.round(now() - input.start),
+  });
+  return false;
+}
+
+async function syncReadState(ctx: ToolCtx, path: string, afterText: string | null): Promise<void> {
+  if (ctx.readState === undefined) return;
+  if (afterText === null) {
+    ctx.readState.invalidate(path);
+    return;
+  }
+  const stat = await ctx.vault.stat(path);
+  ctx.readState.set(path, {
+    content: afterText,
+    mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
+    offset: undefined,
+    limit: undefined,
+    isPartialView: false,
+  });
 }
 
 function now(): number {

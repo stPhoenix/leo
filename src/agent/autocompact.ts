@@ -633,7 +633,6 @@ async function buildAttachments(
           content: truncateToTokens(text, tokens),
         },
       });
-      budgetRemaining -= tokens;
     }
   }
 

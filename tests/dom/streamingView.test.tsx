@@ -100,7 +100,7 @@ describe('MessageList — streaming cursor on the tail bubble (AC2, FR-UI-06)', 
 });
 
 describe('MessageList — cancellation + error banners (AC5, AC6, FR-CHAT-05)', () => {
-  it('renders a role="status" banner row for a cancelled record', () => {
+  it('renders a banner row for a cancelled record', () => {
     const store = new ChatMessageStore();
     store.set([
       {
@@ -116,12 +116,12 @@ describe('MessageList — cancellation + error banners (AC5, AC6, FR-CHAT-05)', 
     );
     const banner = container.querySelector('[data-slot="banner-cancelled"]');
     expect(banner).not.toBeNull();
-    expect(banner?.getAttribute('role')).toBe('status');
+    // banners are visual; live-region announcements come from the streaming-status <output> instead
     expect(banner?.textContent).toBe('cancelled after 2 tools');
     expect(banner?.getAttribute('data-tool-count')).toBe('2');
   });
 
-  it('renders a role="status" banner row for an error record with the message', () => {
+  it('renders a banner row for an error record with the message', () => {
     const store = new ChatMessageStore();
     store.set([
       {

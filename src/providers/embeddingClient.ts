@@ -55,8 +55,12 @@ export class EmbeddingClient {
       return out;
     }
 
+    // Outer retry loop is hand-rolled because LangChain `Runnable.withRetry()`
+    // hardcodes `minTimeout: 1000ms` and `factor: 2` (see
+    // `@langchain/core/utils/p-retry`). Tests + ad-hoc back-off tuning
+    // (`baseBackoffMs`) need finer control than the framework exposes.
     const max = this.opts.maxAttempts ?? DEFAULTS.maxAttempts;
-    const isAborted = (): boolean => signal !== undefined && signal.aborted;
+    const isAborted = (): boolean => signal?.aborted === true;
     let lastErr: unknown;
     for (let attempt = 0; attempt < max; attempt++) {
       if (isAborted()) throw signal?.reason ?? new Error('aborted');
@@ -94,25 +98,22 @@ export class EmbeddingClient {
   }
 
   private async embedOnce(texts: readonly string[], signal?: AbortSignal): Promise<number[][]> {
-    const ctl = new AbortController();
-    const onAbort = (): void => ctl.abort(signal?.reason);
-    if (signal !== undefined) {
-      if (signal.aborted) ctl.abort(signal.reason);
-      else signal.addEventListener('abort', onAbort);
-    }
     const timeoutMs = this.opts.timeoutMs ?? DEFAULTS.timeoutMs;
-    const timer = setTimeout(() => ctl.abort(new ProviderTimeoutError()), timeoutMs);
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const composed: AbortSignal =
+      signal !== undefined ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     try {
-      return await this.embedDocsImpl([...texts], ctl.signal);
+      return await this.embedDocsImpl([...texts], composed);
     } catch (err) {
-      if (ctl.signal.aborted && ctl.signal.reason instanceof ProviderTimeoutError) {
-        throw ctl.signal.reason;
+      if (
+        composed.aborted &&
+        composed.reason instanceof DOMException &&
+        composed.reason.name === 'TimeoutError'
+      ) {
+        throw new ProviderTimeoutError();
       }
       if (err instanceof ProviderConnectError || err instanceof ProviderTimeoutError) throw err;
       throw new ProviderConnectError(errMessage(err), { cause: err });
-    } finally {
-      clearTimeout(timer);
-      if (signal !== undefined) signal.removeEventListener('abort', onAbort);
     }
   }
 

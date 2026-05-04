@@ -102,11 +102,16 @@ async function runSnippet(args: {
     `"use strict"; return (async function __leoSkillShell(ctx) { ${body} })(ctx);`,
   ) as (ctx: Record<string, unknown>) => Promise<unknown>;
   try {
-    const result = await withTimeout(factory(sandboxCtx), timeoutMs, opts.signal);
+    const result = await raceUntilAborted(factory(sandboxCtx), timeoutMs, opts.signal);
     if (result === undefined || result === null) return '';
     return typeof result === 'string' ? result : String(result);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    let message: string;
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      message = `shell timed out after ${timeoutMs}ms`;
+    } else {
+      message = err instanceof Error ? err.message : String(err);
+    }
     return `[skill shell error: ${message}]`;
   }
 }
@@ -125,33 +130,25 @@ function buildSandbox(opts: EvaluateOptions): Record<string, unknown> {
   return ctx;
 }
 
-function withTimeout<T>(
+// Composes the caller signal with `AbortSignal.timeout(ms)` via `AbortSignal.any`,
+// then races the work promise against the composed abort. Sandbox is `new Function`
+// JS — it cannot be cancelled mid-evaluation; the race only unblocks the awaiter.
+function raceUntilAborted<T>(
   promise: Promise<T>,
   timeoutMs: number,
   signal: AbortSignal | undefined,
 ): Promise<T> {
   if (timeoutMs <= 0 && signal === undefined) return promise;
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(new Error('aborted'));
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      reject(new Error(`shell timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    signal?.addEventListener('abort', onAbort, { once: true });
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        signal?.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      (err: unknown) => {
-        clearTimeout(timer);
-        signal?.removeEventListener('abort', onAbort);
-        reject(err instanceof Error ? err : new Error(String(err)));
-      },
-    );
-  });
+  const signals: AbortSignal[] = [];
+  if (timeoutMs > 0) signals.push(AbortSignal.timeout(timeoutMs));
+  if (signal !== undefined) signals.push(signal);
+  const composed = signals.length === 1 ? signals[0]! : AbortSignal.any(signals);
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      const onAbort = (): void => reject(composed.reason);
+      if (composed.aborted) onAbort();
+      else composed.addEventListener('abort', onAbort, { once: true });
+    }),
+  ]);
 }

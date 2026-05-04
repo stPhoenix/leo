@@ -97,6 +97,16 @@ describe('DirtyQueue', () => {
     expect(vault.writeCalls).toBe(before);
   });
 
+  it('drops paths under wiki/ at intake (FR-WIKI-05)', () => {
+    const vault = new FakeVault();
+    const q = new DirtyQueue({ vault });
+    expect(q.add('wiki/pages/foo.md')).toBe(false);
+    expect(q.add('wiki/raw/2026-04-29-bar.md')).toBe(false);
+    expect(q.add('lifestream/note.md')).toBe(true);
+    expect(q.size()).toBe(1);
+    expect(q.has('wiki/pages/foo.md')).toBe(false);
+  });
+
   it('dispose cancels pending debounced persist', () => {
     const vault = new FakeVault();
     const q = new DirtyQueue({ vault, debounceMs: 50 });

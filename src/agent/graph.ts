@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   OpenAITool,
   ProviderChatRequest,
+  ProviderHints,
   StreamEvent as ProviderStreamEvent,
   ToolCallRequest,
 } from '@/providers/types';
@@ -17,6 +18,10 @@ import type { ContextModifier } from '@/skills/types';
 import type { RagMode } from '@/settings/settingsStore';
 import { Annotation, StateGraph, START, END, interrupt, MemorySaver } from '@langchain/langgraph';
 import type { PlanModeController } from './planModeController';
+import type { ToolSearchSession } from './toolSearch/toolSearchSession';
+import type { ToolSearchInvocationResult } from '@/tools/toolSearch/types';
+import { TOOL_SEARCH_TOOL_ID } from '@/tools/toolSearch/toolSearchTool';
+import { buildToolSearchToolMessageContent } from './toolSearch/toolResultMapper';
 import { assembleContext, renderPrompt } from './contextAssembler';
 import { truncate, type TruncationResult } from './truncator';
 import {
@@ -49,6 +54,10 @@ import {
 import type { StreamEvent } from './streamEvents';
 import { isSkillInvocationEnvelope } from '@/tools/builtin/skillTool';
 
+// Push/pull async-iterable bridge. `node:stream` (`PassThrough`) is unavailable in the
+// Obsidian renderer (no Node built-ins). LangGraph `.streamEvents()` covers most pipes,
+// but the auto-compact + interrupt re-entry path needs out-of-band pushes from outside
+// the graph driver — this channel is the merge point.
 export class EventChannel<T> {
   private readonly pending: T[] = [];
   private readonly resolvers: Array<(r: IteratorResult<T>) => void> = [];
@@ -183,6 +192,9 @@ export interface GraphDeps {
   readonly autocompact?: GraphAutocompactOptions | null;
   readonly getHistory: (thread: ThreadId) => readonly AgentHistoryMessage[];
   readonly appendHistory: (thread: ThreadId, msg: AgentHistoryMessage) => void;
+  readonly toolSearch?: ToolSearchSession;
+  readonly disableParallelToolCalls?: () => boolean;
+  readonly disableThinking?: () => boolean;
 }
 
 export interface GraphTraceContext {
@@ -512,7 +524,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
   const applyAutocompactNode = async (state: AgentState): Promise<Partial<AgentState>> => {
     if (turn.signal.aborted) return { cancelled: true };
     const ac = deps.autocompact ?? null;
-    if (ac === null || !ac.enabled) return {};
+    if (!ac?.enabled) return {};
     if (state.workingMessages.length === 0) return {};
     const userOverride = ac.userOverride?.();
     let result: CompactionResult | null = null;
@@ -583,17 +595,66 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     };
   };
 
-  const callModelNode = async (state: AgentState): Promise<Partial<AgentState>> => {
-    if (turn.signal.aborted) return { cancelled: true };
-    const activeTools =
-      state.toolAllowlist === null
-        ? state.allToolSpecs
-        : state.allToolSpecs.filter((t) => state.toolAllowlist!.has(t.function.name));
+  const buildActiveTools = (
+    state: AgentState,
+  ): {
+    tools: readonly OpenAITool[];
+    providerHints: ProviderHints | undefined;
+    announcement: string | null;
+  } => {
+    if (deps.toolSearch === undefined || deps.toolRegistry === null) {
+      const tools =
+        state.toolAllowlist === null
+          ? state.allToolSpecs
+          : state.allToolSpecs.filter((t) => state.toolAllowlist!.has(t.function.name));
+      return { tools, providerHints: undefined, announcement: null };
+    }
+    const planModeForList = deps.planMode !== null ? deps.planMode.getMode(turn.thread) : undefined;
+    const listOpts: { allowedTools?: ReadonlySet<string>; planMode?: 'normal' | 'plan' } = {
+      ...(state.toolAllowlist !== null ? { allowedTools: state.toolAllowlist } : {}),
+      ...(planModeForList !== undefined ? { planMode: planModeForList } : {}),
+    };
+    const assembled = deps.toolSearch.assemble({
+      thread: turn.thread,
+      registry: deps.toolRegistry,
+      listOptions: listOpts,
+      historyMessages: state.workingMessages.flatMap((m) =>
+        typeof m.content === 'string' ? [] : [{ blocks: m.content }],
+      ),
+      modelId: state.effectiveModel,
+    });
+    return {
+      tools: assembled.tools,
+      providerHints: assembled.providerHints,
+      announcement: assembled.announcement,
+    };
+  };
+
+  const buildMergedHints = (
+    providerHints: ProviderHints | undefined,
+  ): ProviderHints | undefined => {
+    const disableParallel = deps.disableParallelToolCalls?.() === true;
+    const disableThinking = deps.disableThinking?.() === true;
+    if (!disableParallel && !disableThinking && providerHints === undefined) return undefined;
+    return {
+      ...(providerHints ?? {}),
+      ...(disableParallel ? { disableParallelToolCalls: true } : {}),
+      ...(disableThinking ? { disableThinking: true } : {}),
+    };
+  };
+
+  const buildProviderRequest = (
+    state: AgentState,
+    turnMessages: readonly ChatMessage[],
+    activeTools: readonly OpenAITool[],
+    mergedHints: ProviderHints | undefined,
+  ): ProviderChatRequest => {
     const traceCtx = turn.traceContext;
-    const req: ProviderChatRequest = {
+    return {
       model: state.effectiveModel,
-      messages: state.workingMessages,
+      messages: [...turnMessages],
       ...(activeTools.length > 0 ? { tools: activeTools } : {}),
+      ...(mergedHints !== undefined ? { providerHints: mergedHints } : {}),
       ...(traceCtx !== undefined
         ? {
             trace: {
@@ -604,80 +665,120 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
           }
         : {}),
     };
-    const pendingToolCalls: ToolCallRequest[] = [];
-    let iterationAssistant = '';
+  };
+
+  interface StreamAccumulator {
+    iterationAssistant: string;
+    maxIndexInIteration: number;
+    readonly toolBufs: Map<number, { id: string; name: string; args: string }>;
+    readonly pendingToolCalls: ToolCallRequest[];
+  }
+
+  // Returns 'continue' to keep streaming, 'break' to stop normally, or 'errored'
+  // to abort the turn after an error event. The accumulator is mutated in place.
+  const applyStreamEvent = (
+    ev: ProviderStreamEvent,
+    accum: StreamAccumulator,
+    offset: number,
+  ): 'continue' | 'break' | 'errored' => {
+    if (ev.type === 'block_start') {
+      if (ev.block.type === 'tool_use') {
+        accum.toolBufs.set(ev.index, { id: ev.block.id, name: ev.block.name, args: '' });
+      }
+      if (ev.index > accum.maxIndexInIteration) accum.maxIndexInIteration = ev.index;
+      turn.events.push({ ...ev, index: ev.index + offset });
+      return 'continue';
+    }
+    if (ev.type === 'block_delta') {
+      if (ev.delta.type === 'text_delta') {
+        accum.iterationAssistant += ev.delta.text;
+      } else if (ev.delta.type === 'input_json_delta') {
+        const buf = accum.toolBufs.get(ev.index);
+        if (buf !== undefined) buf.args += ev.delta.partial_json;
+      }
+      if (ev.index > accum.maxIndexInIteration) accum.maxIndexInIteration = ev.index;
+      turn.events.push({ ...ev, index: ev.index + offset });
+      return 'continue';
+    }
+    if (ev.type === 'block_stop') {
+      const buf = accum.toolBufs.get(ev.index);
+      if (buf !== undefined) {
+        accum.pendingToolCalls.push({
+          id: buf.id,
+          name: buf.name,
+          argsJson: buf.args.length === 0 ? '{}' : buf.args,
+        });
+        accum.toolBufs.delete(ev.index);
+      }
+      if (ev.index > accum.maxIndexInIteration) accum.maxIndexInIteration = ev.index;
+      turn.events.push({ ...ev, index: ev.index + offset });
+      return 'continue';
+    }
+    if (ev.type === 'message_delta' || ev.type === 'progress') {
+      turn.events.push(ev);
+      return 'continue';
+    }
+    if (ev.type === 'error') {
+      reportTurnError(ev.error);
+      return 'errored';
+    }
+    if (ev.type === 'done') return 'break';
+    return 'continue';
+  };
+
+  const reportTurnError = (error: Error): void => {
+    turn.events.push({ type: 'error', error });
+    deps.logger.error('agent.turn.done', {
+      thread: turn.thread,
+      cancelled: false,
+      errored: true,
+      error: error.message,
+    });
+    turn.events.close();
+  };
+
+  const callModelNode = async (state: AgentState): Promise<Partial<AgentState>> => {
+    if (turn.signal.aborted) return { cancelled: true };
+    const { tools: activeTools, providerHints, announcement } = buildActiveTools(state);
+    const turnMessages: ChatMessage[] =
+      announcement !== null
+        ? [...state.workingMessages, { role: 'system', content: announcement }]
+        : state.workingMessages;
+    const mergedHints = buildMergedHints(providerHints);
+    const req = buildProviderRequest(state, turnMessages, activeTools, mergedHints);
+
+    const accum: StreamAccumulator = {
+      iterationAssistant: '',
+      maxIndexInIteration: -1,
+      toolBufs: new Map(),
+      pendingToolCalls: [],
+    };
     const offset = state.blockIndexOffset;
-    let maxIndexInIteration = -1;
     try {
-      const toolBufs = new Map<number, { id: string; name: string; args: string }>();
       for await (const ev of deps.provider.stream(req, turn.signal)) {
         if (turn.signal.aborted) break;
-        if (ev.type === 'block_start') {
-          if (ev.block.type === 'tool_use') {
-            toolBufs.set(ev.index, { id: ev.block.id, name: ev.block.name, args: '' });
-          }
-          if (ev.index > maxIndexInIteration) maxIndexInIteration = ev.index;
-          turn.events.push({ ...ev, index: ev.index + offset });
-        } else if (ev.type === 'block_delta') {
-          if (ev.delta.type === 'text_delta') {
-            iterationAssistant += ev.delta.text;
-          } else if (ev.delta.type === 'input_json_delta') {
-            const buf = toolBufs.get(ev.index);
-            if (buf !== undefined) buf.args += ev.delta.partial_json;
-          }
-          if (ev.index > maxIndexInIteration) maxIndexInIteration = ev.index;
-          turn.events.push({ ...ev, index: ev.index + offset });
-        } else if (ev.type === 'block_stop') {
-          const buf = toolBufs.get(ev.index);
-          if (buf !== undefined) {
-            pendingToolCalls.push({
-              id: buf.id,
-              name: buf.name,
-              argsJson: buf.args.length === 0 ? '{}' : buf.args,
-            });
-            toolBufs.delete(ev.index);
-          }
-          if (ev.index > maxIndexInIteration) maxIndexInIteration = ev.index;
-          turn.events.push({ ...ev, index: ev.index + offset });
-        } else if (ev.type === 'message_delta' || ev.type === 'progress') {
-          turn.events.push(ev);
-        } else if (ev.type === 'error') {
-          turn.events.push({ type: 'error', error: ev.error });
-          deps.logger.error('agent.turn.done', {
-            thread: turn.thread,
-            cancelled: false,
-            errored: true,
-            error: ev.error.message,
-          });
-          turn.events.close();
-          return { errored: true };
-        } else if (ev.type === 'done') {
-          break;
-        }
+        const outcome = applyStreamEvent(ev, accum, offset);
+        if (outcome === 'errored') return { errored: true };
+        if (outcome === 'break') break;
       }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       if (turn.signal.aborted) return { cancelled: true };
-      turn.events.push({ type: 'error', error });
-      deps.logger.error('agent.turn.done', {
-        thread: turn.thread,
-        cancelled: false,
-        errored: true,
-        error: error.message,
-      });
-      turn.events.close();
+      reportTurnError(error);
       return { errored: true };
     }
+
     let turnCalledTodoWrite = state.turnCalledTodoWrite;
-    for (const c of pendingToolCalls) {
+    for (const c of accum.pendingToolCalls) {
       if (c.name === 'TodoWrite') turnCalledTodoWrite = true;
     }
-    const nextOffset = maxIndexInIteration >= 0 ? offset + maxIndexInIteration + 1 : offset;
+    const nextOffset =
+      accum.maxIndexInIteration >= 0 ? offset + accum.maxIndexInIteration + 1 : offset;
     return {
-      assistantText: state.assistantText + iterationAssistant,
-      iterationAssistantText: iterationAssistant,
-      pendingToolCalls,
-      turnHadToolCall: state.turnHadToolCall || pendingToolCalls.length > 0,
+      assistantText: state.assistantText + accum.iterationAssistant,
+      iterationAssistantText: accum.iterationAssistant,
+      pendingToolCalls: accum.pendingToolCalls,
+      turnHadToolCall: state.turnHadToolCall || accum.pendingToolCalls.length > 0,
       turnCalledTodoWrite,
       blockIndexOffset: nextOffset,
     };
@@ -693,55 +794,130 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     | { kind: 'allow-thread' }
     | { kind: 'deny' };
 
+  const classifyCall = (call: ToolCallRequest, thread: ThreadId): CallOutcome => {
+    if (
+      deps.planMode !== null &&
+      deps.planMode.getMode(thread) === 'plan' &&
+      !deps.planMode.isToolAllowedInPlan(call.name)
+    ) {
+      return { kind: 'plan-blocked' };
+    }
+    if (deps.toolRegistry === null) return { kind: 'no-registry' };
+    const spec = deps.toolRegistry.lookup(call.name);
+    if (spec === undefined) return { kind: 'unknown-tool' };
+    if (!spec.requiresConfirmation) return { kind: 'allow-no-confirm' };
+    const allowed =
+      deps.allowedToolsForThread !== undefined ? deps.allowedToolsForThread(thread) : null;
+    if (allowed?.has(call.name) === true) return { kind: 'allow-allowlisted' };
+    const payload: ToolConfirmationInterruptPayload = {
+      kind: 'tool_confirmation',
+      toolId: call.name,
+      thread,
+      argsJson: call.argsJson,
+      category: deriveCategory(spec),
+    };
+    const decision = interrupt<ToolConfirmationInterruptPayload, ConfirmationDecision>(payload);
+    if (decision === 'deny') return { kind: 'deny' };
+    if (decision === 'allow-thread') return { kind: 'allow-thread' };
+    return { kind: 'allow-once' };
+  };
+
+  type ToolInvocationResult = { ok: true; data: unknown } | { ok: false; error: string };
+
+  const executeOutcome = async (
+    call: ToolCallRequest,
+    outcome: CallOutcome,
+    thread: ThreadId,
+    agentId: string | null,
+  ): Promise<ToolInvocationResult> => {
+    if (outcome.kind === 'plan-blocked') {
+      deps.planMode?.recordToolBlocked(thread, call.name);
+      return { ok: false, error: `blocked by plan mode: ${call.name}` };
+    }
+    if (outcome.kind === 'no-registry')
+      return { ok: false, error: `no tool registry for ${call.name}` };
+    if (outcome.kind === 'unknown-tool') return { ok: false, error: `unknown tool: ${call.name}` };
+    if (outcome.kind === 'deny') {
+      deps.logger.info('tool.confirmation.deny', { toolId: call.name, thread, decision: 'deny' });
+      return { ok: false, error: `user denied ${call.name}` };
+    }
+    if (outcome.kind === 'allow-thread') {
+      deps.logger.info('tool.confirmation.allow-thread', {
+        toolId: call.name,
+        thread,
+        decision: 'allow-thread',
+      });
+      deps.markThreadAllowed?.(thread, call.name);
+    } else if (outcome.kind === 'allow-once') {
+      deps.logger.info('tool.confirmation.allow-once', {
+        toolId: call.name,
+        thread,
+        decision: 'allow-once',
+      });
+    }
+    return await deps.toolRegistry!.invoke(call.name, call.argsJson, {
+      thread,
+      signal: turn.signal,
+      vault: deps.vault,
+      editor: deps.editor,
+      ...(deps.navigator !== undefined ? { navigator: deps.navigator } : {}),
+      logger: deps.logger,
+      agentId,
+      ...(deps.readState !== undefined ? { readState: deps.readState } : {}),
+      ...(deps.excludeMatcher !== undefined ? { excludeMatcher: deps.excludeMatcher } : {}),
+    });
+  };
+
+  type SkillEnvelopeShape = {
+    skillName: string;
+    messages: readonly { role: string; content: string; marker?: string }[];
+    contextModifier?: ContextModifier;
+  };
+
+  const buildToolResultContent = (
+    result: ToolInvocationResult,
+    call: ToolCallRequest,
+    thread: ThreadId,
+  ): {
+    content: ChatMessage['content'];
+    skillEnvelope: SkillEnvelopeShape | null;
+    toolSearchWire: ReturnType<typeof buildToolSearchToolMessageContent> | null;
+  } => {
+    const skillEnvelope =
+      result.ok && isSkillInvocationEnvelope(result.data)
+        ? (result.data as unknown as SkillEnvelopeShape)
+        : null;
+    const toolSearchWire =
+      result.ok && call.name === TOOL_SEARCH_TOOL_ID && deps.toolSearch !== undefined
+        ? buildToolSearchToolMessageContent(
+            result.data as ToolSearchInvocationResult,
+            deps.toolSearch.snapshotFor(thread).nativeDeferral,
+          )
+        : null;
+    let content: ChatMessage['content'];
+    if (toolSearchWire !== null) {
+      content = toolSearchWire.content;
+    } else if (skillEnvelope !== null) {
+      content = JSON.stringify({
+        ok: true,
+        data: { skill: skillEnvelope.skillName, status: 'injected' },
+      });
+    } else {
+      content = JSON.stringify(result);
+    }
+    return { content, skillEnvelope, toolSearchWire };
+  };
+
   const handleToolCallsNode = async (state: AgentState): Promise<Partial<AgentState>> => {
     const thread = turn.thread;
     const agentId = turn.agentId;
     // PASS 1 — pure reads + interrupts. Replays on each resume until every
     // interrupt resolved. No side effects.
-    const outcomes: CallOutcome[] = [];
-    for (const call of state.pendingToolCalls) {
-      if (
-        deps.planMode !== null &&
-        deps.planMode.getMode(thread) === 'plan' &&
-        !deps.planMode.isToolAllowedInPlan(call.name)
-      ) {
-        outcomes.push({ kind: 'plan-blocked' });
-        continue;
-      }
-      if (deps.toolRegistry === null) {
-        outcomes.push({ kind: 'no-registry' });
-        continue;
-      }
-      const spec = deps.toolRegistry.lookup(call.name);
-      if (spec === undefined) {
-        outcomes.push({ kind: 'unknown-tool' });
-        continue;
-      }
-      if (!spec.requiresConfirmation) {
-        outcomes.push({ kind: 'allow-no-confirm' });
-        continue;
-      }
-      const allowed =
-        deps.allowedToolsForThread !== undefined ? deps.allowedToolsForThread(thread) : null;
-      if (allowed !== null && allowed.has(call.name)) {
-        outcomes.push({ kind: 'allow-allowlisted' });
-        continue;
-      }
-      const payload: ToolConfirmationInterruptPayload = {
-        kind: 'tool_confirmation',
-        toolId: call.name,
-        thread,
-        argsJson: call.argsJson,
-        category: deriveCategory(spec),
-      };
-      const decision = interrupt<ToolConfirmationInterruptPayload, ConfirmationDecision>(payload);
-      if (decision === 'deny') outcomes.push({ kind: 'deny' });
-      else if (decision === 'allow-thread') outcomes.push({ kind: 'allow-thread' });
-      else outcomes.push({ kind: 'allow-once' });
-    }
+    const outcomes: CallOutcome[] = state.pendingToolCalls.map((call) =>
+      classifyCall(call, thread),
+    );
 
-    // PASS 2 — side effects. Runs exactly once, after every interrupt in
-    // PASS 1 has resolved.
+    // PASS 2 — side effects. Runs exactly once, after every interrupt in PASS 1 has resolved.
     const workingMessages: ChatMessage[] = [...state.workingMessages];
     const workingTimestamps: number[] = [...state.workingTimestamps];
     let cancelled = state.cancelled;
@@ -753,6 +929,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       toolCalls: state.pendingToolCalls,
     });
     workingTimestamps.push(deps.clock().getTime());
+
     for (let i = 0; i < state.pendingToolCalls.length; i += 1) {
       const call = state.pendingToolCalls[i]!;
       const outcome = outcomes[i]!;
@@ -760,64 +937,22 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
         cancelled = true;
         break;
       }
-      let result: { ok: true; data: unknown } | { ok: false; error: string };
-      if (outcome.kind === 'plan-blocked') {
-        deps.planMode?.recordToolBlocked(thread, call.name);
-        result = { ok: false, error: `blocked by plan mode: ${call.name}` };
-      } else if (outcome.kind === 'no-registry') {
-        result = { ok: false, error: `no tool registry for ${call.name}` };
-      } else if (outcome.kind === 'unknown-tool') {
-        result = { ok: false, error: `unknown tool: ${call.name}` };
-      } else if (outcome.kind === 'deny') {
-        deps.logger.info('tool.confirmation.deny', {
-          toolId: call.name,
-          thread,
-          decision: 'deny',
-        });
-        result = { ok: false, error: `user denied ${call.name}` };
-      } else {
-        if (outcome.kind === 'allow-thread') {
-          deps.logger.info('tool.confirmation.allow-thread', {
-            toolId: call.name,
-            thread,
-            decision: 'allow-thread',
-          });
-          deps.markThreadAllowed?.(thread, call.name);
-        } else if (outcome.kind === 'allow-once') {
-          deps.logger.info('tool.confirmation.allow-once', {
-            toolId: call.name,
-            thread,
-            decision: 'allow-once',
-          });
-        }
-        result = await deps.toolRegistry!.invoke(call.name, call.argsJson, {
-          thread,
-          signal: turn.signal,
-          vault: deps.vault,
-          editor: deps.editor,
-          ...(deps.navigator !== undefined ? { navigator: deps.navigator } : {}),
-          logger: deps.logger,
-          agentId,
-          ...(deps.readState !== undefined ? { readState: deps.readState } : {}),
-          ...(deps.excludeMatcher !== undefined ? { excludeMatcher: deps.excludeMatcher } : {}),
-        });
-      }
-      const skillEnvelope =
-        result.ok && isSkillInvocationEnvelope(result.data) ? result.data : null;
-      const toolResultContent =
-        skillEnvelope !== null
-          ? JSON.stringify({
-              ok: true,
-              data: { skill: skillEnvelope.skillName, status: 'injected' },
-            })
-          : JSON.stringify(result);
+      const result = await executeOutcome(call, outcome, thread, agentId);
+      const { content, skillEnvelope, toolSearchWire } = buildToolResultContent(
+        result,
+        call,
+        thread,
+      );
       workingMessages.push({
         role: 'tool',
         toolCallId: call.id,
         name: call.name,
-        content: toolResultContent,
+        content,
       });
       workingTimestamps.push(deps.clock().getTime());
+      if (toolSearchWire !== null && toolSearchWire.discoveredAdded.length > 0) {
+        deps.toolSearch?.recordDiscovery(thread, toolSearchWire.discoveredAdded);
+      }
       turn.events.push({ type: 'tool_result', id: call.id, result });
       if (skillEnvelope !== null) {
         for (const msg of skillEnvelope.messages) {
@@ -828,7 +963,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
           workingTimestamps.push(deps.clock().getTime());
         }
         if (skillEnvelope.contextModifier !== undefined) {
-          const mod: ContextModifier = skillEnvelope.contextModifier;
+          const mod = skillEnvelope.contextModifier;
           if (mod.allowedTools !== undefined && mod.allowedTools.length > 0) {
             toolAllowlist = new Set(mod.allowedTools);
           }

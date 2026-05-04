@@ -2,7 +2,8 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { plannerOutputSchema, type PlannerOutput } from '../tools/schemas';
 import type { InlineAgentConfig } from '../configSchema';
-import type { InlineAgentLogger, ProviderFactory } from '../index';
+import type { InlineAgentLogger, InvokeTraceConfig, ProviderFactory } from '../index';
+import { mergeInvokeConfig } from '../router';
 import { addTokens, incrementIterations, type InlineAgentRunState } from '../runState';
 import type { BridgeChunk } from '../eventBridge';
 
@@ -21,9 +22,19 @@ export interface PlannerInput {
   readonly emit?: (chunk: BridgeChunk) => void;
   readonly chatModel?: BaseChatModel;
   readonly now?: () => number;
+  readonly traceConfig?: InvokeTraceConfig;
 }
 
-const PLANNER_SYSTEM_PROMPT = `You are the inline-agent planner. Decompose the user's refined ask into 1..planMaxSteps short, independent research sub-questions. Output ONLY via the planner tool with field 'plan: string[]'. No prose, no enumeration markers — just clean sub-questions.`;
+const PLANNER_SYSTEM_PROMPT = `You are the inline-agent planner. Output the plan via the planner tool only — no prose.
+
+A step = one ReAct loop with its own context. Sandbox files persist across steps; conversation context does NOT, so every extra step pays a re-discovery cost.
+
+Default to **1 step**. Add more steps only when sub-questions are genuinely independent (their answers don't depend on each other).
+
+- Verbatim downloads, mirroring, extractions → 1 step. Don't split "list + fetch + verify".
+- Multi-aspect research where sub-answers compose ("compare A vs B", "summarize each topic") → one step per truly independent sub-question.
+
+Never exceed planMaxSteps. If unsure, choose fewer. Keep step descriptions short.`;
 
 export async function planSteps(input: PlannerInput): Promise<PlannerResult> {
   const planMaxSteps = clamp(input.config.planner.planMaxSteps, 1, 16);
@@ -68,7 +79,17 @@ export async function planSteps(input: PlannerInput): Promise<PlannerResult> {
         withStructuredOutput?: (
           schema: typeof plannerOutputSchema,
           opts?: { name?: string },
-        ) => { invoke: (messages: unknown, opts?: { signal?: AbortSignal }) => Promise<unknown> };
+        ) => {
+          invoke: (
+            messages: unknown,
+            opts?: {
+              signal?: AbortSignal;
+              callbacks?: readonly unknown[];
+              metadata?: Readonly<Record<string, unknown>>;
+              tags?: readonly string[];
+            },
+          ) => Promise<unknown>;
+        };
       }
     ).withStructuredOutput;
     if (typeof structured !== 'function') {
@@ -77,7 +98,7 @@ export async function planSteps(input: PlannerInput): Promise<PlannerResult> {
     const bound = structured.call(model, plannerOutputSchema, { name: 'planner' });
     const result = await bound.invoke(
       [new SystemMessage(PLANNER_SYSTEM_PROMPT), new HumanMessage(userPrompt)],
-      { signal: input.signal },
+      mergeInvokeConfig({ signal: input.signal }, input.traceConfig),
     );
     return plannerOutputSchema.parse(result);
   };
@@ -135,7 +156,7 @@ function buildPlannerPrompt(refinedAsk: string, planMaxSteps: number): string {
     'Refined ask:',
     refinedAsk,
     '',
-    `planMaxSteps = ${planMaxSteps}. Output the plan via the planner tool — no other text.`,
+    `planMaxSteps = ${planMaxSteps}. Default to 1 step. Add steps only when the task has truly independent sub-questions. Output the plan via the planner tool — no other text.`,
   ].join('\n');
 }
 

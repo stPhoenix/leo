@@ -41,7 +41,7 @@ export class Sandbox {
   readonly quotaBytes: number;
   private readonly logger: SandboxLogger;
   private readonly tempDir: () => string;
-  private _root: string;
+  private readonly _root: string;
   private _bytes = 0;
   private _initialized = false;
   private _cleaned = false;

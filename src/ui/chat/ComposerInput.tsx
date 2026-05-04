@@ -282,6 +282,103 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
     [captureFromFileList],
   );
 
+  const handleEscape = useCallback(
+    (e: KeyboardEvent<HTMLElement>): void => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (mentionOpen) {
+        setMentionActiveIndex(0);
+        textareaRef.current?.focus();
+        return;
+      }
+      if (slashOpen) {
+        setDraft('');
+        setSlashActiveIndex(0);
+        return;
+      }
+      if (confirmationOpen) {
+        props.onCloseConfirmation?.();
+        return;
+      }
+      if (submitting) {
+        props.onStopIntent?.();
+        return;
+      }
+      textareaRef.current?.blur();
+    },
+    [
+      mentionOpen,
+      slashOpen,
+      confirmationOpen,
+      submitting,
+      props.onCloseConfirmation,
+      props.onStopIntent,
+    ],
+  );
+
+  const handleMentionNav = useCallback(
+    (e: KeyboardEvent<HTMLElement>): boolean => {
+      if (!mentionOpen) return false;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const delta = e.key === 'ArrowDown' ? 1 : -1;
+        const len = mentionItems.length;
+        setMentionActiveIndex((prev) => (prev + delta + len) % len);
+        return true;
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault();
+        const item = mentionItems[mentionActiveIndex] ?? mentionItems[0];
+        if (item !== undefined) applyMentionSelection(item);
+        return true;
+      }
+      return false;
+    },
+    [mentionOpen, mentionItems, mentionActiveIndex, applyMentionSelection],
+  );
+
+  const handleSlashNav = useCallback(
+    (e: KeyboardEvent<HTMLElement>): boolean => {
+      if (!slashOpen) return false;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const delta = e.key === 'ArrowDown' ? 1 : -1;
+        const len = slashItems.length;
+        setSlashActiveIndex((prev) => (prev + delta + len) % len);
+        return true;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const item = slashItems[slashActiveIndex] ?? slashItems[0];
+        if (item !== undefined) applySlashCompletion(item, true);
+        return true;
+      }
+      return false;
+    },
+    [slashOpen, slashItems, slashActiveIndex, applySlashCompletion],
+  );
+
+  const handleEnterSubmit = useCallback(
+    (e: KeyboardEvent<HTMLElement>): void => {
+      const native = e.nativeEvent as KeyboardEvent['nativeEvent'] & { isComposing?: boolean };
+      if (native.isComposing === true) return;
+      if (slashOpen) {
+        e.preventDefault();
+        const item = slashItems[slashActiveIndex] ?? slashItems[0];
+        if (item !== undefined) {
+          const text = `/${item.name}`;
+          setDraft('');
+          setSlashActiveIndex(0);
+          props.onSubmit?.(text);
+        }
+        return;
+      }
+      e.preventDefault();
+      submitDraft();
+    },
+    [slashOpen, slashItems, slashActiveIndex, props.onSubmit, submitDraft],
+  );
+
   const onRootKeyDown = useCallback(
     (e: KeyboardEvent<HTMLElement>): void => {
       const isKOnly = !e.shiftKey && !e.altKey;
@@ -291,100 +388,13 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
         props.onOpenCommandPalette?.();
         return;
       }
-
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        e.preventDefault();
-        if (mentionOpen) {
-          setMentionActiveIndex(0);
-          // closing achieved by clearing match — easiest: reset caret to draft end without picker
-          textareaRef.current?.focus();
-          return;
-        }
-        if (slashOpen) {
-          setDraft('');
-          setSlashActiveIndex(0);
-          return;
-        }
-        if (confirmationOpen) {
-          props.onCloseConfirmation?.();
-          return;
-        }
-        if (submitting) {
-          props.onStopIntent?.();
-          return;
-        }
-        textareaRef.current?.blur();
-        return;
-      }
-
+      if (e.key === 'Escape') return handleEscape(e);
       if (e.target !== textareaRef.current) return;
-
-      if (mentionOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
-        e.preventDefault();
-        const delta = e.key === 'ArrowDown' ? 1 : -1;
-        const len = mentionItems.length;
-        setMentionActiveIndex((prev) => (prev + delta + len) % len);
-        return;
-      }
-
-      if (mentionOpen && (e.key === 'Tab' || e.key === 'Enter')) {
-        e.preventDefault();
-        const item = mentionItems[mentionActiveIndex] ?? mentionItems[0];
-        if (item !== undefined) applyMentionSelection(item);
-        return;
-      }
-
-      if (slashOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
-        e.preventDefault();
-        const delta = e.key === 'ArrowDown' ? 1 : -1;
-        const len = slashItems.length;
-        setSlashActiveIndex((prev) => (prev + delta + len) % len);
-        return;
-      }
-
-      if (slashOpen && e.key === 'Tab') {
-        e.preventDefault();
-        const item = slashItems[slashActiveIndex] ?? slashItems[0];
-        if (item !== undefined) applySlashCompletion(item, true);
-        return;
-      }
-
-      if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
-        const native = e.nativeEvent as KeyboardEvent['nativeEvent'] & { isComposing?: boolean };
-        if (native.isComposing === true) return;
-        if (slashOpen) {
-          e.preventDefault();
-          const item = slashItems[slashActiveIndex] ?? slashItems[0];
-          if (item !== undefined) {
-            const text = `/${item.name}`;
-            setDraft('');
-            setSlashActiveIndex(0);
-            props.onSubmit?.(text);
-          }
-          return;
-        }
-        e.preventDefault();
-        submitDraft();
-      }
+      if (handleMentionNav(e)) return;
+      if (handleSlashNav(e)) return;
+      if (e.key === 'Enter' && !e.shiftKey && !e.altKey) handleEnterSubmit(e);
     },
-    [
-      confirmationOpen,
-      submitting,
-      submitDraft,
-      slashOpen,
-      slashItems,
-      slashActiveIndex,
-      applySlashCompletion,
-      mentionOpen,
-      mentionItems,
-      mentionActiveIndex,
-      applyMentionSelection,
-      props.onOpenCommandPalette,
-      props.onCloseConfirmation,
-      props.onStopIntent,
-      props.onSubmit,
-    ],
+    [props.onOpenCommandPalette, handleEscape, handleMentionNav, handleSlashNav, handleEnterSubmit],
   );
 
   const onSendClick = useCallback((): void => {
@@ -410,6 +420,7 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
   const rejections = props.attachmentRejections ?? [];
 
   return (
+    // NOSONAR S6847 — composer region with keyboard shortcuts (Esc, slash menu) + paste/drop file capture; semantically a form region
     <section
       className={rootClass}
       aria-label="composer"
@@ -423,18 +434,14 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
       {attachments.length > 0 ? (
         <AttachmentTray
           items={attachments}
-          {...(props.onAttachmentRemove !== undefined
-            ? { onRemove: props.onAttachmentRemove }
-            : {})}
-          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+          onRemove={props.onAttachmentRemove}
+          setIcon={props.setIcon}
         />
       ) : null}
       {rejections.length > 0 ? (
         <AttachmentRejectedNotice
           rejections={rejections}
-          {...(props.onDismissAttachmentRejections !== undefined
-            ? { onDismiss: props.onDismissAttachmentRejections }
-            : {})}
+          onDismiss={props.onDismissAttachmentRejections}
         />
       ) : null}
       <textarea
@@ -504,7 +511,7 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
           activeIndex={mentionActiveIndex}
           onSelect={(item) => applyMentionSelection(item)}
           onHover={(i) => setMentionActiveIndex(i)}
-          {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+          setIcon={props.setIcon}
         />
       ) : null}
     </section>

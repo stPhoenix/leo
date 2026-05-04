@@ -23,6 +23,10 @@ type LcContentPart =
       readonly mime_type: string;
     };
 
+type LcToolContentPart =
+  | { readonly type: 'text'; readonly text: string }
+  | { readonly type: 'tool_reference'; readonly tool_name: string };
+
 export function toLangchainMessages(messages: readonly ChatMessage[]): BaseMessage[] {
   const out: BaseMessage[] = [];
   for (const m of messages) {
@@ -51,9 +55,10 @@ export function toLangchainMessages(messages: readonly ChatMessage[]): BaseMessa
     }
     if (m.role === 'tool') {
       if (m.toolCallId === undefined) continue;
+      const structured = toToolMessageContent(m.content);
       out.push(
         new ToolMessage({
-          content: contentToString(m.content),
+          content: structured,
           tool_call_id: m.toolCallId,
           ...(m.name !== undefined ? { name: m.name } : {}),
         }),
@@ -96,6 +101,21 @@ function contentToString(content: ChatMessageContent): string {
     if (b.type === 'text') out.push(b.text);
   }
   return out.join('');
+}
+
+function toToolMessageContent(content: ChatMessageContent): string | LcToolContentPart[] {
+  if (typeof content === 'string') return content;
+  const blocks = content as readonly ContentBlock[];
+  let hasToolReference = false;
+  for (const b of blocks) if (b.type === 'tool_reference') hasToolReference = true;
+  if (!hasToolReference) return contentToString(content);
+  const parts: LcToolContentPart[] = [];
+  for (const b of blocks) {
+    if (b.type === 'text') parts.push({ type: 'text', text: b.text });
+    else if (b.type === 'tool_reference')
+      parts.push({ type: 'tool_reference', tool_name: b.tool_name });
+  }
+  return parts;
 }
 
 function parseArgs(argsJson: string): Record<string, unknown> {

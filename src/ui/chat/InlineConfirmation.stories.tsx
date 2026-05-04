@@ -54,16 +54,26 @@ interface AppliedBannerProps {
   readonly decision: ConfirmationDecision;
 }
 
+function pickToneBackground(tone: 'rejected' | 'allow-thread' | 'allow-once'): string {
+  if (tone === 'rejected') return 'var(--text-error)';
+  if (tone === 'allow-thread') return 'var(--interactive-accent)';
+  return 'var(--color-green, var(--interactive-accent))';
+}
+
 function AppliedBanner(props: AppliedBannerProps): JSX.Element {
   const { decision } = props;
-  const tone =
-    decision === 'deny' ? 'rejected' : decision === 'allow-thread' ? 'allow-thread' : 'allow-once';
-  const label =
-    decision === 'deny'
-      ? 'Tool rejected'
-      : decision === 'allow-thread'
-        ? 'Allowed for thread — tool applied'
-        : 'Allowed once — tool applied';
+  let tone: 'rejected' | 'allow-thread' | 'allow-once';
+  let label: string;
+  if (decision === 'deny') {
+    tone = 'rejected';
+    label = 'Tool rejected';
+  } else if (decision === 'allow-thread') {
+    tone = 'allow-thread';
+    label = 'Allowed for thread — tool applied';
+  } else {
+    tone = 'allow-once';
+    label = 'Allowed once — tool applied';
+  }
   return (
     <div
       data-region="confirmation-applied"
@@ -88,12 +98,7 @@ function AppliedBanner(props: AppliedBannerProps): JSX.Element {
           width: 8,
           height: 8,
           borderRadius: '50%',
-          background:
-            tone === 'rejected'
-              ? 'var(--text-error)'
-              : tone === 'allow-thread'
-                ? 'var(--interactive-accent)'
-                : 'var(--color-green, var(--interactive-accent))',
+          background: pickToneBackground(tone),
         }}
       />
       {label}

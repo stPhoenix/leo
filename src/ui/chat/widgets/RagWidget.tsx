@@ -121,7 +121,7 @@ function RagAlert({ snapshot }: BodyProps): JSX.Element {
   const headline = phase === 'paused-on-user' ? 'Indexer paused' : 'Indexer error';
   const detail = snapshot.indexerStatus.lastError ?? '';
   return (
-    <div className="leo-rag-widget-alert" data-slot="rag-alert" data-phase={phase} role="status">
+    <output className="leo-rag-widget-alert" data-slot="rag-alert" data-phase={phase}>
       <span className="leo-rag-widget-alert-icon" aria-hidden="true">
         ⏸
       </span>
@@ -129,7 +129,7 @@ function RagAlert({ snapshot }: BodyProps): JSX.Element {
         <div className="leo-rag-widget-alert-headline">{headline}</div>
         {detail !== '' ? <div className="leo-rag-widget-alert-detail">{detail}</div> : null}
       </div>
-    </div>
+    </output>
   );
 }
 

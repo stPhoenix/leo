@@ -5,6 +5,8 @@ import type { ExternalAgentState, LogEvent } from './state';
 
 export const TIMEOUT_MIN_MS = 1_000;
 export const TIMEOUT_MAX_MS = 24 * 3600 * 1000;
+export const TIMEOUT_MIN_MINUTES = 1;
+export const TIMEOUT_MAX_MINUTES = 1440;
 export const REFINE_BUDGET_MIN = 1;
 export const REFINE_BUDGET_MAX = 10;
 
@@ -27,6 +29,7 @@ interface BaseViewModel {
   readonly adapters: readonly AdapterOption[];
   readonly draftAdapterId: string | null;
   readonly draftTimeoutMs: number;
+  readonly draftTimeoutMinutes: number;
   readonly draftRefineBudget: number;
   readonly clarifyingQuestion: string | null;
   readonly logEvents: readonly WidgetEventLog[];
@@ -69,7 +72,7 @@ export interface WidgetControllerDeps {
 }
 
 const DEFAULT_BUDGET = 3;
-const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = 300_000;
 
 export class ExternalAgentWidgetController {
   private readonly deps: WidgetControllerDeps;
@@ -132,11 +135,13 @@ export class ExternalAgentWidgetController {
   onSetTimeout(ms: number): void {
     if (this.disposed) return;
     if (!Number.isFinite(ms) || !Number.isInteger(ms)) {
-      this.setValidationError(`timeoutMs must be an integer`);
+      this.setValidationError(`timeout must be an integer`);
       return;
     }
     if (ms < TIMEOUT_MIN_MS || ms > TIMEOUT_MAX_MS) {
-      this.setValidationError(`timeoutMs out of range [${TIMEOUT_MIN_MS}, ${TIMEOUT_MAX_MS}]`);
+      this.setValidationError(
+        `timeout out of range [${TIMEOUT_MIN_MINUTES}, ${TIMEOUT_MAX_MINUTES}] minutes`,
+      );
       return;
     }
     this.draftTimeoutMs = ms;
@@ -231,6 +236,7 @@ export class ExternalAgentWidgetController {
       adapters,
       draftAdapterId: this.draftAdapterId,
       draftTimeoutMs: this.draftTimeoutMs,
+      draftTimeoutMinutes: Math.round(this.draftTimeoutMs / 60_000),
       draftRefineBudget: this.draftRefineBudget,
       clarifyingQuestion: state.clarifyingQuestion,
       logEvents: state.logEvents.map((e) => ({ level: e.level, msg: e.msg, ts: e.ts })),
@@ -258,6 +264,7 @@ export class ExternalAgentWidgetController {
       adapters,
       draftAdapterId: null,
       draftTimeoutMs: DEFAULT_TIMEOUT_MS,
+      draftTimeoutMinutes: Math.round(DEFAULT_TIMEOUT_MS / 60_000),
       draftRefineBudget: DEFAULT_BUDGET,
       clarifyingQuestion: null,
       logEvents: [],

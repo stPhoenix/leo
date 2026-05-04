@@ -51,66 +51,81 @@ export function initialState(seed: {
 
 export function reduce(state: WizardState, event: WizardEvent): WizardState {
   if (event.type === 'cancel') return { ...state, step: 'closed' };
-
   switch (state.step) {
     case 'endpoint':
-      if (event.type === 'editEndpoint') return { ...state, endpoint: event.endpoint };
-      if (event.type === 'next' && state.endpoint.trim().length > 0) {
-        return { ...state, step: 'probing', probeError: null };
-      }
-      return state;
-
+      return reduceEndpoint(state, event);
     case 'probing':
-      if (event.type === 'probeOk') {
-        const defaults = inferDefaults(event.models, state);
-        return {
-          ...state,
-          models: event.models,
-          chatModel: defaults.chat,
-          embeddingModel: defaults.embedding,
-          step: event.models.length > 0 ? 'models' : 'models-empty',
-        };
-      }
-      if (event.type === 'probeError') {
-        return { ...state, step: 'probe-failed', probeError: event.message };
-      }
-      return state;
-
+      return reduceProbing(state, event);
     case 'probe-failed':
-      if (event.type === 'back') return { ...state, step: 'endpoint', probeError: null };
-      if (event.type === 'retry') return { ...state, step: 'probing', probeError: null };
-      return state;
-
+      return reduceProbeFailed(state, event);
     case 'models':
     case 'models-empty':
-      if (event.type === 'editChatModel') return { ...state, chatModel: event.id };
-      if (event.type === 'editEmbeddingModel') return { ...state, embeddingModel: event.id };
-      if (event.type === 'back') return { ...state, step: 'endpoint' };
-      if (event.type === 'next' && canSave(state, state.step === 'models-empty')) {
-        return { ...state, step: 'save' };
-      }
-      return state;
-
+      return reduceModels(state, event);
     case 'save':
-      if (event.type === 'back') {
-        return { ...state, step: state.models.length > 0 ? 'models' : 'models-empty' };
-      }
-      if (event.type === 'next') return { ...state, step: 'persisting', persistError: null };
-      return state;
-
+      return reduceSave(state, event);
     case 'persisting':
-      if (event.type === 'persistOk') return { ...state, step: 'closed' };
-      if (event.type === 'persistError') {
-        return { ...state, step: 'save', persistError: event.message };
-      }
-      return state;
-
+      return reducePersisting(state, event);
     case 'closed':
-      return state;
-
     default:
       return state;
   }
+}
+
+function reduceEndpoint(state: WizardState, event: WizardEvent): WizardState {
+  if (event.type === 'editEndpoint') return { ...state, endpoint: event.endpoint };
+  if (event.type === 'next' && state.endpoint.trim().length > 0) {
+    return { ...state, step: 'probing', probeError: null };
+  }
+  return state;
+}
+
+function reduceProbing(state: WizardState, event: WizardEvent): WizardState {
+  if (event.type === 'probeOk') {
+    const defaults = inferDefaults(event.models, state);
+    return {
+      ...state,
+      models: event.models,
+      chatModel: defaults.chat,
+      embeddingModel: defaults.embedding,
+      step: event.models.length > 0 ? 'models' : 'models-empty',
+    };
+  }
+  if (event.type === 'probeError') {
+    return { ...state, step: 'probe-failed', probeError: event.message };
+  }
+  return state;
+}
+
+function reduceProbeFailed(state: WizardState, event: WizardEvent): WizardState {
+  if (event.type === 'back') return { ...state, step: 'endpoint', probeError: null };
+  if (event.type === 'retry') return { ...state, step: 'probing', probeError: null };
+  return state;
+}
+
+function reduceModels(state: WizardState, event: WizardEvent): WizardState {
+  if (event.type === 'editChatModel') return { ...state, chatModel: event.id };
+  if (event.type === 'editEmbeddingModel') return { ...state, embeddingModel: event.id };
+  if (event.type === 'back') return { ...state, step: 'endpoint' };
+  if (event.type === 'next' && canSave(state, state.step === 'models-empty')) {
+    return { ...state, step: 'save' };
+  }
+  return state;
+}
+
+function reduceSave(state: WizardState, event: WizardEvent): WizardState {
+  if (event.type === 'back') {
+    return { ...state, step: state.models.length > 0 ? 'models' : 'models-empty' };
+  }
+  if (event.type === 'next') return { ...state, step: 'persisting', persistError: null };
+  return state;
+}
+
+function reducePersisting(state: WizardState, event: WizardEvent): WizardState {
+  if (event.type === 'persistOk') return { ...state, step: 'closed' };
+  if (event.type === 'persistError') {
+    return { ...state, step: 'save', persistError: event.message };
+  }
+  return state;
 }
 
 function inferDefaults(

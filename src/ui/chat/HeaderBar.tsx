@@ -16,7 +16,6 @@ export function HeaderBar(props: HeaderBarProps): JSX.Element {
         <span
           className="leo-header-plan-pill"
           data-slot="plan-mode-pill"
-          role="status"
           aria-label="Plan mode active"
         >
           Plan mode
@@ -28,9 +27,8 @@ export function HeaderBar(props: HeaderBarProps): JSX.Element {
         </span>
       ) : null}
       <div className="leo-header-slots">
-        <span
+        <output
           className="leo-header-status-slot"
-          role="status"
           aria-live="polite"
           data-slot="streaming-status"
         />

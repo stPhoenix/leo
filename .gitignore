@@ -134,3 +134,9 @@ dist
 /imgs/
 storybook-static/
 /data.json
+/autoresearch/
+/.ai/
+.sonarqube-reports/
+/release/
+main.js
+

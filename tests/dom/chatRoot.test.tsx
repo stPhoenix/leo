@@ -69,7 +69,8 @@ describe('ChatRoot — plan mode indicator', () => {
     const pill = container.querySelector('[data-slot="plan-mode-pill"]');
     expect(pill).not.toBeNull();
     expect(pill?.textContent).toBe('Plan mode');
-    expect(pill?.getAttribute('role')).toBe('status');
+    // pill is a static label, not a live region (Sonar S6819 — role="status" is redundant on a span)
+    expect(pill?.getAttribute('aria-label')).toBe('Plan mode active');
   });
 
   it('planModeSource returning "normal" does not render the pill', () => {
@@ -93,10 +94,11 @@ describe('ChatRoot — ARIA invariants (NFR-USE-07)', () => {
     expect(log.getAttribute('aria-live')).toBe('polite');
   });
 
-  it('exposes the streaming slot inside HeaderBar as role=status', () => {
+  it('exposes the streaming slot inside HeaderBar as <output> with aria-live=polite', () => {
     const { container } = render(<ChatRoot {...defaultProps(400)} />);
     const status = container.querySelector('[data-slot="streaming-status"]');
-    expect(status?.getAttribute('role')).toBe('status');
+    // <output> has implicit role="status"; explicit role would be redundant (Sonar S6819).
+    expect(status?.tagName).toBe('OUTPUT');
     expect(status?.getAttribute('aria-live')).toBe('polite');
   });
 

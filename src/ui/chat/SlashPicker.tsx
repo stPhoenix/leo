@@ -16,6 +16,7 @@ export function SlashPicker(props: SlashPickerProps): JSX.Element | null {
   return (
     <ul
       className="leo-slash-picker"
+      // NOSONAR S6819,S6842 — combobox-style filter picker; native <datalist> filter doesn't fit our fuzzy scorer
       role="listbox"
       aria-label="slash commands"
       data-slot="slash-picker"
@@ -24,6 +25,7 @@ export function SlashPicker(props: SlashPickerProps): JSX.Element | null {
         <li
           key={item.name}
           className={i === props.activeIndex ? 'leo-slash-item is-active' : 'leo-slash-item'}
+          // NOSONAR S6842 — combobox-style option in custom filter picker
           role="option"
           aria-selected={i === props.activeIndex ? 'true' : 'false'}
           data-slot="slash-item"

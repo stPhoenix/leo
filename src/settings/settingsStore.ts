@@ -13,7 +13,13 @@ export type SectionId =
   | 'appearance'
   | 'advanced';
 
-export type ProviderKind = 'lmstudio' | 'openai' | 'anthropic' | 'ollama' | 'custom';
+export type ProviderKind =
+  | 'lmstudio'
+  | 'openai'
+  | 'anthropic'
+  | 'ollama'
+  | 'ollama-cloud'
+  | 'custom';
 
 export type RagMode = 'auto' | 'no-focus' | 'off';
 
@@ -28,6 +34,8 @@ export interface ProviderSettings {
   embeddingModel: string;
   temperature: number;
   maxTokens: number;
+  disableParallelToolCalls: boolean;
+  disableThinking: boolean;
 }
 
 export interface UiSettings {
@@ -60,6 +68,16 @@ export interface ExternalAgentsSettings {
   adapters: Record<string, ExternalAgentInstanceSettings>;
 }
 
+export type ToolSearchMode = 'standard' | 'tst' | 'tst-auto';
+
+export const TOOL_SEARCH_MODES: readonly ToolSearchMode[] = ['standard', 'tst', 'tst-auto'];
+
+export interface ToolSearchSettings {
+  mode: ToolSearchMode;
+  killSwitch: boolean;
+  unsupportedModelSubstrings: readonly string[];
+}
+
 export interface LeoSettings {
   schemaVersion: 1;
   logLevel: LogLevel;
@@ -70,6 +88,7 @@ export interface LeoSettings {
   langfuse: LangfuseSettings;
   ragMode: RagMode;
   externalAgents: ExternalAgentsSettings;
+  toolSearch: ToolSearchSettings;
   contextWindowOverride?: number;
 }
 
@@ -92,6 +111,12 @@ export const DEFAULT_EXTERNAL_AGENTS: ExternalAgentsSettings = {
   adapters: {},
 };
 
+export const DEFAULT_TOOL_SEARCH: ToolSearchSettings = {
+  mode: 'tst',
+  killSwitch: false,
+  unsupportedModelSubstrings: ['haiku'],
+};
+
 export const DEFAULT_PROVIDER: ProviderSettings = {
   kind: 'lmstudio',
   endpoint: 'http://localhost:1234',
@@ -99,6 +124,8 @@ export const DEFAULT_PROVIDER: ProviderSettings = {
   embeddingModel: '',
   temperature: 0.7,
   maxTokens: 2048,
+  disableParallelToolCalls: false,
+  disableThinking: false,
 };
 
 export const PROVIDER_KINDS: readonly ProviderKind[] = [
@@ -106,6 +133,7 @@ export const PROVIDER_KINDS: readonly ProviderKind[] = [
   'openai',
   'anthropic',
   'ollama',
+  'ollama-cloud',
   'custom',
 ];
 
@@ -135,6 +163,10 @@ export const DEFAULT_SETTINGS: LeoSettings = {
   langfuse: { ...DEFAULT_LANGFUSE },
   ragMode: DEFAULT_RAG_MODE,
   externalAgents: { ...DEFAULT_EXTERNAL_AGENTS, adapters: {} },
+  toolSearch: {
+    ...DEFAULT_TOOL_SEARCH,
+    unsupportedModelSubstrings: [...DEFAULT_TOOL_SEARCH.unsupportedModelSubstrings],
+  },
 };
 
 export function migrate(raw: unknown): LeoSettings {
@@ -151,6 +183,7 @@ export function migrate(raw: unknown): LeoSettings {
   const langfuse = mergeLangfuse(obj.langfuse);
   const ragMode = parseRagMode(obj.ragMode);
   const externalAgents = mergeExternalAgents(obj.externalAgents);
+  const toolSearch = mergeToolSearch(obj.toolSearch);
   const contextWindowOverride = parseContextWindowOverride(obj.contextWindowOverride);
 
   return {
@@ -163,7 +196,37 @@ export function migrate(raw: unknown): LeoSettings {
     langfuse,
     ragMode,
     externalAgents,
+    toolSearch,
     ...(contextWindowOverride !== undefined ? { contextWindowOverride } : {}),
+  };
+}
+
+function mergeToolSearch(raw: unknown): ToolSearchSettings {
+  if (raw === null || typeof raw !== 'object') {
+    return {
+      ...DEFAULT_TOOL_SEARCH,
+      unsupportedModelSubstrings: [...DEFAULT_TOOL_SEARCH.unsupportedModelSubstrings],
+    };
+  }
+  const o = raw as Record<string, unknown>;
+  const mode: ToolSearchMode = (TOOL_SEARCH_MODES as readonly string[]).includes(
+    o.mode as ToolSearchMode,
+  )
+    ? (o.mode as ToolSearchMode)
+    : DEFAULT_TOOL_SEARCH.mode;
+  const killSwitch =
+    typeof o.killSwitch === 'boolean' ? o.killSwitch : DEFAULT_TOOL_SEARCH.killSwitch;
+  const subs: string[] = [];
+  if (Array.isArray(o.unsupportedModelSubstrings)) {
+    for (const v of o.unsupportedModelSubstrings) {
+      if (typeof v === 'string' && v.trim().length > 0) subs.push(v.trim().toLowerCase());
+    }
+  }
+  return {
+    mode,
+    killSwitch,
+    unsupportedModelSubstrings:
+      subs.length > 0 ? subs : [...DEFAULT_TOOL_SEARCH.unsupportedModelSubstrings],
   };
 }
 
@@ -257,6 +320,12 @@ function mergeProvider(raw: unknown): ProviderSettings {
       typeof o.embeddingModel === 'string' ? o.embeddingModel : DEFAULT_PROVIDER.embeddingModel,
     temperature: clampNumber(o.temperature, 0, 2, DEFAULT_PROVIDER.temperature),
     maxTokens: clampInt(o.maxTokens, 1, 1_000_000, DEFAULT_PROVIDER.maxTokens),
+    disableParallelToolCalls:
+      typeof o.disableParallelToolCalls === 'boolean'
+        ? o.disableParallelToolCalls
+        : DEFAULT_PROVIDER.disableParallelToolCalls,
+    disableThinking:
+      typeof o.disableThinking === 'boolean' ? o.disableThinking : DEFAULT_PROVIDER.disableThinking,
   };
 }
 
@@ -311,6 +380,10 @@ function cloneDefaults(): LeoSettings {
     langfuse: { ...DEFAULT_LANGFUSE },
     ragMode: DEFAULT_RAG_MODE,
     externalAgents: { ...DEFAULT_EXTERNAL_AGENTS, adapters: {} },
+    toolSearch: {
+      ...DEFAULT_TOOL_SEARCH,
+      unsupportedModelSubstrings: [...DEFAULT_TOOL_SEARCH.unsupportedModelSubstrings],
+    },
   };
 }
 

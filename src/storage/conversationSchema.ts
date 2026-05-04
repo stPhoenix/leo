@@ -1,5 +1,5 @@
 import type { Logger } from '@/platform/Logger';
-import type { ContentBlock } from '@/chat/types';
+import type { ContentBlock, TextBlock, ToolReferenceBlock, ToolResultContent } from '@/chat/types';
 
 export const CONVERSATION_SCHEMA_VERSION = 2;
 
@@ -179,41 +179,75 @@ function parseBlocks(raw: unknown): readonly ContentBlock[] | undefined {
   const out: ContentBlock[] = [];
   for (const entry of raw) {
     if (entry === null || typeof entry !== 'object') continue;
-    const obj = entry as Record<string, unknown>;
-    const type = obj.type;
-    if (type === 'text' && typeof obj.text === 'string') {
-      out.push({ type: 'text', text: obj.text });
-    } else if (type === 'thinking' && typeof obj.thinking === 'string') {
-      out.push({
-        type: 'thinking',
-        thinking: obj.thinking,
-        ...(typeof obj.signature === 'string' ? { signature: obj.signature } : {}),
-      });
-    } else if (type === 'redacted_thinking' && typeof obj.data === 'string') {
-      out.push({ type: 'redacted_thinking', data: obj.data });
-    } else if (type === 'tool_use' && typeof obj.id === 'string' && typeof obj.name === 'string') {
-      out.push({
-        type: 'tool_use',
-        id: obj.id,
-        name: obj.name,
-        input: obj.input,
-        ...(typeof obj.raw === 'string' ? { raw: obj.raw } : {}),
-        ...(obj.decision === 'allow-once' ||
-        obj.decision === 'allow-thread' ||
-        obj.decision === 'deny'
-          ? { decision: obj.decision }
-          : {}),
-      });
-    } else if (type === 'tool_result' && typeof obj.tool_use_id === 'string') {
-      out.push({
-        type: 'tool_result',
-        tool_use_id: obj.tool_use_id,
-        content: typeof obj.content === 'string' ? obj.content : '',
-        ...(typeof obj.is_error === 'boolean' ? { is_error: obj.is_error } : {}),
-      });
-    }
+    const block = parseSingleBlock(entry as Record<string, unknown>);
+    if (block !== null) out.push(block);
   }
   return out;
+}
+
+function parseSingleBlock(obj: Record<string, unknown>): ContentBlock | null {
+  const type = obj.type;
+  if (type === 'text' && typeof obj.text === 'string') {
+    return { type: 'text', text: obj.text };
+  }
+  if (type === 'thinking' && typeof obj.thinking === 'string') {
+    return {
+      type: 'thinking',
+      thinking: obj.thinking,
+      ...(typeof obj.signature === 'string' ? { signature: obj.signature } : {}),
+    };
+  }
+  if (type === 'redacted_thinking' && typeof obj.data === 'string') {
+    return { type: 'redacted_thinking', data: obj.data };
+  }
+  if (type === 'tool_use' && typeof obj.id === 'string' && typeof obj.name === 'string') {
+    return parseToolUseBlock(obj);
+  }
+  if (type === 'tool_result' && typeof obj.tool_use_id === 'string') {
+    return {
+      type: 'tool_result',
+      tool_use_id: obj.tool_use_id,
+      content: parseToolResultContent(obj.content),
+      ...(typeof obj.is_error === 'boolean' ? { is_error: obj.is_error } : {}),
+    };
+  }
+  if (type === 'tool_reference' && typeof obj.tool_name === 'string') {
+    return { type: 'tool_reference', tool_name: obj.tool_name };
+  }
+  return null;
+}
+
+function parseToolUseBlock(obj: Record<string, unknown>): ContentBlock {
+  const decisionRaw = obj.decision;
+  const decision =
+    decisionRaw === 'allow-once' || decisionRaw === 'allow-thread' || decisionRaw === 'deny'
+      ? decisionRaw
+      : undefined;
+  return {
+    type: 'tool_use',
+    id: obj.id as string,
+    name: obj.name as string,
+    input: obj.input,
+    ...(typeof obj.raw === 'string' ? { raw: obj.raw } : {}),
+    ...(decision !== undefined ? { decision } : {}),
+  };
+}
+
+function parseToolResultContent(raw: unknown): ToolResultContent {
+  if (typeof raw === 'string') return raw;
+  if (!Array.isArray(raw)) return '';
+  type Inner = TextBlock | ToolReferenceBlock;
+  const inner: Inner[] = [];
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const o = entry as Record<string, unknown>;
+    if (o.type === 'text' && typeof o.text === 'string') {
+      inner.push({ type: 'text', text: o.text });
+    } else if (o.type === 'tool_reference' && typeof o.tool_name === 'string') {
+      inner.push({ type: 'tool_reference', tool_name: o.tool_name });
+    }
+  }
+  return inner;
 }
 
 /**

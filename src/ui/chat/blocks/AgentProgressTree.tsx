@@ -43,11 +43,12 @@ function AgentProgressTreeImpl(props: AgentProgressTreeProps): JSX.Element | nul
         const isLast = i === snapshots.length - 1;
         const connector = isLast ? '└─' : '├─';
         const tokens = s.tokens !== undefined ? `${s.tokens} tokens` : '0 tokens';
-        const last = s.isResolved
-          ? s.isError
-            ? 'Done (error)'
-            : 'Done'
-          : (s.lastToolInfo ?? 'Initializing…');
+        let last: string;
+        if (s.isResolved) {
+          last = s.isError ? 'Done (error)' : 'Done';
+        } else {
+          last = s.lastToolInfo ?? 'Initializing…';
+        }
         return (
           <div
             key={s.agentId}

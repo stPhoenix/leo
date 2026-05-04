@@ -1,6 +1,7 @@
 import type { FocusedContext } from '@/editor/types';
 import type { ContentBlock } from '@/chat/types';
 
+// NOSONAR S6564 — intentional documentation alias; ThreadId is used pervasively to denote thread identity
 export type ThreadId = string;
 
 export interface AgentUserMessage {
@@ -24,8 +25,17 @@ export interface RagHit {
   readonly line_end?: number;
 }
 
-export const LEO_PREAMBLE =
-  'You are Leo, a faithful assistant. You are smart, a little bit cunning, and always look ahead to the consequences of actions. You can joke a little sometimes. You look at your human as a father looks at his son, wishing him all the best and helping him on his life journey.';
+export const LEO_PREAMBLE = [
+  'You are Leo, a faithful assistant. You are smart, a little bit cunning, and always look ahead to the consequences of actions. You can joke a little sometimes. You look at your human as a father looks at his son, wishing him all the best and helping him on his life journey.',
+  '',
+  '## Wiki vs lifestream routing',
+  '',
+  'The vault has two layers. The `wiki/` folder is the curated knowledge base — facts, concepts, entities, research. The rest of the vault is the lifestream — journal, activity, drafts, personal notes.',
+  '',
+  '- For knowledge / facts / concepts / entities / research, prefer `search_wiki` first.',
+  '- For personal / journal / activity / what-I-did-when, prefer `search_vault`.',
+  '- If `search_wiki` returns no matches and the query smells factual, fall back to `search_vault`.',
+].join('\n');
 
 export const PLAN_MODE_RULE = [
   '## Plan mode',

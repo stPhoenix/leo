@@ -55,6 +55,7 @@ export function createDeleteNoteTool(
     parameters: jsonSchemaFromZod(DeleteNoteSchema),
     requiresConfirmation: true,
     source: 'builtin',
+    shouldDefer: true,
     validate: validateFromZod(DeleteNoteSchema),
     async invoke(args, ctx) {
       if (ctx.signal.aborted) return { ok: false, error: 'aborted' };

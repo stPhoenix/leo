@@ -40,6 +40,7 @@ export function createDeleteFolderTool(
     parameters: jsonSchemaFromZod(DeleteFolderSchema),
     requiresConfirmation: true,
     source: 'builtin',
+    shouldDefer: true,
     validate: validateFromZod(DeleteFolderSchema),
     async invoke(args, ctx) {
       if (ctx.signal.aborted) return { ok: false, error: 'aborted' };

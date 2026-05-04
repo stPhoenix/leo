@@ -8,6 +8,7 @@ import type { EditNoteBridge } from '@/tools/types';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
 import type { PlanModeController } from './planModeController';
+import type { ToolSearchSession } from './toolSearch/toolSearchSession';
 import type { ReadFileStateStore } from '@/tools/builtin/readFileState';
 import type { RagMode } from '@/settings/settingsStore';
 import { BUILTIN_COMPACTABLE_TOOLS } from './microcompact';
@@ -104,6 +105,9 @@ export interface AgentRunnerOptions {
   readonly microcompact?: MicrocompactAgentOptions;
   readonly autocompact?: GraphAutocompactOptions | null;
   readonly tracer?: AgentTracer;
+  readonly toolSearch?: ToolSearchSession;
+  readonly disableParallelToolCalls?: () => boolean;
+  readonly disableThinking?: () => boolean;
 }
 
 export interface MicrocompactAgentOptions {
@@ -157,6 +161,9 @@ export class AgentRunner {
   private readonly microcompactIsCompactable: ((toolName: string) => boolean) | undefined;
   private readonly autocompactOptions: GraphAutocompactOptions | null;
   private readonly tracer: AgentTracer | undefined;
+  private readonly toolSearch: ToolSearchSession | undefined;
+  private readonly disableParallelToolCalls: (() => boolean) | undefined;
+  private readonly disableThinking: (() => boolean) | undefined;
   private readonly slots: TurnSlot[] = [];
   private inflight: TurnSlot | null = null;
   private tail: Promise<void> = Promise.resolve();
@@ -192,6 +199,9 @@ export class AgentRunner {
     this.microcompactIsCompactable = mc.isCompactable;
     this.autocompactOptions = opts.autocompact ?? null;
     this.tracer = opts.tracer;
+    this.toolSearch = opts.toolSearch;
+    this.disableParallelToolCalls = opts.disableParallelToolCalls;
+    this.disableThinking = opts.disableThinking;
   }
 
   send(msg: AgentUserMessage, thread: ThreadId): AsyncIterable<StreamEvent> {
@@ -266,20 +276,54 @@ export class AgentRunner {
   private async drive(slot: TurnSlot): Promise<void> {
     const thread = slot.input.thread;
     const agentId = this.agentIdFor(thread);
-    const turnHandle =
-      this.tracer !== undefined
-        ? this.tracer.beginTurn({
-            sessionId: thread,
-            metadata: {
-              threadId: thread,
-              agentId,
-              turnEnqueuedAt: slot.enqueuedAt,
-            },
-            tags: ['leo', `agent:${agentId ?? 'main'}`],
-            name: 'leo.turn',
-          })
-        : null;
-    const turn: TurnBinding = {
+    const turnHandle = this.beginTurnHandle(thread, agentId, slot.enqueuedAt);
+    const turn = this.buildTurnBinding(slot, thread, agentId, turnHandle);
+    const deps = this.buildGraphDeps();
+    const graph = buildAgentGraph(deps, turn);
+    const config = {
+      configurable: { thread_id: `${thread}:${slot.enqueuedAt}` },
+      signal: slot.abort.signal,
+    };
+    try {
+      await this.runGraphLoop(graph, config, slot);
+      if (slot.abort.signal.aborted && !slot.events.closed) {
+        slot.events.push({ type: 'done', cancelled: true });
+        slot.events.close();
+      }
+    } catch (err) {
+      this.handleDriveError(err, slot, thread);
+    } finally {
+      if (turnHandle !== null) {
+        try {
+          await turnHandle.end();
+        } catch {
+          /* logged inside tracer */
+        }
+      }
+    }
+  }
+
+  private beginTurnHandle(
+    thread: ThreadId,
+    agentId: string | null,
+    enqueuedAt: string,
+  ): ReturnType<AgentTracer['beginTurn']> | null {
+    if (this.tracer === undefined) return null;
+    return this.tracer.beginTurn({
+      sessionId: thread,
+      metadata: { threadId: thread, agentId, turnEnqueuedAt: enqueuedAt },
+      tags: ['leo', `agent:${agentId ?? 'main'}`],
+      name: 'leo.turn',
+    });
+  }
+
+  private buildTurnBinding(
+    slot: TurnSlot,
+    thread: ThreadId,
+    agentId: string | null,
+    turnHandle: ReturnType<AgentTracer['beginTurn']> | null,
+  ): TurnBinding {
+    return {
       thread,
       message: slot.input.message,
       focus: slot.focus,
@@ -289,7 +333,10 @@ export class AgentRunner {
       agentId,
       ...(turnHandle !== null ? { traceContext: turnHandle.traceContext } : {}),
     };
-    const deps: GraphDeps = {
+  }
+
+  private buildGraphDeps(): GraphDeps {
+    return {
       provider: this.provider,
       logger: this.logger,
       model: this.model,
@@ -323,59 +370,53 @@ export class AgentRunner {
       autocompact: this.autocompactOptions,
       getHistory: (t): readonly AgentHistoryMessage[] => this.getHistory(t),
       appendHistory: (t, m): void => this.appendHistory(t, m),
+      ...(this.toolSearch !== undefined ? { toolSearch: this.toolSearch } : {}),
+      ...(this.disableParallelToolCalls !== undefined
+        ? { disableParallelToolCalls: this.disableParallelToolCalls }
+        : {}),
+      ...(this.disableThinking !== undefined ? { disableThinking: this.disableThinking } : {}),
     };
-    const graph = buildAgentGraph(deps, turn);
-    const config = {
-      configurable: { thread_id: `${thread}:${slot.enqueuedAt}` },
-      signal: slot.abort.signal,
-    };
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let input: any = {};
-      for (;;) {
-        const result = (await graph.invoke(input, config)) as Record<string, unknown>;
-        if (!isInterrupted<ToolConfirmationInterruptPayload>(result)) break;
-        if (slot.abort.signal.aborted) break;
-        const interrupts = result[INTERRUPT] as { value?: ToolConfirmationInterruptPayload }[];
-        const intr = interrupts[0];
-        if (intr === undefined || intr.value === undefined) break;
-        const payload = intr.value;
-        const decision = await this.awaitDecision(slot, payload);
-        if (slot.abort.signal.aborted) break;
-        input = new Command({ resume: decision });
-      }
-      if (slot.abort.signal.aborted && !slot.events.closed) {
+  }
+
+  private async runGraphLoop(
+    graph: ReturnType<typeof buildAgentGraph>,
+    config: { configurable: { thread_id: string }; signal: AbortSignal },
+    slot: TurnSlot,
+  ): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let input: any = {};
+    for (;;) {
+      const result = (await graph.invoke(input, config)) as Record<string, unknown>;
+      if (!isInterrupted<ToolConfirmationInterruptPayload>(result)) break;
+      if (slot.abort.signal.aborted) break;
+      const interrupts = result[INTERRUPT] as { value?: ToolConfirmationInterruptPayload }[];
+      const intr = interrupts[0];
+      if (intr?.value === undefined) break;
+      const decision = await this.awaitDecision(slot, intr.value);
+      if (slot.abort.signal.aborted) break;
+      input = new Command({ resume: decision });
+    }
+  }
+
+  private handleDriveError(err: unknown, slot: TurnSlot, thread: ThreadId): void {
+    if (slot.abort.signal.aborted) {
+      if (!slot.events.closed) {
         slot.events.push({ type: 'done', cancelled: true });
         slot.events.close();
       }
-    } catch (err) {
-      if (slot.abort.signal.aborted) {
-        if (!slot.events.closed) {
-          slot.events.push({ type: 'done', cancelled: true });
-          slot.events.close();
-        }
-        return;
-      }
-      const error = err instanceof Error ? err : new Error(String(err));
-      if (!slot.events.closed) {
-        slot.events.push({ type: 'error', error });
-        slot.events.close();
-      }
-      this.logger.error('agent.turn.done', {
-        thread,
-        cancelled: false,
-        errored: true,
-        error: error.message,
-      });
-    } finally {
-      if (turnHandle !== null) {
-        try {
-          await turnHandle.end();
-        } catch {
-          /* logged inside tracer */
-        }
-      }
+      return;
     }
+    const error = err instanceof Error ? err : new Error(String(err));
+    if (!slot.events.closed) {
+      slot.events.push({ type: 'error', error });
+      slot.events.close();
+    }
+    this.logger.error('agent.turn.done', {
+      thread,
+      cancelled: false,
+      errored: true,
+      error: error.message,
+    });
   }
 
   private awaitDecision(
@@ -427,7 +468,7 @@ export class AgentRunner {
     const spec = this.toolRegistry.lookup(toolName) as
       | { readonly compactable?: boolean }
       | undefined;
-    return spec !== undefined && spec.compactable === true;
+    return spec?.compactable === true;
   }
 }
 

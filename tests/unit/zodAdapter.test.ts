@@ -23,6 +23,25 @@ describe('zodAdapter', () => {
     expect(js['$schema']).toBeUndefined();
   });
 
+  it('jsonSchemaFromZod wraps a discriminatedUnion root with type:"object"', () => {
+    const schema = z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('a'), x: z.string() }).strict(),
+      z.object({ kind: z.literal('b'), y: z.number() }).strict(),
+    ]);
+    const js = jsonSchemaFromZod(schema as unknown as z.ZodType<unknown>) as Record<
+      string,
+      unknown
+    >;
+    expect(js.type).toBe('object');
+    expect(js.oneOf ?? js.anyOf).toBeDefined();
+    expect(js.properties).toEqual({});
+  });
+
+  it('jsonSchemaFromZod preserves type:"object" for an object root', () => {
+    const js = jsonSchemaFromZod(z.object({ a: z.string() }).strict()) as Record<string, unknown>;
+    expect(js.type).toBe('object');
+  });
+
   it('jsonSchemaFromZod embeds min-length and enum constraints', () => {
     const schema = z
       .object({

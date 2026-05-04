@@ -5,7 +5,13 @@ import type { InlineAgentConfig } from '../configSchema';
 import type { InlineAgentRunState } from '../runState';
 import { addTokens, incrementIterations } from '../runState';
 import { bridgeStream, type BridgeChunk, type InlineAgentLoggerLite } from '../eventBridge';
-import { selectMaxIterations, tokenTick } from '../budgets';
+import {
+  DEFAULT_AUTOCOMPACT_THRESHOLD_PCT,
+  DEFAULT_CONTEXT_WINDOW_TOKENS,
+  selectMaxIterations,
+  tokenTick,
+} from '../budgets';
+import { compactMessages, decideCompaction } from '../compaction';
 import type { ManualChatModelAdapter } from '../manualChatModel';
 import type { RewriteMessage } from '../multistep/messageRewriter';
 import type { ExternalEvent } from '../../base';
@@ -16,8 +22,13 @@ import {
   createWriteFileTool,
   createListDirTool,
   createDeleteFileTool,
+  createAppendFileTool,
+  createGrepTool,
+  createGlobTool,
+  createDownloadToFileTool,
 } from '../tools/fileOps';
 import { createPublishArtifactTool } from '../tools/publishArtifact';
+import { createTodoWriteTool } from '../tools/todoWrite';
 import { wrapToolResultForLLM } from '../tools/untrustedWrap';
 
 export interface InlineToolHandle {
@@ -53,6 +64,8 @@ export interface ReactLoopCtx {
   readonly runState: InlineAgentRunState;
   readonly logger: InlineAgentLogger;
   readonly tokenLimit: number;
+  readonly contextWindowTokens?: number;
+  readonly autocompactThresholdPct?: number;
 }
 
 export function buildSimpleBranchTools(input: {
@@ -66,6 +79,7 @@ export function buildSimpleBranchTools(input: {
   const { config, sandbox, runState, logger, signal } = input;
   const lite: InlineAgentLoggerLite = logger;
   const tools: InlineToolHandle[] = [];
+  let fetchUrlTool: ReturnType<typeof createFetchUrlTool> | null = null;
   if (config.tools.fetchUrl.enabled) {
     const fetchCfg: FetchUrlConfig = {
       enabled: config.tools.fetchUrl.enabled,
@@ -73,8 +87,11 @@ export function buildSimpleBranchTools(input: {
       blocklist: config.tools.fetchUrl.blocklist,
       timeoutMs: config.tools.fetchUrl.timeoutMs,
       maxBytes: config.tools.fetchUrl.maxBytes,
+      requireDnsResolveCheck: config.tools.fetchUrl.requireDnsResolveCheck,
+      headerDenylist: config.tools.fetchUrl.headerDenylist,
     };
-    tools.push(createFetchUrlTool({ config: fetchCfg, signal, logger: lite }));
+    fetchUrlTool = createFetchUrlTool({ config: fetchCfg, signal, logger: lite });
+    tools.push(fetchUrlTool);
   }
   if (config.tools.searchWeb.enabled) {
     const searchCfg: SearchWebConfig = {
@@ -92,8 +109,16 @@ export function buildSimpleBranchTools(input: {
   if (config.tools.fileOps.enabled) {
     tools.push(createReadFileTool({ sandbox, signal, logger: lite }));
     tools.push(createWriteFileTool({ sandbox, signal, logger: lite }));
+    tools.push(createAppendFileTool({ sandbox, signal, logger: lite }));
     tools.push(createListDirTool({ sandbox, signal, logger: lite }));
     tools.push(createDeleteFileTool({ sandbox, signal, logger: lite }));
+    tools.push(createGrepTool({ sandbox, signal, logger: lite }));
+    tools.push(createGlobTool({ sandbox, signal, logger: lite }));
+    if (fetchUrlTool !== null) {
+      tools.push(
+        createDownloadToFileTool({ sandbox, signal, logger: lite, fetchUrl: fetchUrlTool }),
+      );
+    }
   }
   tools.push(
     createPublishArtifactTool({
@@ -103,6 +128,7 @@ export function buildSimpleBranchTools(input: {
       runState,
     }),
   );
+  tools.push(createTodoWriteTool({ runState, logger: lite }));
   // FR-IA-35: simple branch excludes extract_note.
   return tools;
 }
@@ -191,84 +217,12 @@ export async function* runManualLoop(
     { role: 'user', content: ctx.refinedAsk },
   ];
   const toolNames = ctx.tools.map((t) => t.name);
-  let iteration = 0;
-  while (iteration < ctx.maxIterations) {
+  const nudgeCounter = { used: 0 };
+  for (let iteration = 0; iteration < ctx.maxIterations; iteration += 1) {
     if (ctx.signal.aborted) return;
-    iteration += 1;
-    incrementIterations(ctx.runState, 1);
-    let step;
-    try {
-      step = await adapter.invokeTurn({
-        messages,
-        toolNames,
-        signal: ctx.signal,
-      });
-    } catch (err) {
-      yield { kind: 'error', error: err };
-      return;
-    }
-    if (step.text.length > 0) {
-      yield { kind: 'text', chunk: step.text };
-    }
-    const tokenStat = tokenTick({
-      cumulativeTokens: ctx.runState.cumulativeTokens,
-      addedInputEstimate: 0,
-      observedUsage: step.usage,
-      maxTokens: ctx.tokenLimit,
-    });
-    addTokens(ctx.runState, step.usage);
-    if (tokenStat.over) {
-      yield { kind: 'error', error: { code: 'token_limit', message: 'maxTokens exceeded' } };
-      return;
-    }
-    if (step.toolCalls.length === 0) {
-      messages.push({ role: 'assistant', content: step.text });
-      yield { kind: 'done' };
-      return;
-    }
-    messages.push({ role: 'assistant', content: step.text });
-    for (const call of step.toolCalls) {
-      const tool = ctx.tools.find((t) => t.name === call.name);
-      if (tool === undefined) {
-        messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          name: call.name,
-          content: JSON.stringify({ ok: false, error: 'unknown_tool' }),
-        });
-        continue;
-      }
-      yield { kind: 'tool_start', tool: call.name, args: call.args };
-      const startedAt = Date.now();
-      let result: unknown;
-      let ok = true;
-      let errorCode: string | undefined;
-      try {
-        result = await tool.invoke(call.args);
-        if (typeof result === 'object' && result !== null && 'ok' in result) {
-          const r = result as { ok: boolean; error?: string };
-          ok = r.ok;
-          if (!r.ok && typeof r.error === 'string') errorCode = r.error;
-        }
-      } catch (err) {
-        ok = false;
-        errorCode = err instanceof Error ? err.message : 'tool_throw';
-        result = { ok: false, error: errorCode };
-      }
-      yield {
-        kind: 'tool_end',
-        tool: call.name,
-        ok,
-        durationMs: Date.now() - startedAt,
-        ...(errorCode !== undefined ? { error: errorCode } : {}),
-      };
-      messages.push({
-        role: 'tool',
-        toolCallId: call.id,
-        name: call.name,
-        content: JSON.stringify(wrapToolResultForLLM(call.name, result)),
-      });
-    }
+    const outcome = yield* runSimpleIteration(ctx, adapter, messages, toolNames, nudgeCounter);
+    if (outcome === 'terminate') return;
+    maybeCompactSimple(messages, ctx);
   }
   yield {
     kind: 'error',
@@ -278,3 +232,157 @@ export async function* runManualLoop(
     },
   };
 }
+
+async function* runSimpleIteration(
+  ctx: ReactLoopCtx,
+  adapter: ManualChatModelAdapter,
+  messages: RewriteMessage[],
+  toolNames: readonly string[],
+  nudgeCounter: { used: number },
+): AsyncGenerator<BridgeChunk, 'continue' | 'terminate'> {
+  incrementIterations(ctx.runState, 1);
+  let step;
+  try {
+    step = await adapter.invokeTurn({
+      messages,
+      toolNames,
+      signal: ctx.signal,
+    });
+  } catch (err) {
+    yield { kind: 'error', error: err };
+    return 'terminate';
+  }
+  if (step.text.length > 0) yield { kind: 'text', chunk: step.text };
+  const tokenStat = tokenTick({
+    cumulativeTokens: ctx.runState.cumulativeTokens,
+    addedInputEstimate: 0,
+    observedUsage: step.usage,
+    maxTokens: ctx.tokenLimit,
+  });
+  addTokens(ctx.runState, step.usage);
+  if (tokenStat.over) {
+    yield {
+      kind: 'error',
+      error: {
+        code: 'token_limit',
+        message: `Inline agent token budget exhausted (simple): cumulative ${ctx.runState.cumulativeTokens} > maxTokens ${ctx.tokenLimit}. Increase \`budgets.maxTokens\` in plugin settings (default 100000).`,
+      },
+    };
+    return 'terminate';
+  }
+  if (step.toolCalls.length === 0) {
+    messages.push({ role: 'assistant', content: step.text });
+    if (nudgeCounter.used < MAX_EMPTY_TOOLCALL_NUDGES && hasFutureIntentMarker(step.text)) {
+      nudgeCounter.used += 1;
+      messages.push({ role: 'system', content: EMPTY_TOOLCALL_NUDGE });
+      return 'continue';
+    }
+    yield { kind: 'done' };
+    return 'terminate';
+  }
+  messages.push({ role: 'assistant', content: step.text });
+  for (const call of step.toolCalls) {
+    yield* invokeSimpleToolCall(call, ctx, messages);
+  }
+  return 'continue';
+}
+
+async function* invokeSimpleToolCall(
+  call: { id: string; name: string; args: unknown },
+  ctx: ReactLoopCtx,
+  messages: RewriteMessage[],
+): AsyncGenerator<BridgeChunk, void> {
+  const tool = ctx.tools.find((t) => t.name === call.name);
+  if (tool === undefined) {
+    messages.push({
+      role: 'tool',
+      toolCallId: call.id,
+      name: call.name,
+      content: JSON.stringify({ ok: false, error: 'unknown_tool' }),
+    });
+    return;
+  }
+  yield { kind: 'tool_start', tool: call.name, args: call.args };
+  const { result, ok, errorCode, durationMs } = await invokeSimpleTool(tool, call.args);
+  yield {
+    kind: 'tool_end',
+    tool: call.name,
+    ok,
+    durationMs,
+    ...(errorCode !== undefined ? { error: errorCode } : {}),
+  };
+  messages.push({
+    role: 'tool',
+    toolCallId: call.id,
+    name: call.name,
+    content: JSON.stringify(wrapToolResultForLLM(call.name, result)),
+  });
+}
+
+async function invokeSimpleTool(
+  tool: { invoke(args: unknown): Promise<unknown> | unknown },
+  args: unknown,
+): Promise<{ result: unknown; ok: boolean; errorCode: string | undefined; durationMs: number }> {
+  const startedAt = Date.now();
+  let result: unknown;
+  let ok = true;
+  let errorCode: string | undefined;
+  try {
+    result = await tool.invoke(args);
+    if (typeof result === 'object' && result !== null && 'ok' in result) {
+      const r = result as { ok: boolean; error?: string };
+      ok = r.ok;
+      if (!r.ok && typeof r.error === 'string') errorCode = r.error;
+    }
+  } catch (err) {
+    ok = false;
+    errorCode = err instanceof Error ? err.message : 'tool_throw';
+    result = { ok: false, error: errorCode };
+  }
+  return { result, ok, errorCode, durationMs: Date.now() - startedAt };
+}
+
+function maybeCompactSimple(messages: RewriteMessage[], ctx: ReactLoopCtx): void {
+  const decision = decideCompaction(
+    messages,
+    ctx.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
+    ctx.autocompactThresholdPct ?? DEFAULT_AUTOCOMPACT_THRESHOLD_PCT,
+  );
+  if (!decision.shouldCompact) return;
+  const result = compactMessages(messages, ctx.runState);
+  if (result.droppedCount === 0) return;
+  ctx.logger.info('externalAgent.adapter.inlineAgent.autocompact', {
+    route: 'simple',
+    droppedCount: result.droppedCount,
+    preTokens: result.preTokens,
+    postTokens: result.postTokens,
+    thresholdTokens: decision.thresholdTokens,
+  });
+  messages.length = 0;
+  for (const m of result.messages) messages.push(m);
+}
+
+const MAX_EMPTY_TOOLCALL_NUDGES = 3;
+
+const FUTURE_INTENT_MARKERS = [
+  /\blet me\b/i,
+  /\blet's\b/i,
+  /\bnow i'?ll\b/i,
+  /\bnow,? i\s+(will|need|am going)\b/i,
+  /\bi'?ll\s+(then|now|next|fetch|write|publish|continue|proceed|process|move|start)\b/i,
+  /\bcontinuing\b/i,
+  /\bstarting (with|by)\b/i,
+  /\bnext,?\s+i'?ll\b/i,
+  /\bthen i'?ll\b/i,
+  /\bproceed (to|with)\b/i,
+  /\bmoving (on|to)\b/i,
+  /\bi (will|am going to|need to)\s+(fetch|write|publish|continue|proceed|process)\b/i,
+];
+
+function hasFutureIntentMarker(text: string): boolean {
+  if (text.length === 0) return false;
+  return FUTURE_INTENT_MARKERS.some((re) => re.test(text));
+}
+
+const EMPTY_TOOLCALL_NUDGE =
+  'Your previous response had no tool call. If your work is complete (every requested artifact written and published), terminate cleanly with a brief final summary on your next turn. Otherwise, you MUST call the next tool now — do not narrate, do not announce, just call the tool. This reminder fires only a few times before the host gives up.';

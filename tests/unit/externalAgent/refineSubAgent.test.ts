@@ -205,17 +205,93 @@ describe('createRefineSubAgent', () => {
     expect(decision.refinedPrompt).toContain('free-form streamed');
   });
 
-  it('throws refine_empty_response when provider yields nothing useful', async () => {
+  it('falls back to originalAsk passthrough when provider yields nothing', async () => {
     const sub = createRefineSubAgent({
       provider: provider([{ type: 'done' }]),
       model: () => 'm-1',
     });
-    await expect(
-      sub.refine({
-        state: baseState(),
-        userInput: null,
-        signal: new AbortController().signal,
-      }),
-    ).rejects.toThrow(/refine_empty_response/);
+    const decision = await sub.refine({
+      state: baseState(),
+      userInput: null,
+      signal: new AbortController().signal,
+    });
+    expect(decision.type).toBe('final_prompt');
+    if (decision.type === 'final_prompt') {
+      expect(decision.refinedPrompt).toBe('find me 3 references on X');
+    }
+  });
+
+  it('forwards traceConfig.callbacks/metadata/tags onto ProviderChatRequest.trace', async () => {
+    const seenRequests: ProviderChatRequest[] = [];
+    const recordingProvider: RefineProvider = {
+      stream(req, _signal) {
+        seenRequests.push(req);
+        const events: StreamEvent[] = [
+          call('emit_final_prompt', { prompt: 'ok' }),
+          { type: 'done' },
+        ];
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<StreamEvent> {
+            let i = 0;
+            return {
+              next: async (): Promise<IteratorResult<StreamEvent>> => {
+                if (i >= events.length)
+                  return { value: undefined as unknown as StreamEvent, done: true };
+                return { value: events[i++] as StreamEvent, done: false };
+              },
+            };
+          },
+        };
+      },
+    };
+    const fakeHandler = { name: 'fake' } as unknown;
+    const sub = createRefineSubAgent({ provider: recordingProvider, model: () => 'm-1' });
+    await sub.refine({
+      state: baseState(),
+      userInput: null,
+      signal: new AbortController().signal,
+      traceConfig: {
+        callbacks: [fakeHandler],
+        metadata: { runId: 'r1', agentId: 'external-agent' },
+        tags: ['leo', 'agent:external-agent'],
+      },
+    });
+    expect(seenRequests).toHaveLength(1);
+    const trace = seenRequests[0]?.trace;
+    expect(trace?.callbacks).toEqual([fakeHandler]);
+    expect(trace?.metadata).toEqual({ runId: 'r1', agentId: 'external-agent' });
+    expect(trace?.tags).toEqual(['leo', 'agent:external-agent']);
+  });
+
+  it('omits trace when no traceConfig provided', async () => {
+    const seen: ProviderChatRequest[] = [];
+    const recordingProvider: RefineProvider = {
+      stream(req, _signal) {
+        seen.push(req);
+        const events: StreamEvent[] = [
+          call('emit_final_prompt', { prompt: 'ok' }),
+          { type: 'done' },
+        ];
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<StreamEvent> {
+            let i = 0;
+            return {
+              next: async (): Promise<IteratorResult<StreamEvent>> => {
+                if (i >= events.length)
+                  return { value: undefined as unknown as StreamEvent, done: true };
+                return { value: events[i++] as StreamEvent, done: false };
+              },
+            };
+          },
+        };
+      },
+    };
+    const sub = createRefineSubAgent({ provider: recordingProvider, model: () => 'm-1' });
+    await sub.refine({
+      state: baseState(),
+      userInput: null,
+      signal: new AbortController().signal,
+    });
+    expect(seen[0]?.trace).toBeUndefined();
   });
 });

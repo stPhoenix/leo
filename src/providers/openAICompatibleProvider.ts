@@ -44,6 +44,8 @@ export class OpenAICompatibleProvider implements Provider {
     const apiKey = this.opts.apiKey?.() ?? 'placeholder';
     const defaultHeaders = this.headersFn();
 
+    const disableThinking = req.providerHints?.disableThinking === true;
+    const lmStudioNoThink = disableThinking && this.id === 'lmstudio';
     const model = new ChatOpenAI({
       model: req.model,
       apiKey,
@@ -51,6 +53,9 @@ export class OpenAICompatibleProvider implements Provider {
       streamUsage: true,
       ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+      ...(lmStudioNoThink
+        ? { modelKwargs: { extra_body: { chat_template_kwargs: { enable_thinking: false } } } }
+        : {}),
       configuration: {
         baseURL,
         dangerouslyAllowBrowser: true,
@@ -58,8 +63,10 @@ export class OpenAICompatibleProvider implements Provider {
       },
     });
 
-    const callable: OpenAICallable =
-      req.tools !== undefined && req.tools.length > 0 ? model.bindTools([...req.tools]) : model;
+    const disableParallel = req.providerHints?.disableParallelToolCalls === true;
+    const bindOpts = disableParallel ? { parallel_tool_calls: false } : undefined;
+    const hasTools = req.tools !== undefined && req.tools.length > 0;
+    const callable: OpenAICallable = hasTools ? model.bindTools([...req.tools!], bindOpts) : model;
 
     const normalized = normalizeForOpenAI(req.messages);
     const messages = toLangchainMessages(normalized);
@@ -134,6 +141,24 @@ export function createOllamaProvider(opts: OllamaProviderOptions = {}): OpenAICo
     id: 'ollama',
     endpoint: opts.endpoint ?? ((): string => 'http://localhost:11434'),
     apiKey: () => 'ollama',
+    ...(opts.fetch !== undefined ? { fetch: opts.fetch } : {}),
+  });
+}
+
+export interface OllamaCloudProviderOptions {
+  readonly apiKey: () => string;
+  readonly endpoint?: () => string;
+  readonly fetch?: FetchLike;
+}
+
+export function createOllamaCloudProvider(
+  opts: OllamaCloudProviderOptions,
+): OpenAICompatibleProvider {
+  return new OpenAICompatibleProvider({
+    id: 'ollama-cloud',
+    endpoint: opts.endpoint ?? ((): string => 'https://ollama.com'),
+    apiKey: opts.apiKey,
+    headers: () => ({ Authorization: `Bearer ${opts.apiKey()}` }),
     ...(opts.fetch !== undefined ? { fetch: opts.fetch } : {}),
   });
 }

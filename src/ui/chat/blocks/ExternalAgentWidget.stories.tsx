@@ -95,7 +95,8 @@ const baseVm = (overrides: Partial<WidgetViewModel> = {}): WidgetViewModel => ({
     { id: 'openai-compatible', label: 'openai-compatible', defaultTimeoutMs: 600_000 },
   ],
   draftAdapterId: 'claude-code',
-  draftTimeoutMs: 60_000,
+  draftTimeoutMs: 300_000,
+  draftTimeoutMinutes: 5,
   draftRefineBudget: 3,
   clarifyingQuestion: null,
   logEvents: [],
@@ -167,7 +168,7 @@ export const ReadyValidationError: Story = {
       baseVm({
         phase: 'ready',
         refinedPrompt: 'Refined prompt here.',
-        validationError: 'timeoutMs out of range [1000, 86400000]',
+        validationError: 'timeout out of range [1, 1440] minutes',
       }),
     ),
   },

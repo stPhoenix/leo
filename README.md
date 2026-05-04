@@ -4,13 +4,14 @@ Local-first chat, RAG, and agent plugin for [Obsidian](https://obsidian.md).
 
 Leo embeds an AI assistant into your vault. The agent has live access to the active note, your cursor and selection, and the entire vault through a lazily built RAG / GraphRAG index. It can read, create, and edit notes while you watch the changes appear in the editor — under an explicit edit lock with accept / reject UI.
 
-> **Status**: 0.0.1 — desktop only. Built against Obsidian `1.5.0+`.
+> **Status**: 0.1.0 — desktop only. Built against Obsidian `1.5.0+`.
 
 ---
 
 ## Features
 
 ### Chat & UI
+
 - Sidebar chat panel with streaming markdown, code copy, syntax highlighting, and per-message actions (copy, regenerate, edit-and-resend, delete).
 - Multiple conversation threads, persisted to `.leo/conversations/`.
 - Composer with paste / drop attachments, `@`-mention vault files, and `/` slash-commands (`/context`, `/rag`, custom skills).
@@ -20,6 +21,7 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 - Fully themed via Obsidian CSS variables — light, dark, and custom themes work out of the box.
 
 ### Editor integration
+
 - CM6 EditorBridge tracks cursor, selection, and viewport — debounced and cheap.
 - Programmatic edits go through `EditorTransaction` under a single "Leo edit" undo step.
 - Edit lock (CM6 readonly decoration) blocks user keystrokes in the range being modified, with a 3 s flash highlight on completion.
@@ -27,6 +29,7 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 - `open_note` and `reveal_in_note` tools — agent can jump you to a file, a line, or a selection.
 
 ### Agent
+
 - LangGraph.js state-graph agent loop: gather-context → retrieve → model → tools → route.
 - Built-in tools: `read_note`, `create_note`, `edit_note`, `append_to_note`, `delete_note`, `move_note`, `copy_note`, `create_folder`, `delete_folder`, `list_notes`, `search_vault`, `glob_vault`, `grep_vault`, `read_file`, `open_note`, `reveal_in_note`, `TodoWrite`, `AskUserQuestion`, `EnterPlanMode` / `ExitPlanMode`, `delegate_external`.
 - Skills: reusable prompt presets (`{name, description, systemPrompt, allowedTools?, defaultModel?}`) stored in `.leo/skills/`. Built-in skills bundled; user skills user-editable.
@@ -36,6 +39,7 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 - External-agent delegation subgraph (refine → ready → running → writing) with adapter registry, per-thread one-slot concurrency, and a live widget.
 
 ### Retrieval (RAG / GraphRAG)
+
 - Heading-based chunking with fixed-size fallback (~512-token overlap); markdown + canvas.
 - Local embeddings via LM Studio (or any OpenAI-compatible `/v1/embeddings`).
 - IndexedDB vector store with `{model, dim, version}` Index Header — reindex on model change.
@@ -44,8 +48,20 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 - Lazy dirty-queue indexing yielding to the main thread; status-bar progress.
 - `/rag` widget for live index status; `/context` widget for token breakdown and suggestions.
 
+### Wiki
+
+- Local knowledge wiki under `<vault>/wiki/`, fed by an ingest pipeline (refine → fetch → plan → extract → reduce → write) that turns URLs, vault paths, attachments, and conversation snippets into structured pages with frontmatter + sources.
+- Lint pipeline (scan → check → propose → confirm → write) — schema-aware patches gated by an inline confirmation dialog.
+- `wiki-inbox.md` pipe-table queue (`Source | Status | Note`) — drop a row, run a batch, get a page.
+- `search_wiki` and `inbox_add` tools; `/wiki` widget for live status (mutex active op, last run, page counts).
+- Sandboxed vault adapter — wiki workflows can only touch `wiki/**`, `externalAgentResults/**`, and `wiki-inbox.md`.
+- Single-active-op mutex per vault — one ingest or lint at a time, no clobbering.
+
 ### Providers
+
 - LM Studio (default) and any OpenAI-compatible local server.
+- Ollama (local) — local OpenAI-shim endpoint, no API key.
+- Ollama Cloud — Bearer `apiKey` (default endpoint `https://ollama.com`).
 - OpenAI, Anthropic via official SDKs.
 - Streaming, FIFO request queue, exponential-backoff retries, 120 s per-request timeout.
 - Auto-detect models via `/v1/models`.
@@ -53,12 +69,14 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 - Langfuse tracing integration (optional).
 
 ### Compaction & context
+
 - Layered: microcompaction (tool-result clearing) → autocompaction (threshold summarization) → full / partial / session-memory.
 - 3-tier token counting (API usage → hybrid estimate → `len/4` fallback).
 - Prompt-too-long recovery via group-based head truncation, max 3 retries.
 - Preserves `tool_use` / `tool_result` pairing and thinking-block continuity through every slice.
 
 ### MCP (Model Context Protocol)
+
 - Leo acts as an MCP host. Stdio + HTTP+SSE transports.
 - Server config in `.leo/config.json` (`mcpServers` shape compatible with the standard MCP host config).
 - Discovered tools registered as `mcp.<serverId>.<toolName>` (confirmation-gated by default).
@@ -66,6 +84,7 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 - Reconnect with exponential backoff; clean stdio shutdown on plugin unload.
 
 ### Privacy
+
 - 100% local by default. No telemetry. No cloud calls unless you configure a cloud provider or cloud-backed MCP server.
 - All vault state lives under `<vault>/.leo/` — config, conversations, skills, plans, logs. Embeddings live in IndexedDB.
 
@@ -75,9 +94,9 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 
 Leo is not yet in the Obsidian community plugin directory. Install manually:
 
-1. Download the latest release artifacts: `main.js`, `manifest.json`, `styles.css`.
+1. Download `main.js`, `manifest.json`, and `styles.css` from the latest tag on the GitHub Releases page (`https://github.com/stPhoenix/leo/releases/latest`).
 2. Copy them into `<your-vault>/.obsidian/plugins/leo/`. Create the folder if it does not exist.
-3. In Obsidian → Settings → Community plugins → Installed plugins, enable **Leo**.
+3. In Obsidian → Settings → Community plugins → Installed plugins, enable **Leo** (toggle off "Restricted mode" first if it is on).
 4. Open Leo from the ribbon icon or the command palette (`Leo: Open chat`).
 5. Configure your provider in Settings → Leo. For LM Studio, point the endpoint at `http://localhost:1234/v1` (or whichever port LM Studio shows) and pick a chat model and an embedding model.
 
@@ -101,7 +120,7 @@ A first-time setup wizard guides you through provider configuration on first lau
 ### Clone & build
 
 ```bash
-git clone <repo-url> leo
+git clone https://github.com/stPhoenix/leo leo
 cd leo
 pnpm install
 pnpm dev          # esbuild watch → main.js
@@ -121,20 +140,21 @@ Reload Obsidian (or use the **Hot-Reload** community plugin to pick up `main.js`
 
 ### Scripts
 
-| Command | What it does |
-| --- | --- |
-| `pnpm dev` | esbuild watch build → `main.js` (sourcemaps inline) |
-| `pnpm build` | Production bundle (minified) |
-| `pnpm check:bundle` | Bundle-size guard against `.agent/budgets/bundle-baseline.json` |
-| `pnpm typecheck` | `tsc --noEmit` |
-| `pnpm lint` | ESLint over `src/` and `tests/` |
-| `pnpm format` / `pnpm format:check` | Prettier write / check |
-| `pnpm test` | Default Vitest suite (unit + dom + integration + smoke) |
-| `pnpm test:llm` | Live-LLM tests (`vitest.llm.config.ts`, requires API keys) |
-| `pnpm smoke` | Release smoke only |
-| `pnpm bench` | Vitest benches |
-| `pnpm storybook` | Storybook dev server (UI components in isolation) |
-| `pnpm build-storybook` | Static Storybook build |
+| Command                             | What it does                                                    |
+| ----------------------------------- | --------------------------------------------------------------- |
+| `pnpm dev`                          | esbuild watch build → `main.js` (sourcemaps inline)             |
+| `pnpm build`                        | Production bundle (minified)                                    |
+| `pnpm release:bundle`               | Build + copy 3 artifacts → `release/` (gitignored)              |
+| `pnpm check:bundle`                 | Bundle-size guard against `.agent/budgets/bundle-baseline.json` |
+| `pnpm typecheck`                    | `tsc --noEmit`                                                  |
+| `pnpm lint`                         | ESLint over `src/` and `tests/`                                 |
+| `pnpm format` / `pnpm format:check` | Prettier write / check                                          |
+| `pnpm test`                         | Default Vitest suite (unit + dom + integration + smoke)         |
+| `pnpm test:llm`                     | Live-LLM tests (`vitest.llm.config.ts`, requires API keys)      |
+| `pnpm smoke`                        | Release smoke only                                              |
+| `pnpm bench`                        | Vitest benches                                                  |
+| `pnpm storybook`                    | Storybook dev server (UI components in isolation)               |
+| `pnpm build-storybook`              | Static Storybook build                                          |
 
 ### Repo layout
 

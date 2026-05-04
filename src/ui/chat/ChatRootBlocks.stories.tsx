@@ -66,7 +66,7 @@ function buildSlots(runState: RunStateStore): ToolUseBlockSlots {
     renderResult: (block) => {
       if (!EDIT_TOOLS.has(block.name)) return null;
       const r = runState.getSnapshot().toolResults.get(block.id);
-      if (r === undefined || r.ok !== true) return null;
+      if (r?.ok !== true) return null;
       const d = r.data as { before?: unknown; after?: unknown; path?: unknown };
       if (typeof d?.before !== 'string' || typeof d?.after !== 'string') return null;
       return createElement(DiffView, {

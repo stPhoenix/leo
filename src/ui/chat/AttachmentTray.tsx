@@ -10,17 +10,12 @@ export interface AttachmentTrayProps {
 export function AttachmentTray(props: AttachmentTrayProps): JSX.Element | null {
   if (props.items.length === 0) return null;
   return (
-    <div
-      className="leo-attachment-tray"
-      role="list"
-      aria-label="staged attachments"
-      data-slot="attachment-tray"
-    >
+    <ul className="leo-attachment-tray" aria-label="staged attachments" data-slot="attachment-tray">
       {props.items.map((a) => (
-        <div key={a.id} role="listitem" className="leo-attachment-tray-item">
+        <li key={a.id} className="leo-attachment-tray-item">
           <AttachmentChip attachment={a} onRemove={props.onRemove} setIcon={props.setIcon} />
-        </div>
+        </li>
       ))}
-    </div>
+    </ul>
   );
 }

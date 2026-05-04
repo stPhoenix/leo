@@ -76,6 +76,7 @@ export function ClarifyingQuestionDialog(props: ClarifyingQuestionDialogProps): 
     return (
       <div
         className="leo-clarify"
+        // NOSONAR S6819 — inline chat-flow modal; native <dialog> default styling conflicts with chat-list layout
         role="dialog"
         aria-modal="true"
         aria-label="clarifying question"
@@ -118,6 +119,7 @@ export function ClarifyingQuestionDialog(props: ClarifyingQuestionDialogProps): 
   return (
     <div
       className="leo-clarify leo-clarify-active"
+      // NOSONAR S6819 — inline chat-flow modal; native <dialog> default styling conflicts with chat-list layout
       role="dialog"
       aria-modal="true"
       aria-label="Clarifying question"
@@ -141,7 +143,10 @@ export function ClarifyingQuestionDialog(props: ClarifyingQuestionDialogProps): 
           <ul
             className="leo-clarify-options"
             data-slot="clarify-options"
-            role={isMulti ? 'group' : 'radiogroup'}
+            // role="radiogroup" is correct for single-select; for multi-select, the buttons
+            // form a checkbox group whose semantics come from the checkbox inputs themselves.
+            role={isMulti ? undefined : 'radiogroup'}
+            aria-label="Options"
           >
             {options!.map((opt, i) => {
               const id = `leo-clarify-opt-${i}`;

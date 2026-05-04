@@ -1,3 +1,7 @@
+// UI-layer streaming/turn FSM (streaming → cancelling → done/error/cancelled). Owns
+// per-block buffering + rAF-paced flushing into the React message store. Distinct from
+// the agent-layer LangGraph state — runs in the renderer event loop and exists to keep
+// token-by-token reveal smooth without re-rendering on every delta.
 import type { ChatMessageStore } from './messageStore';
 import type {
   ContentBlock,
@@ -137,7 +141,7 @@ export class StreamingTurnController {
     if (event.type === 'block_delta') {
       const d = event.delta;
       if (turn.phase === 'cancelling') return;
-      if (d.type === 'text_delta') {
+      if (d.type === 'text_delta' || d.type === 'tool_result_delta') {
         const prev = turn.pendingTextByIndex.get(event.index) ?? '';
         turn.pendingTextByIndex.set(event.index, prev + d.text);
       } else if (d.type === 'thinking_delta') {
@@ -148,9 +152,6 @@ export class StreamingTurnController {
       } else if (d.type === 'input_json_delta') {
         const prev = turn.jsonBuffers.get(event.index) ?? '';
         turn.jsonBuffers.set(event.index, prev + d.partial_json);
-      } else if (d.type === 'tool_result_delta') {
-        const prev = turn.pendingTextByIndex.get(event.index) ?? '';
-        turn.pendingTextByIndex.set(event.index, prev + d.text);
       }
       this.ensureRafScheduled();
       return;
@@ -280,7 +281,7 @@ export class StreamingTurnController {
         if (existing.type === 'text') {
           nextBlocks[idx] = { ...existing, text: existing.text + append };
           assistantTextAppend += append;
-        } else if (existing.type === 'tool_result') {
+        } else if (existing.type === 'tool_result' && typeof existing.content === 'string') {
           nextBlocks[idx] = { ...existing, content: existing.content + append };
         } else {
           nextBlocks[idx] = { type: 'text', text: append } as TextBlock;

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "comment": "Bundle baseline. Updated 2026-04-28 after plan-mode rewrite for note-authoring + .agent/srs/plan.md gap closure: the long model-facing prompts (TodoWrite, EnterPlanMode, ExitPlanMode, AskUserQuestion) and the new ClarifyingQuestionDialog + ClarifyingQuestionController + askUserQuestion tool add ~46 KB minified to main.js. The bulk is intentional prompt content (rewritten for note-authoring) plus the new in-plan-mode clarification UI (mirrors PlanApprovalDialog). Documented as a known deviation; cap remains 30 KB for incremental additions on top of this baseline.",
-  "baselineBytes": 2151107,
+  "comment": "Bundle baseline. Updated 2026-05-03 after the wiki picker + sandbox feature: per-call provider/model picker widget for delegate_wiki_ingest + delegate_wiki_lint, plus path-restricted VaultAdapter wrapper that limits both workflows to wiki/, externalAgentResults/, and wiki-inbox.md. The +50 KB delta comes from: ConfigBody phase UI in WikiWidget (provider/model selects, loading/error/api-key states, Start/Cancel), WikiWidgetController picker state machine (model cache, async load, validation), restrictedVaultAdapter wrapper proxying every VaultAdapter method with normalize+allow checks, ProviderOverride threading through IngestRunInput/LintRunInput + per-run buildWikiOverrideInvoker in main.ts, and the listModelsForProvider helper that constructs ephemeral providers for non-active kinds. Original wiki slice baseline (F01–F19) still ~95 KB. Followups: (a) lazy-load the picker UI behind a dynamic import gated on the awaiting_config phase, (b) lazy-load createProviderForKind for non-default providers, (c) revisit zod helper tree-shaking from the wiki slice. Cap restored to 30 KB for incremental additions on top of this baseline.",
+  "baselineBytes": 2299691,
   "maxDeltaBytes": 30720,
-  "lastUpdated": "2026-04-28"
+  "lastUpdated": "2026-05-03"
 }

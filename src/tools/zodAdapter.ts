@@ -4,6 +4,12 @@ import type { JsonSchema, ToolResult, ToolValidate } from './types';
 export function jsonSchemaFromZod<T>(schema: z.ZodType<T>): JsonSchema {
   const raw = z.toJSONSchema(schema, { target: 'openapi-3.0' }) as Record<string, unknown>;
   const { $schema: _drop, ...pure } = raw;
+  if (pure.type === undefined && (pure.oneOf !== undefined || pure.anyOf !== undefined)) {
+    return { type: 'object', properties: {}, ...pure } as JsonSchema;
+  }
+  if (pure.type === 'object' && pure.properties === undefined) {
+    return { ...pure, properties: {} } as JsonSchema;
+  }
   return pure as JsonSchema;
 }
 

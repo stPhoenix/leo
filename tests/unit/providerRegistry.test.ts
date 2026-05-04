@@ -37,13 +37,25 @@ describe('provider registry', () => {
     expect(p.id).toBe('ollama');
   });
 
+  it('ollama-cloud kind produces openai-compatible provider (hosted)', () => {
+    const p = createProviderForKind('ollama-cloud', ctx());
+    expect(p.id).toBe('ollama-cloud');
+  });
+
   it('custom kind uses supplied baseURL + Authorization header when key present', () => {
     const p = createProviderForKind('custom', ctx());
     expect(p.id).toBe('custom');
   });
 
   it('defaultEndpointFor covers every kind', () => {
-    const kinds: ProviderKind[] = ['lmstudio', 'openai', 'anthropic', 'ollama', 'custom'];
+    const kinds: ProviderKind[] = [
+      'lmstudio',
+      'openai',
+      'anthropic',
+      'ollama',
+      'ollama-cloud',
+      'custom',
+    ];
     for (const k of kinds) {
       expect(typeof defaultEndpointFor(k)).toBe('string');
     }
@@ -54,6 +66,7 @@ describe('provider registry', () => {
     expect(kindRequiresApiKey('ollama')).toBe(false);
     expect(kindRequiresApiKey('openai')).toBe(true);
     expect(kindRequiresApiKey('anthropic')).toBe(true);
+    expect(kindRequiresApiKey('ollama-cloud')).toBe(true);
     expect(kindRequiresApiKey('custom')).toBe(true);
   });
 });

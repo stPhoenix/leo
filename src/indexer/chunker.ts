@@ -1,3 +1,7 @@
+// Heading-aware Obsidian Markdown splitter. LangChain `RecursiveCharacterTextSplitter`
+// covers fixed-size windowing but cannot preserve the heading-path metadata (`#H1 / ##H2`)
+// that RAG citations and graph-boost scoring depend on. Heading parse uses
+// `MetadataCache.getFileCache(file).headings` so chunks stay in lock-step with Obsidian.
 import { estimateTokens } from '@/agent/tokenCount';
 
 export const CHUNK_TARGET_TOKENS = 512 as const;

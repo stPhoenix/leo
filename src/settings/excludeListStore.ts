@@ -61,10 +61,21 @@ export class ExcludeListStore {
     const trimmed = prefix.trim();
     if (trimmed.length === 0) return false;
     const want = trimmed.endsWith('/') ? `${trimmed}**` : `${trimmed}/**`;
-    const wasNew = !this.defaults.has(want);
-    this.defaults.add(want);
-    if (this.patterns.includes(want)) return false;
-    const next = normalizePatterns([...this.patterns, want]);
+    return this.ensureDefaultPattern(want);
+  }
+
+  /**
+   * Idempotently add a literal pattern (file path or glob) to the matcher set.
+   * Use for single files like `wiki-inbox.md` where the directory-style
+   * `<prefix>/**` form would not match.
+   */
+  ensureDefaultPattern(pattern: string): boolean {
+    const trimmed = pattern.trim();
+    if (trimmed.length === 0) return false;
+    const wasNew = !this.defaults.has(trimmed);
+    this.defaults.add(trimmed);
+    if (this.patterns.includes(trimmed)) return false;
+    const next = normalizePatterns([...this.patterns, trimmed]);
     if (samePatterns(this.patterns, next)) return wasNew;
     this.patterns = next;
     this.matcherFn = compileMatcher(next);
