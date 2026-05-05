@@ -1,19 +1,10 @@
-import 'fake-indexeddb/auto';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_TOP_K, RAGEngine, type RAGHit } from '@/rag/ragEngine';
 import { cosine } from '@/rag/scorer';
-import { VECTOR_STORE_DB_NAME, VectorStore, type VectorRow } from '@/storage/vectorStore';
+import { VectorStore, type VectorRow } from '@/storage/vectorStore';
 import type { EmbeddingClient } from '@/providers/embeddingClient';
 import type { Chunk } from '@/indexer/chunker';
-
-async function deleteAll(): Promise<void> {
-  await new Promise<void>((resolve) => {
-    const req = indexedDB.deleteDatabase(VECTOR_STORE_DB_NAME);
-    req.onsuccess = () => resolve();
-    req.onerror = () => resolve();
-    req.onblocked = () => resolve();
-  });
-}
+import { InMemoryVaultAdapter } from '../helpers/inMemoryVaultAdapter';
 
 function fakeEmbedder(vector: number[]): EmbeddingClient {
   return {
@@ -40,11 +31,8 @@ function mkChunk(
 }
 
 describe('RAGEngine', () => {
-  beforeEach(deleteAll);
-  afterEach(deleteAll);
-
   it('returns [] when store is unavailable', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     // Force unavailable
     (store as unknown as { available: boolean }).available = false;
     const rag = new RAGEngine({ embedder: fakeEmbedder([1, 0]), store });
@@ -54,7 +42,7 @@ describe('RAGEngine', () => {
   });
 
   it('returns [] when empty store', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     const rag = new RAGEngine({ embedder: fakeEmbedder([1, 0]), store });
     expect(await rag.query('q')).toEqual([]);
@@ -62,7 +50,7 @@ describe('RAGEngine', () => {
   });
 
   it('returns top-K hits sorted by score desc', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     // Seed 5 rows with known cosine similarity to [1, 0]
     await store.upsert('a.md', [mkChunk('a.md', 0, 1)], [[1, 0]]); // cos = 1
@@ -80,7 +68,7 @@ describe('RAGEngine', () => {
   });
 
   it('defaults to DEFAULT_TOP_K=10 when k not set', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     for (let i = 0; i < 15; i += 1) {
       await store.upsert(`n${i}.md`, [mkChunk(`n${i}.md`, 0, 1)], [[Math.random(), Math.random()]]);
@@ -92,7 +80,7 @@ describe('RAGEngine', () => {
   });
 
   it('result shape is strictly {path, line_start, line_end, score} — no extra keys', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 5)], [[1, 0]]);
     const rag = new RAGEngine({ embedder: fakeEmbedder([1, 0]), store });
@@ -104,7 +92,7 @@ describe('RAGEngine', () => {
   });
 
   it('merges adjacent and overlapping same-file hits', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     // Three same-file overlapping/abutting chunks
     await store.upsert(
@@ -131,7 +119,7 @@ describe('RAGEngine', () => {
   });
 
   it('does not merge disjoint hits on the same file (gap > 1)', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert(
       'x.md',
@@ -148,7 +136,7 @@ describe('RAGEngine', () => {
   });
 
   it('returns [] + logs header-mismatch when query dim != header.dim', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 1)], [[1, 0]]);
     const rag = new RAGEngine({ embedder: fakeEmbedder([1, 0, 0, 0]), store });
@@ -157,7 +145,7 @@ describe('RAGEngine', () => {
   });
 
   it('propagates AbortSignal — throws on pre-aborted signal', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 1)], [[1, 0]]);
     const ctl = new AbortController();
@@ -168,7 +156,7 @@ describe('RAGEngine', () => {
   });
 
   it('exclude matcher filters rows before Scorer.cosine — top-K drops excluded path', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert('keep.md', [mkChunk('keep.md', 0, 1)], [[1, 0]]);
     await store.upsert('drafts/skip.md', [mkChunk('drafts/skip.md', 0, 1)], [[1, 0]]);
@@ -184,7 +172,7 @@ describe('RAGEngine', () => {
   });
 
   it('empty exclude matcher returns byte-identical results to baseline', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 1)], [[1, 0]]);
     await store.upsert('b.md', [mkChunk('b.md', 0, 1)], [[0.9, 0.43588989]]);
@@ -201,7 +189,7 @@ describe('RAGEngine', () => {
   });
 
   it('tags filter rejects rows before cosine — never enter top-K', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     // 100 rows — only 10 carry the requested tag
     for (let i = 0; i < 100; i += 1) {
@@ -233,7 +221,7 @@ describe('RAGEngine', () => {
   });
 
   it('tags:[] is strictly equivalent to no tags filter (byte-identical)', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 1, 'body', { frontmatter: ['foo'] })], [[1, 0]]);
     await store.upsert(
@@ -249,7 +237,7 @@ describe('RAGEngine', () => {
   });
 
   it('tag filter respects union of frontmatter + inline tags', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert(
       'fm.md',
@@ -270,7 +258,7 @@ describe('RAGEngine', () => {
   });
 
   it('tag filter is case-insensitive and strips leading # on both sides', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 1, 'A', { frontmatter: ['#Foo'] })], [[1, 0]]);
     const rag = new RAGEngine({ embedder: fakeEmbedder([1, 0]), store });
@@ -281,7 +269,7 @@ describe('RAGEngine', () => {
   });
 
   it('tag-filter preserves F31 top-K ordering on unfiltered runs (snapshot byte-identity)', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 1, 'A', { frontmatter: ['t'] })], [[1, 0]]);
     await store.upsert(
@@ -297,7 +285,7 @@ describe('RAGEngine', () => {
   });
 
   it('graph boost: 1-hop row with low raw score beats non-neighbour with higher raw score', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     // Non-neighbour: raw=0.14 (cosine ≈ 0.14 with [1,0] query)
     await store.upsert('nope.md', [mkChunk('nope.md', 0, 1)], [[0.14, Math.sqrt(1 - 0.14 * 0.14)]]);
@@ -326,7 +314,7 @@ describe('RAGEngine', () => {
   });
 
   it('absent activeNotePath + activeNoteTags: byte-identical to F31 pure-cosine output', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 1, 'A', { frontmatter: ['t'] })], [[1, 0]]);
     await store.upsert('b.md', [mkChunk('b.md', 0, 1, 'B')], [[0.9, 0.43588989]]);
@@ -348,7 +336,7 @@ describe('RAGEngine', () => {
   });
 
   it('graph-cache-unavailable: size()===0 skips traversal; tag-shared additive still fires', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 1, 'A', { frontmatter: ['shared'] })], [[1, 0]]);
     await store.upsert('b.md', [mkChunk('b.md', 0, 1, 'B')], [[1, 0]]);
@@ -375,7 +363,7 @@ describe('RAGEngine', () => {
   });
 
   it('graph cache traversal is called once per query (not per row)', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     // Seed 20 rows
     for (let i = 0; i < 20; i += 1) {
@@ -408,7 +396,7 @@ describe('RAGEngine', () => {
   });
 
   it('1-hop + tag-shared stacks additively: rawScore · 1.6', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert(
       'boosted.md',
@@ -437,7 +425,7 @@ describe('RAGEngine', () => {
   });
 
   it('non-indexed 1-hop neighbors silently boost nothing (filter is implicit)', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     await store.writeHeader({ model: 'm', dim: 2 });
     await store.upsert('indexed.md', [mkChunk('indexed.md', 0, 1)], [[1, 0]]);
     const graph = {
@@ -458,7 +446,7 @@ describe('RAGEngine', () => {
   });
 
   it('top-K matches a reference Array.sort on 1000 random rows', async () => {
-    const store = new VectorStore();
+    const store = new VectorStore({ vault: new InMemoryVaultAdapter() });
     const dim = 16;
     await store.writeHeader({ model: 'm', dim });
     const rand = (): number[] => Array.from({ length: dim }, () => Math.random() - 0.5);

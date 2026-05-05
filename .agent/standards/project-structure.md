@@ -235,14 +235,14 @@ leo/
 │   │   ├── slashProcessor.ts
 │   │   ├── substitutions.ts
 │   │   └── types.ts
-│   ├── storage/                         # IndexedDB stores, vault adapter, safeStorage, vectors
+│   ├── storage/                         # Filesystem-backed stores via VaultAdapter (vectors, conversations, threads, plans, safeStorage)
 │   │   ├── conversationSchema.ts
 │   │   ├── conversationStore.ts
 │   │   ├── planStore.ts                  # Slug-per-sessionId Map<sessionId,slug>; currentSlug/writePlan/readPlan/resetSlug/setSlug all take sessionId; path-traversal guard on configuredDir; default `.leo/plans`
 │   │   ├── safeStorage.ts
 │   │   ├── threadsStore.ts
 │   │   ├── vaultAdapter.ts                # VaultAdapter contract + Obsidian wrapper; VaultStat = {mtimeMs, size, kind?: 'file'|'folder'} (kind passed through from raw `Stat.type`)
-│   │   └── vectorStore.ts
+│   │   └── vectorStore.ts                 # In-memory map persisted as single JSON file (`.leo/index/vectors/index.json`) via VaultAdapter; atomic tmp+rename writes with stale-tmp recovery; CorruptIndexError reasons (`open-failed`/`missing-store`/`version-mismatch`/`dim-mismatch`/`shape-invalid`); schemaVersion=1; subscribe() emits corruption events
 │   ├── tools/                           # Tool registry + builtin + user tool loader + zod adapter
 │   │   ├── builtin/
 │   │   │   ├── appendToNote.ts
@@ -395,6 +395,8 @@ leo/
 │   │   └── fifoQueue.ts
 │   └── main.ts                          # Obsidian plugin entry
 ├── tests/
+│   ├── helpers/                         # Cross-suite test helpers
+│   │   └── inMemoryVaultAdapter.ts      # InMemoryVaultAdapter — Map-backed VaultAdapter impl for unit tests (files/folders Maps, list with prefix scan, stat returns kind)
 │   ├── unit/                            # Vitest unit suite (happy-dom)
 │   ├── dom/                             # React/DOM component tests
 │   ├── integration/                     # MSW-backed provider/embedding integration

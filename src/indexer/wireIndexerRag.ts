@@ -152,7 +152,7 @@ export function makeProcessPath(deps: {
 }
 
 export async function wireIndexerRag(opts: IndexerRagWiringOptions): Promise<IndexerRagWiring> {
-  const vectorStore = new VectorStore({ logger: opts.logger });
+  const vectorStore = new VectorStore({ vault: opts.vaultAdapter, logger: opts.logger });
   try {
     await vectorStore.open();
     await vectorStore.verify();

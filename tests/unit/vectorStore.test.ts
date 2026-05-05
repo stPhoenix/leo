@@ -1,14 +1,15 @@
-import 'fake-indexeddb/auto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { CorruptIndexError } from '@/storage/vectorStore';
 import {
-  VECTOR_STORE_DB_NAME,
+  VECTOR_STORE_DEFAULT_BASE_PATH,
   VECTOR_STORE_SCHEMA_VERSION,
   VectorStore,
   chunkRowId,
 } from '@/storage/vectorStore';
 import type { Chunk } from '@/indexer/chunker';
-import { openDB } from 'idb';
+import { InMemoryVaultAdapter } from '../helpers/inMemoryVaultAdapter';
+
+const INDEX_PATH = `${VECTOR_STORE_DEFAULT_BASE_PATH}/index.json`;
 
 function mkChunk(path: string, start: number, end: number, text: string): Chunk {
   return {
@@ -28,21 +29,15 @@ function mkVector(n: number, dim = 4): number[] {
   return out;
 }
 
-async function deleteAll(): Promise<void> {
-  await new Promise<void>((resolve) => {
-    const req = indexedDB.deleteDatabase(VECTOR_STORE_DB_NAME);
-    req.onsuccess = () => resolve();
-    req.onerror = () => resolve();
-    req.onblocked = () => resolve();
-  });
+function makeStore(): { store: VectorStore; vault: InMemoryVaultAdapter } {
+  const vault = new InMemoryVaultAdapter();
+  const store = new VectorStore({ vault });
+  return { store, vault };
 }
 
-describe('VectorStore — IndexedDB persistence', () => {
-  beforeEach(deleteAll);
-  afterEach(deleteAll);
-
+describe('VectorStore — vault-file persistence', () => {
   it('upserts chunks with composite-key id and round-trips through getAll', async () => {
-    const store = new VectorStore();
+    const { store } = makeStore();
     const path = 'a.md';
     const chunks = [mkChunk(path, 0, 5, 'first'), mkChunk(path, 6, 10, 'second')];
     const vectors = [mkVector(1), mkVector(2)];
@@ -55,8 +50,19 @@ describe('VectorStore — IndexedDB persistence', () => {
     store.close();
   });
 
-  it('deleteByPath drops every row with the matching path via by-path index', async () => {
-    const store = new VectorStore();
+  it('persists across close + reopen via the same vault adapter', async () => {
+    const vault = new InMemoryVaultAdapter();
+    const store1 = new VectorStore({ vault });
+    await store1.upsert('a.md', [mkChunk('a.md', 0, 5, 'first')], [mkVector(1)]);
+    store1.close();
+    const store2 = new VectorStore({ vault });
+    const rows = await store2.getAll();
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.text).toBe('first');
+  });
+
+  it('deleteByPath drops every row with the matching path', async () => {
+    const { store } = makeStore();
     await store.upsert('a.md', [mkChunk('a.md', 0, 5, 'a')], [mkVector(1)]);
     await store.upsert('b.md', [mkChunk('b.md', 0, 5, 'b')], [mkVector(2)]);
     const del = await store.deleteByPath('a.md');
@@ -69,7 +75,7 @@ describe('VectorStore — IndexedDB persistence', () => {
   });
 
   it('re-upserting the same path evicts prior rows before writing new ones', async () => {
-    const store = new VectorStore();
+    const { store } = makeStore();
     const path = 'a.md';
     await store.upsert(path, [mkChunk(path, 0, 5, 'v1')], [mkVector(1)]);
     await store.upsert(
@@ -84,7 +90,7 @@ describe('VectorStore — IndexedDB persistence', () => {
   });
 
   it('writeHeader persists {model, dim, version} and listHeader reads it back', async () => {
-    const store = new VectorStore();
+    const { store } = makeStore();
     const w = await store.writeHeader({ model: 'text-emb', dim: 768 });
     expect(w.ok).toBe(true);
     const header = await store.listHeader();
@@ -97,8 +103,8 @@ describe('VectorStore — IndexedDB persistence', () => {
     store.close();
   });
 
-  it('verify() passes on a fresh + populated DB with matching header dim', async () => {
-    const store = new VectorStore();
+  it('verify() passes on a fresh + populated store with matching header dim', async () => {
+    const { store } = makeStore();
     await store.writeHeader({ model: 'text-emb', dim: 4 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 5, 'x')], [mkVector(1, 4)]);
     const res = await store.verify();
@@ -107,7 +113,7 @@ describe('VectorStore — IndexedDB persistence', () => {
   });
 
   it('verify() returns dim-mismatch when header.dim does not match sampled row', async () => {
-    const store = new VectorStore();
+    const { store } = makeStore();
     await store.writeHeader({ model: 'text-emb', dim: 8 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 5, 'x')], [mkVector(1, 4)]);
     const res = await store.verify();
@@ -117,43 +123,63 @@ describe('VectorStore — IndexedDB persistence', () => {
     store.close();
   });
 
-  it('verify() returns version-mismatch when header.version drifts', async () => {
-    const store = new VectorStore();
-    await store.writeHeader({ model: 'x', dim: 4 });
-    // Poison the header with a bad version by opening a raw idb connection
-    const db = await openDB(VECTOR_STORE_DB_NAME, VECTOR_STORE_SCHEMA_VERSION);
-    await db.put('header', { key: 'header', model: 'x', dim: 4, version: 99 });
-    db.close();
-    // Force a new store handle
-    store.close();
-    const store2 = new VectorStore();
-    const res = await store2.verify();
+  it('verify() returns version-mismatch when on-disk header.version drifts', async () => {
+    const vault = new InMemoryVaultAdapter();
+    await vault.write(
+      INDEX_PATH,
+      JSON.stringify({
+        schemaVersion: VECTOR_STORE_SCHEMA_VERSION,
+        header: { key: 'header', model: 'x', dim: 4, version: 99 },
+        items: [],
+      }),
+    );
+    const store = new VectorStore({ vault });
+    const res = await store.verify();
     expect(res.ok).toBe(false);
     if (!res.ok) expect((res.error as CorruptIndexError).reason).toBe('version-mismatch');
-    store2.close();
+    store.close();
   });
 
   it('verify() returns shape-invalid when a sampled row fails validation', async () => {
-    const store = new VectorStore();
-    await store.writeHeader({ model: 'x', dim: 4 });
-    // Poison the vectors store with a malformed row
-    const db = await openDB(VECTOR_STORE_DB_NAME, VECTOR_STORE_SCHEMA_VERSION);
-    await db.put('vectors', {
-      id: 'bad#0-0',
-      path: 'bad.md',
-      // missing required fields
-    } as unknown as never);
-    db.close();
-    store.close();
-    const store2 = new VectorStore();
-    const res = await store2.verify();
+    const vault = new InMemoryVaultAdapter();
+    await vault.write(
+      INDEX_PATH,
+      JSON.stringify({
+        schemaVersion: VECTOR_STORE_SCHEMA_VERSION,
+        header: { key: 'header', model: 'x', dim: 4, version: VECTOR_STORE_SCHEMA_VERSION },
+        items: [{ id: 'bad#0-0', path: 'bad.md' }],
+      }),
+    );
+    const store = new VectorStore({ vault });
+    const res = await store.verify();
     expect(res.ok).toBe(false);
     if (!res.ok) expect((res.error as CorruptIndexError).reason).toBe('shape-invalid');
-    store2.close();
+    store.close();
+  });
+
+  it('open() reports open-failed when on-disk JSON is unparseable', async () => {
+    const vault = new InMemoryVaultAdapter();
+    await vault.write(INDEX_PATH, '{ this is not json');
+    const store = new VectorStore({ vault });
+    await expect(store.open()).rejects.toMatchObject({
+      name: 'CorruptIndexError',
+      reason: 'open-failed',
+    });
+  });
+
+  it('open() detects orphan tmp file (crash mid-write) as corruption', async () => {
+    const vault = new InMemoryVaultAdapter();
+    await vault.write(`${VECTOR_STORE_DEFAULT_BASE_PATH}/index.json.tmp`, '{}');
+    const store = new VectorStore({ vault });
+    await expect(store.open()).rejects.toMatchObject({
+      name: 'CorruptIndexError',
+      reason: 'open-failed',
+    });
+    expect(await vault.exists(`${VECTOR_STORE_DEFAULT_BASE_PATH}/index.json.tmp`)).toBe(false);
   });
 
   it('verify() fires a corruption event via subscribe on failure', async () => {
-    const store = new VectorStore();
+    const { store } = makeStore();
     await store.writeHeader({ model: 'm', dim: 8 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 5, 'x')], [mkVector(1, 4)]);
     const events: Array<{ kind: string; reason: string }> = [];
@@ -165,8 +191,8 @@ describe('VectorStore — IndexedDB persistence', () => {
     store.close();
   });
 
-  it('rebuild() deletes the database, re-creates schema, and restores availability', async () => {
-    const store = new VectorStore();
+  it('rebuild() deletes the index file and restores availability', async () => {
+    const { store, vault } = makeStore();
     await store.writeHeader({ model: 'm', dim: 8 });
     await store.upsert('a.md', [mkChunk('a.md', 0, 5, 'x')], [mkVector(1, 4)]);
     await store.verify();
@@ -176,17 +202,29 @@ describe('VectorStore — IndexedDB persistence', () => {
     expect(store.isAvailable()).toBe(true);
     expect(await store.getAll()).toEqual([]);
     expect(await store.listHeader()).toBeNull();
+    expect(await vault.exists(INDEX_PATH)).toBe(false);
     store.close();
   });
 
   it('upsert mismatch between chunks and vectors arrays returns an error', async () => {
-    const store = new VectorStore();
+    const { store } = makeStore();
     const res = await store.upsert(
       'a.md',
       [mkChunk('a.md', 0, 5, 'x')],
       [mkVector(1), mkVector(2)],
     );
     expect(res.ok).toBe(false);
+    store.close();
+  });
+
+  it('writes a single index.json under the basePath on flush (no IDB usage)', async () => {
+    const { store, vault } = makeStore();
+    await store.upsert('a.md', [mkChunk('a.md', 0, 5, 'x')], [mkVector(1)]);
+    expect(await vault.exists(INDEX_PATH)).toBe(true);
+    expect(await vault.exists(`${VECTOR_STORE_DEFAULT_BASE_PATH}/index.json.tmp`)).toBe(false);
+    const raw = JSON.parse(await vault.read(INDEX_PATH));
+    expect(raw.schemaVersion).toBe(VECTOR_STORE_SCHEMA_VERSION);
+    expect(raw.items.length).toBe(1);
     store.close();
   });
 });

@@ -1,10 +1,10 @@
-import type { DBSchema, IDBPDatabase } from 'idb';
-import { openDB, deleteDB } from 'idb';
 import type { Logger } from '@/platform/Logger';
 import type { Chunk } from '@/indexer/chunker';
+import type { VaultAdapter } from './vaultAdapter';
 
 export const VECTOR_STORE_DB_NAME = 'leo-index';
 export const VECTOR_STORE_SCHEMA_VERSION = 1 as const;
+export const VECTOR_STORE_DEFAULT_BASE_PATH = '.leo/index/vectors';
 
 export type CorruptionReason =
   | 'open-failed'
@@ -42,18 +42,6 @@ export interface IndexHeaderRow {
   readonly version: number;
 }
 
-export interface Schema extends DBSchema {
-  header: {
-    key: string;
-    value: IndexHeaderRow;
-  };
-  vectors: {
-    key: string;
-    value: VectorRow;
-    indexes: { 'by-path': string };
-  };
-}
-
 export type Result<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: Error };
@@ -65,9 +53,15 @@ export interface VectorStoreEvents {
 }
 
 export interface VectorStoreOptions {
-  readonly dbName?: string;
+  readonly vault: VaultAdapter;
+  readonly basePath?: string;
   readonly logger?: Logger;
-  readonly deleteDatabase?: (name: string) => Promise<void>;
+}
+
+interface OnDiskShape {
+  readonly schemaVersion: number;
+  readonly header: IndexHeaderRow | null;
+  readonly items: readonly VectorRow[];
 }
 
 export function chunkRowId(path: string, lineStart: number, lineEnd: number): string {
@@ -75,38 +69,66 @@ export function chunkRowId(path: string, lineStart: number, lineEnd: number): st
 }
 
 export class VectorStore {
-  private readonly dbName: string;
+  private readonly vault: VaultAdapter;
+  private readonly basePath: string;
+  private readonly indexPath: string;
+  private readonly tmpPath: string;
   private readonly logger: Logger | undefined;
-  private readonly deleteDatabaseImpl: (name: string) => Promise<void>;
-  private db: IDBPDatabase<Schema> | null = null;
-  private available = true;
   private readonly listeners = new Set<
     (e: { kind: 'corruption'; reason: CorruptionReason }) => void
   >();
 
-  constructor(opts: VectorStoreOptions = {}) {
-    this.dbName = opts.dbName ?? VECTOR_STORE_DB_NAME;
+  private rows = new Map<string, VectorRow>();
+  private byPath = new Map<string, Set<string>>();
+  private header: IndexHeaderRow | null = null;
+  private loaded = false;
+  private available = true;
+  private writing: Promise<void> | null = null;
+
+  constructor(opts: VectorStoreOptions) {
+    this.vault = opts.vault;
+    this.basePath = opts.basePath ?? VECTOR_STORE_DEFAULT_BASE_PATH;
+    this.indexPath = `${this.basePath}/index.json`;
+    this.tmpPath = `${this.basePath}/index.json.tmp`;
     this.logger = opts.logger;
-    this.deleteDatabaseImpl = opts.deleteDatabase ?? (async (n) => deleteDB(n));
   }
 
   async open(): Promise<void> {
     try {
-      this.db = await openDB<Schema>(this.dbName, VECTOR_STORE_SCHEMA_VERSION, {
-        upgrade(db) {
-          if (!db.objectStoreNames.contains('header')) {
-            db.createObjectStore('header', { keyPath: 'key' });
+      await this.vault.mkdir(this.basePath);
+      const indexExists = await this.vault.exists(this.indexPath);
+      const tmpExists = await this.vault.exists(this.tmpPath);
+      if (!indexExists && tmpExists) {
+        // crash mid-write: stale tmp with no committed index
+        await this.vault.remove(this.tmpPath);
+        throw new CorruptIndexError('open-failed');
+      }
+      if (tmpExists && indexExists) {
+        // committed index present; clean up orphan tmp
+        await this.vault.remove(this.tmpPath);
+      }
+      if (indexExists) {
+        const raw = await this.vault.read(this.indexPath);
+        const parsed = JSON.parse(raw) as OnDiskShape;
+        this.header = parsed.header ?? null;
+        this.rows.clear();
+        this.byPath.clear();
+        for (const row of parsed.items ?? []) {
+          this.rows.set(row.id, row);
+          let set = this.byPath.get(row.path);
+          if (set === undefined) {
+            set = new Set<string>();
+            this.byPath.set(row.path, set);
           }
-          if (!db.objectStoreNames.contains('vectors')) {
-            const store = db.createObjectStore('vectors', { keyPath: 'id' });
-            store.createIndex('by-path', 'path');
-          }
-        },
-      });
+          set.add(row.id);
+        }
+      }
+      this.loaded = true;
     } catch (err) {
       this.logger?.error('index.store.open-failed', {
         error: err instanceof Error ? err.message : String(err),
       });
+      if (err instanceof CorruptIndexError) throw err;
       throw new CorruptIndexError('open-failed');
     }
   }
@@ -124,24 +146,16 @@ export class VectorStore {
 
   async verify(): Promise<Result<void>> {
     try {
-      if (this.db === null) await this.open();
-      if (this.db === null) throw new CorruptIndexError('open-failed');
-      if (
-        !this.db.objectStoreNames.contains('header') ||
-        !this.db.objectStoreNames.contains('vectors')
-      ) {
-        throw new CorruptIndexError('missing-store');
-      }
-      const header = await this.listHeader();
-      if (header !== null && header.version !== VECTOR_STORE_SCHEMA_VERSION) {
+      if (!this.loaded) await this.open();
+      if (this.header !== null && this.header.version !== VECTOR_STORE_SCHEMA_VERSION) {
         throw new CorruptIndexError('version-mismatch');
       }
-      const sample = await this.db.transaction('vectors').store.openCursor();
-      if (sample !== null) {
-        const row = sample.value;
+      const first = this.rows.values().next();
+      if (!first.done) {
+        const row = first.value;
         const shape = validateVectorRow(row);
         if (!shape.ok) throw new CorruptIndexError('shape-invalid');
-        if (header !== null && row.vector.length !== header.dim) {
+        if (this.header !== null && row.vector.length !== this.header.dim) {
           throw new CorruptIndexError('dim-mismatch');
         }
       }
@@ -167,17 +181,22 @@ export class VectorStore {
         error: new Error(`upsert mismatch: ${chunks.length} chunks vs ${vectors.length} vectors`),
       };
     }
-    if (this.db === null) await this.open();
-    if (this.db === null) return { ok: false, error: new CorruptIndexError('open-failed') };
-    try {
-      const tx = this.db.transaction('vectors', 'readwrite');
-      const store = tx.store;
-      const byPath = store.index('by-path');
-      let cursor = await byPath.openCursor(IDBKeyRange.only(path));
-      while (cursor !== null) {
-        await cursor.delete();
-        cursor = await cursor.continue();
+    if (!this.loaded) {
+      try {
+        await this.open();
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err : new CorruptIndexError('open-failed'),
+        };
       }
+    }
+    try {
+      const existing = this.byPath.get(path);
+      if (existing !== undefined) {
+        for (const id of existing) this.rows.delete(id);
+      }
+      const newIds = new Set<string>();
       for (let i = 0; i < chunks.length; i += 1) {
         const chunk = chunks[i]!;
         const vector = vectors[i]!;
@@ -192,9 +211,15 @@ export class VectorStore {
           text: chunk.text,
           vector: [...vector],
         };
-        await store.put(row);
+        this.rows.set(row.id, row);
+        newIds.add(row.id);
       }
-      await tx.done;
+      if (newIds.size > 0) {
+        this.byPath.set(path, newIds);
+      } else {
+        this.byPath.delete(path);
+      }
+      await this.flush();
       this.logger?.info('index.store.upsert', { path, count: chunks.length });
       return { ok: true, value: undefined };
     } catch (err) {
@@ -205,19 +230,25 @@ export class VectorStore {
   }
 
   async deleteByPath(path: string): Promise<Result<number>> {
-    if (this.db === null) await this.open();
-    if (this.db === null) return { ok: false, error: new CorruptIndexError('open-failed') };
-    try {
-      const tx = this.db.transaction('vectors', 'readwrite');
-      const byPath = tx.store.index('by-path');
-      let cursor = await byPath.openCursor(IDBKeyRange.only(path));
-      let deleted = 0;
-      while (cursor !== null) {
-        await cursor.delete();
-        deleted += 1;
-        cursor = await cursor.continue();
+    if (!this.loaded) {
+      try {
+        await this.open();
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err : new CorruptIndexError('open-failed'),
+        };
       }
-      await tx.done;
+    }
+    try {
+      const ids = this.byPath.get(path);
+      if (ids === undefined || ids.size === 0) return { ok: true, value: 0 };
+      let deleted = 0;
+      for (const id of ids) {
+        if (this.rows.delete(id)) deleted += 1;
+      }
+      this.byPath.delete(path);
+      await this.flush();
       return { ok: true, value: deleted };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err : new Error(String(err)) };
@@ -225,26 +256,35 @@ export class VectorStore {
   }
 
   async listHeader(): Promise<IndexHeaderRow | null> {
-    if (this.db === null) await this.open();
-    if (this.db === null) return null;
-    try {
-      const row = await this.db.get('header', 'header');
-      return row ?? null;
-    } catch {
-      return null;
+    if (!this.loaded) {
+      try {
+        await this.open();
+      } catch {
+        return null;
+      }
     }
+    return this.header;
   }
 
   async writeHeader(header: { model: string; dim: number }): Promise<Result<void>> {
-    if (this.db === null) await this.open();
-    if (this.db === null) return { ok: false, error: new CorruptIndexError('open-failed') };
+    if (!this.loaded) {
+      try {
+        await this.open();
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err : new CorruptIndexError('open-failed'),
+        };
+      }
+    }
     try {
-      await this.db.put('header', {
+      this.header = {
         key: 'header',
         model: header.model,
         dim: header.dim,
         version: VECTOR_STORE_SCHEMA_VERSION,
-      });
+      };
+      await this.flush();
       this.logger?.info('index.store.header.write', { model: header.model, dim: header.dim });
       return { ok: true, value: undefined };
     } catch (err) {
@@ -253,22 +293,25 @@ export class VectorStore {
   }
 
   async getAll(): Promise<readonly VectorRow[]> {
-    if (this.db === null) await this.open();
-    if (this.db === null) return [];
-    try {
-      return await this.db.getAll('vectors');
-    } catch {
-      return [];
+    if (!this.loaded) {
+      try {
+        await this.open();
+      } catch {
+        return [];
+      }
     }
+    return Array.from(this.rows.values());
   }
 
   async rebuild(): Promise<Result<void>> {
     try {
       this.close();
-      await this.deleteDatabaseImpl(this.dbName);
+      for (const p of [this.indexPath, this.tmpPath]) {
+        if (await this.vault.exists(p)) await this.vault.remove(p);
+      }
       await this.open();
       this.available = true;
-      this.logger?.info('index.store.corruption.rebuild', { dbName: this.dbName });
+      this.logger?.info('index.store.corruption.rebuild', { basePath: this.basePath });
       return { ok: true, value: undefined };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err : new Error(String(err)) };
@@ -276,9 +319,26 @@ export class VectorStore {
   }
 
   close(): void {
-    if (this.db === null) return;
-    this.db.close();
-    this.db = null;
+    this.rows.clear();
+    this.byPath.clear();
+    this.header = null;
+    this.loaded = false;
+  }
+
+  private async flush(): Promise<void> {
+    const previous = this.writing ?? Promise.resolve();
+    const next = previous.then(async () => {
+      const payload: OnDiskShape = {
+        schemaVersion: VECTOR_STORE_SCHEMA_VERSION,
+        header: this.header,
+        items: Array.from(this.rows.values()),
+      };
+      const json = JSON.stringify(payload);
+      await this.vault.write(this.tmpPath, json);
+      await this.vault.rename(this.tmpPath, this.indexPath);
+    });
+    this.writing = next.catch(() => undefined).then(() => undefined);
+    await next;
   }
 }
 
