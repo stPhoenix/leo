@@ -139,4 +139,4 @@ storybook-static/
 .sonarqube-reports/
 /release/
 main.js
-
+.claude/scheduled_tasks.lock
