@@ -126,6 +126,24 @@ describe('SafeStorage', () => {
     expect([...keys].sort()).toEqual(['a', 'b']);
   });
 
+  it('getCached returns null before load() and decrypts in-place after', async () => {
+    const persistence = mkPersistence();
+    const store = new SafeStorage({ persistence, electron: mkMockElectron(true) });
+    expect(store.getCached('openai')).toBe(null);
+    await store.set('openai', 'sk-live-KEY');
+    expect(store.getCached('openai')).toBe('sk-live-KEY');
+    expect(store.getCached('missing')).toBe(null);
+  });
+
+  it('getCached reflects updates immediately (no stale window after set)', async () => {
+    const persistence = mkPersistence();
+    const store = new SafeStorage({ persistence, electron: mkMockElectron(true) });
+    await store.set('provider.anthropic.apiKey', 'sk-ant-OLD');
+    await store.set('provider.google.apiKey', 'AIza-NEW');
+    expect(store.getCached('provider.anthropic.apiKey')).toBe('sk-ant-OLD');
+    expect(store.getCached('provider.google.apiKey')).toBe('AIza-NEW');
+  });
+
   it('get for unknown key returns null (not throw)', async () => {
     const persistence = mkPersistence();
     const store = new SafeStorage({ persistence, electron: mkMockElectron(true) });

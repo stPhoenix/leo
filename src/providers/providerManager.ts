@@ -222,7 +222,8 @@ export class ProviderManager {
       watchdog.idleCtl.signal.aborted &&
       watchdog.idleCtl.signal.reason instanceof ProviderTimeoutError;
     const surfaced = timedOut ? (watchdog.idleCtl.signal.reason as Error) : toError(err);
-    const retryable = !timedOut && !started && err instanceof ProviderConnectError;
+    const retryable =
+      !timedOut && !started && err instanceof ProviderConnectError && isRetryableConnectError(err);
     if (!retryable) {
       this.opts.logger?.error('provider.failure', {
         stage: started ? 'mid-stream' : 'pre-stream',
@@ -251,10 +252,11 @@ export class ProviderManager {
 
   private markUnreachable(err: Error): void {
     this.connection.markUnreachable();
+    const id = this.activeProvider.id;
     this.opts.logger?.error(
       'provider.unreachable',
-      { error: err.message },
-      { userFacing: true, userMessage: 'LM Studio unreachable' },
+      { providerId: id, error: err.message },
+      { userFacing: true, userMessage: `${id}: ${truncate(err.message, 240)}` },
     );
     this.startProbe();
   }
@@ -287,6 +289,41 @@ export class ProviderManager {
 
 function backoffMs(attempt: number, base: number, max: number): number {
   return Math.min(base * 2 ** attempt, max);
+}
+
+// Permanent failures (auth, malformed request, quota, content policy) won't
+// recover by retrying. Hammering them wastes quota and worse: a 4th-attempt
+// glitch can throw a different error (e.g. "Illegal invocation" after SDK
+// state corruption), masking the original cause from logs and the chat UI.
+// Retry only when the status is unknown (likely transient network) or 5xx.
+function isRetryableConnectError(err: ProviderConnectError): boolean {
+  const status = extractHttpStatus(err.message);
+  if (status === null) return true;
+  if (status >= 500 && status < 600) return true;
+  return false;
+}
+
+// Different SDKs serialize HTTP status differently. Cover the formats we
+// have seen in the wild: Google `[401 ]`, Anthropic `Status code: 401`,
+// generic `HTTP 401`. Returns null if none match (treated as retryable).
+function extractHttpStatus(msg: string): number | null {
+  const patterns: readonly RegExp[] = [
+    /\[(\d{3})[\s\]]/,
+    /\bstatus(?:_code|\s+code)?\s*[:=]\s*(\d{3})\b/i,
+    /\bHTTP\s+(\d{3})\b/i,
+  ];
+  for (const re of patterns) {
+    const m = msg.match(re);
+    if (m !== null) {
+      const n = Number.parseInt(m[1]!, 10);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return null;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max)}…`;
 }
 
 function toError(err: unknown): Error {

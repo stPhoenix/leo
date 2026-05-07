@@ -26,6 +26,7 @@ interface State {
   reasoningKwargStarted: boolean;
   reasoningKwargClosed: boolean;
   toolByLangchainIdx: Map<number, ToolBuf>;
+  toolById: Map<string, ToolBuf>;
   thinkingByLangchainIdx: Map<number, ThinkingBuf>;
   finalInputTokens: number | null;
   finalOutputTokens: number | null;
@@ -44,6 +45,7 @@ function makeState(): State {
     reasoningKwargStarted: false,
     reasoningKwargClosed: false,
     toolByLangchainIdx: new Map(),
+    toolById: new Map(),
     thinkingByLangchainIdx: new Map(),
     finalInputTokens: null,
     finalOutputTokens: null,
@@ -159,22 +161,9 @@ function* emitOneToolCallDelta(
   c: NonNullable<ChunkWithMeta['tool_call_chunks']>[number],
   st: State,
 ): Iterable<StreamEvent> {
-  const langchainIdx = c.index ?? 0;
-  let buf = st.toolByLangchainIdx.get(langchainIdx);
-  if (buf === undefined) {
-    buf = {
-      streamIndex: st.nextStreamIndex,
-      id: '',
-      name: '',
-      args: '',
-      started: false,
-      closed: false,
-    };
-    st.nextStreamIndex += 1;
-    st.toolByLangchainIdx.set(langchainIdx, buf);
-  }
-  if (typeof c.id === 'string' && c.id.length > 0) buf.id += c.id;
-  if (typeof c.name === 'string' && c.name.length > 0) buf.name += c.name;
+  const buf = resolveToolBuf(c, st);
+  if (typeof c.id === 'string' && c.id.length > 0 && buf.id.length === 0) buf.id = c.id;
+  if (typeof c.name === 'string' && c.name.length > 0 && buf.name.length === 0) buf.name = c.name;
   const argsPart = typeof c.args === 'string' ? c.args : '';
 
   if (!buf.started && buf.id.length > 0 && buf.name.length > 0) {
@@ -195,6 +184,45 @@ function* emitOneToolCallDelta(
       };
     }
   }
+}
+
+// Some providers (Google) emit parallel tool calls without an `index` on
+// each chunk — every chunk falls into idx 0 and our accumulator concatenates
+// their args into invalid JSON. Prefer the `id` key when present so each
+// distinct tool call gets its own buffer; fall back to `index` for streaming
+// providers (OpenAI/Anthropic) whose follow-up arg chunks carry only `index`.
+function resolveToolBuf(
+  c: NonNullable<ChunkWithMeta['tool_call_chunks']>[number],
+  st: State,
+): ToolBuf {
+  const id = typeof c.id === 'string' ? c.id : '';
+  if (id.length > 0) {
+    const existing = st.toolById.get(id);
+    if (existing !== undefined) return existing;
+    const buf = newToolBuf(st);
+    st.toolById.set(id, buf);
+    if (typeof c.index === 'number') st.toolByLangchainIdx.set(c.index, buf);
+    return buf;
+  }
+  const idx = c.index ?? 0;
+  const existing = st.toolByLangchainIdx.get(idx);
+  if (existing !== undefined) return existing;
+  const buf = newToolBuf(st);
+  st.toolByLangchainIdx.set(idx, buf);
+  return buf;
+}
+
+function newToolBuf(st: State): ToolBuf {
+  const buf: ToolBuf = {
+    streamIndex: st.nextStreamIndex,
+    id: '',
+    name: '',
+    args: '',
+    started: false,
+    closed: false,
+  };
+  st.nextStreamIndex += 1;
+  return buf;
 }
 
 function captureUsageMetadata(chunk: AIMessageChunk, st: State): void {
@@ -321,7 +349,11 @@ function ensureThinkingBuf(st: State, rawIdx: unknown, redacted: boolean): Think
 function* drain(st: State): Iterable<StreamEvent> {
   yield* closeStandaloneBlocks(st);
   yield* closeBufferedBlocks(st.thinkingByLangchainIdx.values());
+  // Tool bufs may live in `toolByLangchainIdx`, `toolById`, or both
+  // (depending on whether the provider supplies `index`, `id`, or both per
+  // chunk). Iterate both maps; `closed` flag dedupes the overlap.
   yield* closeBufferedBlocks(st.toolByLangchainIdx.values());
+  yield* closeBufferedBlocks(st.toolById.values());
   yield* emitFinalUsageMessage(st);
 }
 

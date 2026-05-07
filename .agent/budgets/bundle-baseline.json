@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "comment": "Bundle baseline. Updated 2026-05-07 after the compact-widget slice. Net delta vs prior baseline (2,431,024 B): +68,876 B. Adds visible chat block for /compact and autocompact runs: src/agent/compact/{runId,widgetState,widgetController,liveControllerRegistry,terminalSnapshot,phaseSink}.ts + 3 React components (CompactWidget, CompactLiveBlock, CompactTerminalBlock) + Zod schema for terminal snapshot + phase-sink wiring through autocompact.ts and graph.ts. Replaces the post-hoc `banner: { kind: 'compact' }` chat record with a live progress widget that flips to a terminal snapshot on done/error/cancel. Cap reset to 30 KB for incremental tuning on top.",
-  "baselineBytes": 2499900,
+  "comment": "Bundle baseline. Updated 2026-05-07 after adding Google (AI Studio) provider. Net delta vs prior baseline (2,499,900 B): +74,710 B. Adds @langchain/google-genai chat + embeddings: src/providers/googleProvider.ts (ChatGoogleGenerativeAI stream wrapper) + GoogleGenerativeAIEmbeddings branch in embeddingClient.ts + new 'google' kind in registry/settings/SettingsTab. Bulk of the delta is the @google/generative-ai client pulled in transitively. Cap reset to 30 KB for incremental tuning on top.",
+  "baselineBytes": 2574610,
   "maxDeltaBytes": 30720,
   "lastUpdated": "2026-05-07"
 }

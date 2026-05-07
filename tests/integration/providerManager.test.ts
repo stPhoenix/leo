@@ -177,9 +177,11 @@ describe('ProviderManager — retry/backoff (AC4, FR-PROV-06)', () => {
     const logger = {
       info: vi.fn(),
       warn: vi.fn(),
-      error: vi.fn((event: string, fields: unknown, opts?: { userFacing?: boolean }) => {
-        if (opts?.userFacing === true) userFacing(event, fields);
-      }),
+      error: vi.fn(
+        (event: string, fields: unknown, opts?: { userFacing?: boolean; userMessage?: string }) => {
+          if (opts?.userFacing === true) userFacing(event, fields, opts.userMessage);
+        },
+      ),
     };
 
     const mgr = makeManager(provider, {
@@ -196,7 +198,75 @@ describe('ProviderManager — retry/backoff (AC4, FR-PROV-06)', () => {
     expect(calls).toBe(4);
     expect(events[events.length - 1]?.type).toBe('error');
     expect(mgr.connection.current).toBe('unreachable');
-    expect(userFacing).toHaveBeenCalledWith('provider.unreachable', expect.any(Object));
+    expect(userFacing).toHaveBeenCalledWith(
+      'provider.unreachable',
+      expect.any(Object),
+      expect.stringContaining('fake'),
+    );
+    mgr.dispose();
+  });
+
+  it('does not retry on 4xx (auth/quota/bad-request) — fail fast with the real error', async () => {
+    let calls = 0;
+    const provider = makeFakeProvider({
+      async *stream() {
+        calls += 1;
+        throw new ProviderConnectError(
+          '[GoogleGenerativeAI Error]: ... [401 ] invalid auth credentials',
+        );
+        yield { type: 'done' };
+      },
+    });
+    const userFacing = vi.fn();
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(
+        (event: string, fields: unknown, opts?: { userFacing?: boolean; userMessage?: string }) => {
+          if (opts?.userFacing === true) userFacing(event, fields, opts.userMessage);
+        },
+      ),
+    };
+
+    const mgr = makeManager(provider, {
+      baseBackoffMs: 1,
+      maxBackoffMs: 5,
+      logger: logger as unknown as Logger,
+    });
+    const events = await collect(
+      mgr.stream(
+        { model: 'm', messages: [{ role: 'user', content: 'x' }] },
+        new AbortController().signal,
+      ),
+    );
+    expect(calls).toBe(1);
+    const last = events[events.length - 1];
+    expect(last?.type).toBe('error');
+    if (last?.type === 'error') {
+      expect(last.error.message).toContain('401');
+    }
+    mgr.dispose();
+  });
+
+  it('still retries on 5xx', async () => {
+    let calls = 0;
+    const provider = makeFakeProvider({
+      async *stream() {
+        calls += 1;
+        if (calls <= 2) throw new ProviderConnectError(`[503 ] service unavailable`);
+        yield { type: 'token', text: 'recovered' };
+        yield { type: 'done' };
+      },
+    });
+    const mgr = makeManager(provider, { baseBackoffMs: 1, maxBackoffMs: 5 });
+    const events = await collect(
+      mgr.stream(
+        { model: 'm', messages: [{ role: 'user', content: 'x' }] },
+        new AbortController().signal,
+      ),
+    );
+    expect(calls).toBe(3);
+    expect(events).toEqual([{ type: 'token', text: 'recovered' }, { type: 'done' }]);
     mgr.dispose();
   });
 });

@@ -85,6 +85,25 @@ export class SafeStorage {
     return key in this.cache;
   }
 
+  // Synchronous read from the in-memory cache after `load()` has completed.
+  // Used by hot paths (provider.apiKey()) where `await get()` would
+  // otherwise force the entire Provider interface to become async. Returns
+  // null if not loaded yet, missing, or decrypt fails.
+  getCached(key: string): string | null {
+    if (!this.loaded) return null;
+    const entry = this.cache[key];
+    if (entry === undefined) return null;
+    try {
+      return this.decrypt(entry);
+    } catch (err) {
+      this.logger?.error('safestorage.get-failed', {
+        key,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
   async set(key: string, plaintext: string): Promise<void> {
     await this.load();
     const mode: StoredSecret['mode'] = this.keyringAvailable() ? 'keyring' : 'fallback';

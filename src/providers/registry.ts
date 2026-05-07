@@ -8,6 +8,7 @@ import {
   createCustomProvider,
 } from './openAICompatibleProvider';
 import { AnthropicProvider } from './anthropicProvider';
+import { GoogleProvider } from './googleProvider';
 
 export interface ProviderFactoryContext {
   readonly endpoint: () => string;
@@ -22,6 +23,8 @@ export function createProviderForKind(kind: ProviderKind, ctx: ProviderFactoryCo
       return createOpenAIProvider({ apiKey: ctx.apiKey, endpoint: ctx.endpoint });
     case 'anthropic':
       return new AnthropicProvider({ apiKey: ctx.apiKey, endpoint: ctx.endpoint });
+    case 'google':
+      return new GoogleProvider({ apiKey: ctx.apiKey, endpoint: ctx.endpoint });
     case 'ollama':
       return createOllamaProvider({ endpoint: ctx.endpoint });
     case 'ollama-cloud':
@@ -46,6 +49,8 @@ export function defaultEndpointFor(kind: ProviderKind): string {
       return 'https://api.openai.com';
     case 'anthropic':
       return 'https://api.anthropic.com';
+    case 'google':
+      return '';
     case 'ollama':
       return 'http://localhost:11434';
     case 'ollama-cloud':
@@ -56,5 +61,11 @@ export function defaultEndpointFor(kind: ProviderKind): string {
 }
 
 export function kindRequiresApiKey(kind: ProviderKind): boolean {
-  return kind === 'openai' || kind === 'anthropic' || kind === 'ollama-cloud' || kind === 'custom';
+  return (
+    kind === 'openai' ||
+    kind === 'anthropic' ||
+    kind === 'google' ||
+    kind === 'ollama-cloud' ||
+    kind === 'custom'
+  );
 }

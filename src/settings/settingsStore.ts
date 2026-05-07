@@ -17,6 +17,7 @@ export type ProviderKind =
   | 'lmstudio'
   | 'openai'
   | 'anthropic'
+  | 'google'
   | 'ollama'
   | 'ollama-cloud'
   | 'custom';
@@ -132,6 +133,7 @@ export const PROVIDER_KINDS: readonly ProviderKind[] = [
   'lmstudio',
   'openai',
   'anthropic',
+  'google',
   'ollama',
   'ollama-cloud',
   'custom',

@@ -1,4 +1,12 @@
-import { Notice, PluginSettingTab, Setting, setIcon, type App, type Plugin } from 'obsidian';
+import {
+  Notice,
+  PluginSettingTab,
+  Setting,
+  setIcon,
+  type App,
+  type Plugin,
+  type TextComponent,
+} from 'obsidian';
 import {
   PROVIDER_KINDS,
   RAG_MODES,
@@ -18,7 +26,6 @@ import { kindRequiresApiKey, defaultEndpointFor } from '@/providers/registry';
 import type { LogLevel } from '@/platform/logTypes';
 import { LOG_LEVELS } from '@/platform/logTypes';
 import type { Logger } from '@/platform/Logger';
-import { LMStudioProvider } from '@/providers/lmStudioProvider';
 import type { ProviderManager } from '@/providers/providerManager';
 import type { ProviderModel } from '@/providers/types';
 import { WizardModal, makeWizardProbe } from './wizardModal';
@@ -72,6 +79,7 @@ const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = {
   lmstudio: 'LM Studio (local)',
   openai: 'OpenAI',
   anthropic: 'Anthropic',
+  google: 'Google (AI Studio)',
   ollama: 'Ollama (local)',
   'ollama-cloud': 'Ollama Cloud',
   custom: 'Custom (OpenAI-compatible)',
@@ -370,6 +378,18 @@ export class SettingsTab extends PluginSettingTab {
         });
       });
 
+    const status = body.createDiv({ cls: 'leo-provider-status' });
+    this.renderProviderStatus(status);
+
+    new Setting(body)
+      .setName('Re-probe endpoint')
+      .setDesc('Reload the available model list and re-test the connection.')
+      .addButton((b) => {
+        b.setButtonText('Re-probe').onClick(async () => {
+          await this.probeAndRender(status);
+        });
+      });
+
     if (kindRequiresApiKey(settings.provider.kind) && this.deps.safeStorage !== undefined) {
       const safeStorage = this.deps.safeStorage;
       const key = `provider.${settings.provider.kind}.apiKey`;
@@ -490,18 +510,6 @@ export class SettingsTab extends PluginSettingTab {
             }));
           });
       });
-
-    const status = body.createDiv({ cls: 'leo-provider-status' });
-    this.renderProviderStatus(status);
-
-    new Setting(body)
-      .setName('Re-probe endpoint')
-      .setDesc('Reload the available model list and re-test the connection.')
-      .addButton((b) => {
-        b.setButtonText('Re-probe').onClick(async () => {
-          await this.probeAndRender(status);
-        });
-      });
   }
 
   private renderModelPicker(
@@ -512,28 +520,43 @@ export class SettingsTab extends PluginSettingTab {
     const fieldName = kind === 'chat' ? 'Chat model' : 'Embedding model';
     const valueKey = kind === 'chat' ? 'chatModel' : 'embeddingModel';
     const reachable = this.deps.providerManager.connection.isReachable();
-    const setting = new Setting(body).setName(fieldName);
-    if (reachable && this.discoveredModels.length > 0) {
-      setting.addDropdown((d) => {
-        for (const m of this.discoveredModels) d.addOption(m.id, m.id);
-        const current = settings.provider[valueKey];
-        if (current.length > 0 && this.discoveredModels.some((m) => m.id === current)) {
-          d.setValue(current);
-        }
-        d.onChange(async (value) => {
-          await this.deps.store.update((prev) => ({
-            ...prev,
-            provider: { ...prev.provider, [valueKey]: value },
-          }));
-        });
+    // Google's models.list returns chat models only (filtered by
+    // `generateContent`). Embedding models aren't auto-discovered there,
+    // so skip the dropdown for that combo.
+    const isGoogleEmbedding = kind === 'embedding' && settings.provider.kind === 'google';
+    const showDropdown = reachable && this.discoveredModels.length > 0 && !isGoogleEmbedding;
+    const desc = isGoogleEmbedding
+      ? 'Type a Gemini embedding model id (e.g. gemini-embedding-001, text-embedding-004).'
+      : showDropdown
+        ? 'Pick from the discovered list, or type any model id.'
+        : 'Provider unreachable — type a model id manually.';
+    const setting = new Setting(body).setName(fieldName).setDesc(desc);
+
+    let textCmp: TextComponent | null = null;
+    setting.addText((t) => {
+      textCmp = t;
+      t.setPlaceholder('model id').setValue(settings.provider[valueKey]);
+      t.onChange(async (value) => {
+        await this.deps.store.update((prev) => ({
+          ...prev,
+          provider: { ...prev.provider, [valueKey]: value.trim() },
+        }));
       });
-    } else {
-      setting.setDesc('Provider unreachable — type a model id manually.').addText((t) => {
-        t.setValue(settings.provider[valueKey]).onChange(async (value) => {
+    });
+
+    if (showDropdown) {
+      setting.addDropdown((d) => {
+        d.addOption('', '— pick from list —');
+        for (const m of this.discoveredModels) d.addOption(m.id, m.id);
+        d.setValue('');
+        d.onChange(async (value) => {
+          if (value.length === 0) return;
+          textCmp?.setValue(value);
           await this.deps.store.update((prev) => ({
             ...prev,
             provider: { ...prev.provider, [valueKey]: value },
           }));
+          d.setValue('');
         });
       });
     }
@@ -552,10 +575,7 @@ export class SettingsTab extends PluginSettingTab {
   private async probeAndRender(host: HTMLElement): Promise<void> {
     host.setText('Status: probing…');
     try {
-      const provider = new LMStudioProvider({
-        endpoint: () => this.deps.store.get().provider.endpoint,
-      });
-      this.discoveredModels = await provider.listModels();
+      this.discoveredModels = await this.deps.providerManager.listModels();
       this.deps.providerManager.connection.markReachable();
       this.renderProviderStatus(host);
       this.display();

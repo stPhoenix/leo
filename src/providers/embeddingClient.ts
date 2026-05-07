@@ -1,5 +1,7 @@
 import { OpenAIEmbeddings } from '@langchain/openai';
+import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
 import type { Logger } from '@/platform/Logger';
+import type { ProviderKind } from '@/settings/settingsStore';
 import type { ConnectionState } from './connectionState';
 import { ProviderConnectError, ProviderTimeoutError } from './types';
 import { delay } from '@/util/delay';
@@ -10,6 +12,7 @@ export interface EmbeddingClientOptions {
   readonly endpoint: () => string;
   readonly model: () => string;
   readonly apiKey?: () => string;
+  readonly kind?: () => ProviderKind;
   readonly connection?: ConnectionState;
   readonly fetch?: FetchLike;
   readonly logger?: Logger;
@@ -118,6 +121,19 @@ export class EmbeddingClient {
   }
 
   private async defaultEmbedDocs(texts: string[], signal?: AbortSignal): Promise<number[][]> {
+    const kind = this.opts.kind?.();
+    if (kind === 'google') {
+      const apiKey = this.opts.apiKey?.() ?? '';
+      if (apiKey.length === 0) throw new ProviderConnectError('missing API key');
+      const endpoint = this.opts.endpoint();
+      const embeddings = new GoogleGenerativeAIEmbeddings({
+        model: this.opts.model(),
+        apiKey,
+        ...(endpoint.length > 0 ? { baseUrl: endpoint } : {}),
+      });
+      if (signal?.aborted === true) throw signal.reason ?? new Error('aborted');
+      return embeddings.embedDocuments(texts);
+    }
     const baseURL = `${this.opts.endpoint().replace(/\/+$/, '')}/v1`;
     const apiKey = this.opts.apiKey?.() ?? 'placeholder';
     const embeddings = new OpenAIEmbeddings({

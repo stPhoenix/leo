@@ -32,6 +32,11 @@ describe('provider registry', () => {
     expect(p.id).toBe('anthropic');
   });
 
+  it('google kind produces google provider', () => {
+    const p = createProviderForKind('google', ctx());
+    expect(p.id).toBe('google');
+  });
+
   it('ollama kind produces openai-compatible provider (local)', () => {
     const p = createProviderForKind('ollama', ctx());
     expect(p.id).toBe('ollama');
@@ -52,6 +57,7 @@ describe('provider registry', () => {
       'lmstudio',
       'openai',
       'anthropic',
+      'google',
       'ollama',
       'ollama-cloud',
       'custom',
@@ -66,7 +72,12 @@ describe('provider registry', () => {
     expect(kindRequiresApiKey('ollama')).toBe(false);
     expect(kindRequiresApiKey('openai')).toBe(true);
     expect(kindRequiresApiKey('anthropic')).toBe(true);
+    expect(kindRequiresApiKey('google')).toBe(true);
     expect(kindRequiresApiKey('ollama-cloud')).toBe(true);
     expect(kindRequiresApiKey('custom')).toBe(true);
+  });
+
+  it('defaultEndpointFor("google") returns empty (SDK default)', () => {
+    expect(defaultEndpointFor('google')).toBe('');
   });
 });

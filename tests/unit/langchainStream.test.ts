@@ -106,6 +106,44 @@ describe('toStreamEvents — tool_use stream', () => {
     expect(events.some((e) => e.type === 'tool_call')).toBe(false);
   });
 
+  it('parallel tool calls without `index` (Google) get distinct buffers, not concatenated', async () => {
+    // @langchain/google-genai emits each parallel tool call as its own
+    // tool_call_chunk with a unique `id` but no `index` field. Without
+    // id-keyed accumulation our buffer would concatenate JSONs into
+    // `{"a":1}{"b":2}` and break JSON.parse downstream.
+    const chunks = [
+      new AIMessageChunk({
+        content: '',
+        tool_call_chunks: [
+          { id: 'g1', name: 'search_wiki', args: '{"query":"silicon"}' },
+          { id: 'g2', name: 'search_vault', args: '{"query":"canon"}' },
+        ],
+      }),
+    ];
+    const events = await collect(toStreamEvents(fromArray(chunks)));
+    const blockStarts = events.filter((e) => e.type === 'block_start');
+    expect(blockStarts.length).toBe(2);
+    const ids = blockStarts.map((e) =>
+      e.type === 'block_start' && e.block.type === 'tool_use' ? e.block.id : '',
+    );
+    expect(ids.sort()).toEqual(['g1', 'g2']);
+
+    // Each buf should have produced a single, valid JSON args delta.
+    const argsByIndex = new Map<number, string>();
+    for (const e of events) {
+      if (e.type === 'block_delta' && e.delta.type === 'input_json_delta') {
+        argsByIndex.set(e.index, (argsByIndex.get(e.index) ?? '') + e.delta.partial_json);
+      }
+    }
+    const argsValues = [...argsByIndex.values()].sort();
+    expect(argsValues).toEqual(['{"query":"canon"}', '{"query":"silicon"}']);
+    for (const a of argsValues) expect(() => JSON.parse(a)).not.toThrow();
+
+    const stops = events.filter((e) => e.type === 'block_stop');
+    expect(stops.length).toBe(2);
+    expect(events[events.length - 1]?.type).toBe('done');
+  });
+
   it('mixes text and tool_use blocks in order', async () => {
     const chunks = [
       new AIMessageChunk({ content: 'Reading…' }),

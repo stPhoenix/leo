@@ -516,16 +516,20 @@ export default class LeoPlugin extends Plugin {
       }),
     );
 
-    const currentApiKeyKey = (): string => `provider.${this.store.get().provider.kind}.apiKey`;
-    const apiKeyCache = { value: '' };
-    const loadApiKey = async (): Promise<void> => {
-      apiKeyCache.value = (await this.safeStorage.get(currentApiKeyKey())) ?? '';
+    // Read the API key for the *currently selected* provider straight from
+    // the SafeStorage in-memory cache on every call. Avoids a stale-cache
+    // race: (a) provider swaps would briefly read the previous provider's
+    // key, (b) settings-tab edits never refreshed a separate local cache.
+    // Both manifested as Google 401 ACCESS_TOKEN_TYPE_UNSUPPORTED — Google
+    // received an Anthropic/OpenAI-shaped key.
+    const currentApiKey = (): string => {
+      const key = `provider.${this.store.get().provider.kind}.apiKey`;
+      return this.safeStorage.getCached(key) ?? '';
     };
-    await loadApiKey();
 
     const providerCtx = {
       endpoint: (): string => this.store.get().provider.endpoint,
-      apiKey: (): string => apiKeyCache.value,
+      apiKey: currentApiKey,
     };
     const provider = createProviderForKind(this.store.get().provider.kind, providerCtx);
     const initialTimeouts = this.store.get().providerTimeouts;
@@ -541,7 +545,6 @@ export default class LeoPlugin extends Plugin {
         if (nextKind !== this.providerManager.activeProviderId()) {
           const nextProvider = createProviderForKind(nextKind, providerCtx);
           this.providerManager.setProvider(nextProvider);
-          void loadApiKey();
         }
         this.providerManager.setTimeouts({
           firstEventMs: next.providerTimeouts.firstEventMs,
@@ -552,6 +555,8 @@ export default class LeoPlugin extends Plugin {
     this.embeddingClient = new EmbeddingClient({
       endpoint: () => this.store.get().provider.endpoint,
       model: () => this.store.get().provider.embeddingModel,
+      kind: () => this.store.get().provider.kind,
+      apiKey: currentApiKey,
       connection: this.providerManager.connection,
       logger: this.logger,
     });
