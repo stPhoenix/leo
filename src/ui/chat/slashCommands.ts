@@ -24,7 +24,7 @@ export interface SlashRegistry {
   list(): readonly SlashCommandInfo[];
 }
 
-const SLASH_REGEX = /^\s*\/([A-Za-z][A-Za-z0-9_-]*)(?:\s+([\s\S]*?))?\s*$/;
+const SLASH_REGEX = /^\s*\/([A-Za-z][A-Za-z0-9_-]*)(?:\s+([\s\S]*?))?\s*$/; // NOSONAR(typescript:S5852): anchored, lazy capture bounded by `\s*$`, linear.
 
 export function parseSlashInput(text: string): SlashContext | null {
   const m = SLASH_REGEX.exec(text);

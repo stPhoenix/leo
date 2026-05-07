@@ -708,6 +708,42 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     readonly pendingToolCalls: ToolCallRequest[];
   }
 
+  const applyBlockStart = (
+    ev: Extract<ProviderStreamEvent, { type: 'block_start' }>,
+    accum: StreamAccumulator,
+  ): void => {
+    if (ev.block.type === 'tool_use') {
+      accum.toolBufs.set(ev.index, { id: ev.block.id, name: ev.block.name, args: '' });
+    }
+  };
+
+  const applyBlockDelta = (
+    ev: Extract<ProviderStreamEvent, { type: 'block_delta' }>,
+    accum: StreamAccumulator,
+  ): void => {
+    if (ev.delta.type === 'text_delta') {
+      accum.iterationAssistant += ev.delta.text;
+    } else if (ev.delta.type === 'input_json_delta') {
+      const buf = accum.toolBufs.get(ev.index);
+      if (buf !== undefined) buf.args += ev.delta.partial_json;
+    }
+  };
+
+  const applyBlockStop = (
+    ev: Extract<ProviderStreamEvent, { type: 'block_stop' }>,
+    accum: StreamAccumulator,
+  ): void => {
+    const buf = accum.toolBufs.get(ev.index);
+    if (buf !== undefined) {
+      accum.pendingToolCalls.push({
+        id: buf.id,
+        name: buf.name,
+        argsJson: buf.args.length === 0 ? '{}' : buf.args,
+      });
+      accum.toolBufs.delete(ev.index);
+    }
+  };
+
   // Returns 'continue' to keep streaming, 'break' to stop normally, or 'errored'
   // to abort the turn after an error event. The accumulator is mutated in place.
   const applyStreamEvent = (
@@ -715,48 +751,20 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     accum: StreamAccumulator,
     offset: number,
   ): 'continue' | 'break' | 'errored' => {
-    if (ev.type === 'block_start') {
-      if (ev.block.type === 'tool_use') {
-        accum.toolBufs.set(ev.index, { id: ev.block.id, name: ev.block.name, args: '' });
-      }
-      if (ev.index > accum.maxIndexInIteration) accum.maxIndexInIteration = ev.index;
-      turn.events.push({ ...ev, index: ev.index + offset });
-      return 'continue';
-    }
-    if (ev.type === 'block_delta') {
-      if (ev.delta.type === 'text_delta') {
-        accum.iterationAssistant += ev.delta.text;
-      } else if (ev.delta.type === 'input_json_delta') {
-        const buf = accum.toolBufs.get(ev.index);
-        if (buf !== undefined) buf.args += ev.delta.partial_json;
-      }
-      if (ev.index > accum.maxIndexInIteration) accum.maxIndexInIteration = ev.index;
-      turn.events.push({ ...ev, index: ev.index + offset });
-      return 'continue';
-    }
-    if (ev.type === 'block_stop') {
-      const buf = accum.toolBufs.get(ev.index);
-      if (buf !== undefined) {
-        accum.pendingToolCalls.push({
-          id: buf.id,
-          name: buf.name,
-          argsJson: buf.args.length === 0 ? '{}' : buf.args,
-        });
-        accum.toolBufs.delete(ev.index);
-      }
-      if (ev.index > accum.maxIndexInIteration) accum.maxIndexInIteration = ev.index;
-      turn.events.push({ ...ev, index: ev.index + offset });
-      return 'continue';
-    }
-    if (ev.type === 'message_delta' || ev.type === 'progress') {
+    if (ev.type === 'block_start') applyBlockStart(ev, accum);
+    else if (ev.type === 'block_delta') applyBlockDelta(ev, accum);
+    else if (ev.type === 'block_stop') applyBlockStop(ev, accum);
+    else if (ev.type === 'message_delta' || ev.type === 'progress') {
       turn.events.push(ev);
       return 'continue';
-    }
-    if (ev.type === 'error') {
+    } else if (ev.type === 'error') {
       reportTurnError(ev.error);
       return 'errored';
-    }
-    if (ev.type === 'done') return 'break';
+    } else if (ev.type === 'done') return 'break';
+    else return 'continue';
+
+    if (ev.index > accum.maxIndexInIteration) accum.maxIndexInIteration = ev.index;
+    turn.events.push({ ...ev, index: ev.index + offset });
     return 'continue';
   };
 
@@ -943,6 +951,30 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     return { content, skillEnvelope, toolSearchWire };
   };
 
+  const applySkillEnvelope = (
+    envelope: NonNullable<ReturnType<typeof buildToolResultContent>['skillEnvelope']>,
+    workingMessages: ChatMessage[],
+    workingTimestamps: number[],
+    current: {
+      toolAllowlist: AgentState['toolAllowlist'];
+      effectiveModel: AgentState['effectiveModel'];
+    },
+  ): void => {
+    for (const msg of envelope.messages) {
+      workingMessages.push({
+        role: msg.role === 'system' ? 'system' : 'user',
+        content: msg.marker !== undefined ? `${msg.marker}\n${msg.content}` : msg.content,
+      });
+      workingTimestamps.push(deps.clock().getTime());
+    }
+    const mod = envelope.contextModifier;
+    if (mod === undefined) return;
+    if (mod.allowedTools !== undefined && mod.allowedTools.length > 0) {
+      current.toolAllowlist = new Set(mod.allowedTools);
+    }
+    if (mod.model !== undefined) current.effectiveModel = mod.model;
+  };
+
   const handleToolCallsNode = async (state: AgentState): Promise<Partial<AgentState>> => {
     const thread = turn.thread;
     const agentId = turn.agentId;
@@ -956,8 +988,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     const workingMessages: ChatMessage[] = [...state.workingMessages];
     const workingTimestamps: number[] = [...state.workingTimestamps];
     let cancelled = state.cancelled;
-    let toolAllowlist = state.toolAllowlist;
-    let effectiveModel = state.effectiveModel;
+    const ctx = { toolAllowlist: state.toolAllowlist, effectiveModel: state.effectiveModel };
     workingMessages.push({
       role: 'assistant',
       content: state.iterationAssistantText,
@@ -978,32 +1009,14 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
         call,
         thread,
       );
-      workingMessages.push({
-        role: 'tool',
-        toolCallId: call.id,
-        name: call.name,
-        content,
-      });
+      workingMessages.push({ role: 'tool', toolCallId: call.id, name: call.name, content });
       workingTimestamps.push(deps.clock().getTime());
       if (toolSearchWire !== null && toolSearchWire.discoveredAdded.length > 0) {
         deps.toolSearch?.recordDiscovery(thread, toolSearchWire.discoveredAdded);
       }
       turn.events.push({ type: 'tool_result', id: call.id, result });
       if (skillEnvelope !== null) {
-        for (const msg of skillEnvelope.messages) {
-          workingMessages.push({
-            role: msg.role === 'system' ? 'system' : 'user',
-            content: msg.marker !== undefined ? `${msg.marker}\n${msg.content}` : msg.content,
-          });
-          workingTimestamps.push(deps.clock().getTime());
-        }
-        if (skillEnvelope.contextModifier !== undefined) {
-          const mod = skillEnvelope.contextModifier;
-          if (mod.allowedTools !== undefined && mod.allowedTools.length > 0) {
-            toolAllowlist = new Set(mod.allowedTools);
-          }
-          if (mod.model !== undefined) effectiveModel = mod.model;
-        }
+        applySkillEnvelope(skillEnvelope, workingMessages, workingTimestamps, ctx);
       }
     }
     if (!cancelled) cancelled = turn.signal.aborted;
@@ -1011,8 +1024,8 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       workingMessages,
       workingTimestamps,
       cancelled,
-      toolAllowlist,
-      effectiveModel,
+      toolAllowlist: ctx.toolAllowlist,
+      effectiveModel: ctx.effectiveModel,
       pendingToolCalls: [],
       iterationAssistantText: '',
       roundTrip: state.roundTrip + 1,

@@ -20,7 +20,7 @@ function makeStatefulSource(
     for (const l of listeners) l();
   };
   const idGen =
-    options.idGenerator ?? ((): string => `t-${Math.random().toString(36).slice(2, 10)}`);
+    options.idGenerator ?? ((): string => `t-${Math.random().toString(36).slice(2, 10)}`); // NOSONAR(typescript:S2245): Storybook fixture id, not security-relevant.
 
   const create = fn(async (): Promise<string> => {
     const id = idGen();

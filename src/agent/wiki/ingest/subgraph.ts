@@ -687,24 +687,23 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
         : {}),
     };
 
-    try {
-      if (ac.signal.aborted) return abortError();
-      let result = (await graph.invoke(
-        {
-          inputSources: input.sources,
-          originalAsk: input.originalAsk,
-          note: input.note,
-        },
-        config,
-      )) as Record<string, unknown>;
+    type InterruptResolution =
+      | { kind: 'state'; state: Record<string, unknown> }
+      | { kind: 'terminal'; result: IngestTerminalResult };
 
+    const resolveInterrupts = async (
+      initial: Record<string, unknown>,
+    ): Promise<InterruptResolution> => {
+      let result = initial;
       while (isInterrupted<IngestDuplicateInterrupt>(result)) {
-        if (ac.signal.aborted) return abortError();
+        if (ac.signal.aborted) return { kind: 'terminal', result: abortError() };
         const interrupts = result[INTERRUPT] as { value?: IngestDuplicateInterrupt }[];
-        const intr = interrupts[0];
-        const value = intr?.value;
+        const value = interrupts[0]?.value;
         if (value === undefined) {
-          return errorTerminal('graph_no_interrupt_value', 'missing payload');
+          return {
+            kind: 'terminal',
+            result: errorTerminal('graph_no_interrupt_value', 'missing payload'),
+          };
         }
         let resumeChoice: DuplicateChoice;
         try {
@@ -713,12 +712,44 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
         } catch {
           resumeChoice = 'skip';
         }
-        if (ac.signal.aborted) return abortError();
+        if (ac.signal.aborted) return { kind: 'terminal', result: abortError() };
         result = (await graph.invoke(new Command({ resume: resumeChoice }), config)) as Record<
           string,
           unknown
         >;
       }
+      return { kind: 'state', state: result };
+    };
+
+    const mapCaughtError = (err: unknown): IngestTerminalResult => {
+      const message = err instanceof Error ? err.message : String(err);
+      if (ac.signal.aborted) {
+        controller.setPhase('cancelled');
+        return abortError();
+      }
+      if (err instanceof IngestPipelineError) return errorTerminal(err.code, err.message);
+      if (err instanceof SandboxViolation) {
+        controller.recordError('sandbox_violation', message);
+        return errorTerminal('sandbox_violation', message);
+      }
+      controller.recordError('unhandled', message);
+      return errorTerminal('unhandled', message);
+    };
+
+    try {
+      if (ac.signal.aborted) return abortError();
+      const initial = (await graph.invoke(
+        {
+          inputSources: input.sources,
+          originalAsk: input.originalAsk,
+          note: input.note,
+        },
+        config,
+      )) as Record<string, unknown>;
+
+      const resolved = await resolveInterrupts(initial);
+      if (resolved.kind === 'terminal') return resolved.result;
+      const result = resolved.state;
 
       if (ac.signal.aborted) {
         controller.setPhase('cancelled');
@@ -750,20 +781,7 @@ export function startIngestRun(input: IngestRunInput, deps: IngestRunDeps): Inge
         },
       };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (ac.signal.aborted) {
-        controller.setPhase('cancelled');
-        return abortError();
-      }
-      if (err instanceof IngestPipelineError) {
-        return errorTerminal(err.code, err.message);
-      }
-      if (err instanceof SandboxViolation) {
-        controller.recordError('sandbox_violation', message);
-        return errorTerminal('sandbox_violation', message);
-      }
-      controller.recordError('unhandled', message);
-      return errorTerminal('unhandled', message);
+      return mapCaughtError(err);
     } finally {
       acquired.release();
       releaseWikiLiveController(runId);
@@ -904,7 +922,7 @@ function parseRawFrontmatter(body: string): {
   for (let i = 1; i < lines.length; i += 1) {
     const line = lines[i] ?? '';
     if (line.trim() === '---') break;
-    const m = /^(source|fetched_at|sha256)\s*:\s*(.+?)\s*$/.exec(line);
+    const m = /^(source|fetched_at|sha256)\s*:\s*(.+?)\s*$/.exec(line); // NOSONAR(typescript:S5852): anchored fixed-key alternation + lazy capture, linear per line.
     if (m === null) continue;
     out[m[1] as keyof typeof out] = (m[2] ?? '').replace(/^["']|["']$/g, '');
   }

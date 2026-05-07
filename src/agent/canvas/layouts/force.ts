@@ -121,8 +121,8 @@ function connectedComponents(entities: readonly Entity[], edges: readonly Edge[]
   }
   components.sort((a, b) => {
     if (a.size !== b.size) return b.size - a.size;
-    const ai = [...a].sort()[0] ?? '';
-    const bi = [...b].sort()[0] ?? '';
+    const ai = [...a].sort((x, y) => x.localeCompare(y))[0] ?? '';
+    const bi = [...b].sort((x, y) => x.localeCompare(y))[0] ?? '';
     return ai.localeCompare(bi);
   });
   return components;

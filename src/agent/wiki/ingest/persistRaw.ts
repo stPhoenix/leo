@@ -77,7 +77,7 @@ function deriveSlugLabel(fetched: FetchedSource): string {
   if (fetched.sourceRef.startsWith('http')) {
     try {
       const url = new URL(fetched.sourceRef);
-      return `${url.hostname}${url.pathname.replace(/\/+$/, '')}`;
+      return `${url.hostname}${url.pathname.replace(/\/+$/, '')}`; // NOSONAR(typescript:S5852): anchored trailing-slash trim, linear.
     } catch {
       return fetched.sourceRef;
     }

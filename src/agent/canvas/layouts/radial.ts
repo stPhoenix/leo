@@ -79,7 +79,7 @@ export function layoutRadial(entities: readonly Entity[], edges: readonly Edge[]
 
   const orphanIds = rings.get(Infinity);
   if (orphanIds !== undefined && orphanIds.length > 0) {
-    const orphans = [...orphanIds].sort();
+    const orphans = [...orphanIds].sort((a, b) => a.localeCompare(b));
     const cols = Math.max(1, Math.ceil(Math.sqrt(orphans.length)));
     const colW =
       orphans.reduce((m, id) => Math.max(m, sizes.get(id)!.width), 160) + CANVAS_RADIAL.orphanGap;

@@ -213,6 +213,357 @@ export function startCanvasRun(
         ...(error !== undefined ? { error } : {}),
       });
     };
+    type PhaseStep =
+      | { kind: 'next'; state: CanvasState }
+      | { kind: 'terminal'; status: 'done' | 'cancelled' | 'error'; error?: CanvasErrorPayload };
+
+    const handlePreparing = async (st: CanvasState): Promise<PhaseStep> => {
+      const r = await preparingPhase(st, deps, ctrl.signal, input);
+      if (r.kind === 'error') return { kind: 'terminal', status: 'error', error: r.error };
+      if (r.kind === 'question') {
+        const next = { ...st, questionCount: st.questionCount + 1 };
+        if (next.questionCount >= CANVAS_BUDGETS.refineClarifyMax) {
+          return {
+            kind: 'terminal',
+            status: 'error',
+            error: { code: 'refine_unresolved', message: 'refine question cap exhausted' },
+          };
+        }
+        return { kind: 'next', state: next };
+      }
+      return { kind: 'next', state: { ...st, runPlan: r.plan, phase: 'planning' } };
+    };
+
+    const handlePlanning = async (st: CanvasState): Promise<PhaseStep> => {
+      const expanded = await expandSourceHints({
+        hints: st.runPlan!.sourceHints,
+        vault: deps.vault,
+        ...(deps.metadataCache !== undefined ? { metadataCache: deps.metadataCache } : {}),
+      });
+      if (expanded.items.length === 0 && st.op === 'create') {
+        return {
+          kind: 'terminal',
+          status: 'error',
+          error: {
+            code: 'no_sources',
+            message:
+              'Refine produced no sources — provide specific files, tags, URLs, or attachments in the ask.',
+          },
+        };
+      }
+      return { kind: 'next', state: { ...st, sources: expanded.items, phase: 'fetching' } };
+    };
+
+    const handleFetching = async (st: CanvasState): Promise<PhaseStep> => {
+      if (st.op === 'create' && st.targetPath !== '') {
+        const guard = await assertTargetDoesNotExist({
+          adapter: deps.vault,
+          targetPath: st.targetPath,
+        });
+        if (!guard.ok) {
+          const code =
+            guard.error instanceof TargetExistsError ? 'target_path_exists' : 'invalid_path';
+          return {
+            kind: 'terminal',
+            status: 'error',
+            error: { code, message: guard.error.message },
+          };
+        }
+      }
+      const fetchResult = await fetchCanvasSources(
+        st.sources,
+        {
+          vault: deps.vault,
+          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+          ...(deps.url !== undefined ? { url: deps.url } : {}),
+          ...(deps.urlOverrides !== undefined ? { urlOverrides: deps.urlOverrides } : {}),
+          ...(deps.urlFetcher !== undefined ? { urlFetcher: deps.urlFetcher } : {}),
+        },
+        ctrl.signal,
+      );
+      if (aborted && !inUninterruptibleWrite) {
+        return { kind: 'terminal', status: 'cancelled' };
+      }
+      if (fetchResult.failedAll && fetchResult.items.length > 0) {
+        return {
+          kind: 'terminal',
+          status: 'error',
+          error: { code: 'all_sources_failed', message: 'every source fetch failed' },
+        };
+      }
+      return {
+        kind: 'next',
+        state: { ...st, fetched: fetchResult.items, phase: 'extracting' },
+      };
+    };
+
+    const handleExtracting = async (st: CanvasState): Promise<PhaseStep> => {
+      const extracted = await runExtractors(
+        {
+          items: st.fetched,
+          schema: {
+            entityTypes: st.runPlan!.entityTypes,
+            relationTypes: st.runPlan!.relationTypes,
+          },
+          originalAsk: st.originalAsk,
+          signal: ctrl.signal,
+          ...(deps.traceConfig !== undefined ? { traceConfig: deps.traceConfig } : {}),
+        },
+        {
+          provider: deps.provider,
+          model: deps.model,
+          ...(deps.temperature !== undefined ? { temperature: deps.temperature } : {}),
+          ...(deps.maxTokens !== undefined ? { maxTokens: deps.maxTokens } : {}),
+          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+        },
+      );
+      if (aborted && !inUninterruptibleWrite) return { kind: 'terminal', status: 'cancelled' };
+      return {
+        kind: 'next',
+        state: {
+          ...st,
+          extractorOutputs: extracted.outputs,
+          extractorErrors: extracted.perSourceErrors as readonly CanvasFailedSource[],
+          phase: 'reducing',
+        },
+      };
+    };
+
+    const handleReducing = async (st: CanvasState): Promise<PhaseStep> => {
+      try {
+        const pageBasenames = await getPageBasenames();
+        const reduced = await reduceEntityGraph(
+          {
+            outputs: st.extractorOutputs.values(),
+            signal: ctrl.signal,
+            ...(st.runPlan !== null ? { relationTypes: st.runPlan.relationTypes } : {}),
+            ...(deps.traceConfig !== undefined ? { traceConfig: deps.traceConfig } : {}),
+          },
+          {
+            provider: deps.provider,
+            model: deps.model,
+            ...(deps.temperature !== undefined ? { temperature: deps.temperature } : {}),
+            ...(deps.maxTokens !== undefined ? { maxTokens: deps.maxTokens } : {}),
+            ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+            ...(pageBasenames !== null ? { pageBasenames } : {}),
+          },
+        );
+        const resolvedGraph = resolveEntityFiles({
+          graph: reduced.graph,
+          fetched: st.fetched,
+          ...(deps.metadataCache !== undefined ? { metadataCache: deps.metadataCache } : {}),
+          ...(pageBasenames !== null ? { pageBasenames } : {}),
+        });
+        return {
+          kind: 'next',
+          state: {
+            ...st,
+            graph: resolvedGraph,
+            insights: reduced.insights,
+            phase: st.op === 'create' ? 'laying_out' : 'diffing',
+          },
+        };
+      } catch (err) {
+        if (err instanceof ReducerInvalidError) {
+          return {
+            kind: 'terminal',
+            status: 'error',
+            error: { code: 'reduce_invalid', message: err.message },
+          };
+        }
+        throw err;
+      }
+    };
+
+    const handleDiffing = async (st: CanvasState): Promise<PhaseStep> => {
+      const sidecar = input.initialSidecar;
+      if (sidecar === null || sidecar === undefined) {
+        return {
+          kind: 'terminal',
+          status: 'error',
+          error: { code: 'sidecar_missing', message: 'content_edit requires an existing sidecar' },
+        };
+      }
+      const parsed = await tryParseCurrentCanvas(deps.vault, st.targetPath);
+      if (!parsed.ok) {
+        return {
+          kind: 'terminal',
+          status: 'error',
+          error: { code: 'canvas_parse_failed', message: parsed.error.message },
+        };
+      }
+      const diff = diffAgainstSidecar({
+        newGraph: st.graph!,
+        sidecar,
+        currentCanvasJson: parsed.value,
+      });
+      const summary = buildTombstoneSummary(diff.removed, diff.edgesRemoved, sidecar);
+      return {
+        kind: 'next',
+        state: { ...st, diff, tombstoneSummary: summary, phase: 'laying_out' },
+      };
+    };
+
+    const handleLayingOut = (st: CanvasState): PhaseStep => {
+      const preset = pickPreset(st, input);
+      const lockedCoords = st.diff?.lockedCoords ?? {};
+      const addedIds = new Set(st.diff?.added ?? []);
+      const result = layout({
+        graph: st.graph!,
+        preset,
+        lockedCoords,
+        addedIds,
+        budgets: {
+          freeSpacePadPx: CANVAS_BUDGETS.freeSpacePadPx,
+          bboxPadding: CANVAS_BUDGETS.bboxPadding,
+        },
+        paletteId: st.paletteId,
+      });
+      return {
+        kind: 'next',
+        state: {
+          ...st,
+          canvasJson: result.canvas,
+          ...(result.fellBackTo !== undefined ? { fellBackTo: result.fellBackTo } : {}),
+          phase: 'previewing',
+        },
+      };
+    };
+
+    const handlePreviewing = async (st: CanvasState): Promise<PhaseStep> => {
+      const written = await writePreview({
+        adapter: deps.vault,
+        targetPath: st.targetPath,
+        canvasJson: st.canvasJson!,
+      });
+      if (!written.ok) {
+        return {
+          kind: 'terminal',
+          status: 'error',
+          error: { code: 'preview_write_failed', message: written.error.message },
+        };
+      }
+      const stWithPreview = { ...st, previewPath: written.value.previewPath };
+      mutableState = stWithPreview;
+      // Re-emit `previewing` so subscribers see the previewPath now that it exists.
+      lastEmittedPhase = null;
+      emit(stWithPreview);
+
+      const decision = await deps.previewing.awaitDecision(stWithPreview);
+      if (aborted || decision.kind === 'cancel') {
+        await cleanupPreview({ adapter: deps.vault, previewPath: written.value.previewPath });
+        return { kind: 'terminal', status: 'cancelled' };
+      }
+      if (decision.kind === 'edit') {
+        const nextIter = stWithPreview.editIterations + 1;
+        if (nextIter >= CANVAS_BUDGETS.editIterationsMax) {
+          await cleanupPreview({ adapter: deps.vault, previewPath: written.value.previewPath });
+          return {
+            kind: 'terminal',
+            status: 'error',
+            error: { code: 'edit_iterations_exhausted', message: 'edit cap exceeded' },
+          };
+        }
+        const nextHistory: RefineMessage[] = [
+          ...stWithPreview.refineHistory,
+          { role: 'user', content: decision.instruction },
+        ];
+        await cleanupPreview({ adapter: deps.vault, previewPath: written.value.previewPath });
+        return {
+          kind: 'next',
+          state: {
+            ...stWithPreview,
+            refineHistory: nextHistory,
+            editIterations: nextIter,
+            previewPath: null,
+            phase: 'preparing',
+          },
+        };
+      }
+      return { kind: 'next', state: { ...stWithPreview, phase: 'writing' } };
+    };
+
+    const handleWriting = async (st: CanvasState): Promise<PhaseStep> => {
+      inUninterruptibleWrite = true;
+      try {
+        const commit = await commitPreview({
+          adapter: deps.vault,
+          previewPath: st.previewPath!,
+          targetPath: st.targetPath,
+        });
+        if (!commit.ok) {
+          await cleanupPreview({ adapter: deps.vault, previewPath: st.previewPath! });
+          return {
+            kind: 'terminal',
+            status: 'error',
+            error: { code: 'commit_preview_failed', message: commit.error.message },
+          };
+        }
+        const sidecar: SidecarV1 = {
+          schemaVersion: 1,
+          runId: st.runId,
+          schema:
+            st.runPlan !== null
+              ? { entityTypes: st.runPlan.entityTypes, relationTypes: st.runPlan.relationTypes }
+              : (input.initialSidecar?.schema ?? { entityTypes: [], relationTypes: [] }),
+          entityGraph: st.graph!,
+          coordMap: buildCoordMap(st.canvasJson!),
+          tombstones: [...(input.initialSidecar?.tombstones ?? []), ...(st.diff?.removed ?? [])],
+          edgeTombstones: [
+            ...(input.initialSidecar?.edgeTombstones ?? []),
+            ...(st.diff?.edgesRemoved ?? []),
+          ],
+          lastRunAt: new Date().toISOString(),
+        };
+        const sideWrite = await writeSidecarFromState({
+          adapter: deps.vault,
+          canvasVaultPath: st.targetPath,
+          sidecar,
+        });
+        if (!sideWrite.ok) {
+          return {
+            kind: 'terminal',
+            status: 'error',
+            error: { code: 'sidecar_write_failed', message: sideWrite.error.message },
+          };
+        }
+        return { kind: 'next', state: { ...st, sidecar, phase: 'done' } };
+      } finally {
+        inUninterruptibleWrite = false;
+      }
+    };
+
+    const dispatchPhase = async (st: CanvasState): Promise<PhaseStep> => {
+      switch (st.phase) {
+        case 'preparing':
+          return handlePreparing(st);
+        case 'planning':
+          return handlePlanning(st);
+        case 'fetching':
+          return handleFetching(st);
+        case 'extracting':
+          return handleExtracting(st);
+        case 'reducing':
+          return handleReducing(st);
+        case 'diffing':
+          return handleDiffing(st);
+        case 'laying_out':
+          return handleLayingOut(st);
+        case 'previewing':
+          return handlePreviewing(st);
+        case 'writing':
+          return handleWriting(st);
+        case 'done':
+          return { kind: 'terminal', status: 'done' };
+        default:
+          return {
+            kind: 'terminal',
+            status: 'error',
+            error: { code: 'unknown_phase', message: `unknown phase ${st.phase}` },
+          };
+      }
+    };
+
     try {
       // eslint-disable-next-line no-constant-condition
       while (true) {
@@ -221,318 +572,11 @@ export function startCanvasRun(
         if (aborted && !inUninterruptibleWrite) {
           return terminate(mutableState, 'cancelled');
         }
-        if (mutableState.phase === 'preparing') {
-          const r = await preparingPhase(mutableState, deps, ctrl.signal, input);
-          if (r.kind === 'error') return terminate(mutableState, 'error', r.error);
-          if (r.kind === 'question') {
-            // No widget interaction in v1 driver — treat as terminal error if cap hit.
-            mutableState = { ...mutableState, questionCount: mutableState.questionCount + 1 };
-            if (mutableState.questionCount >= CANVAS_BUDGETS.refineClarifyMax) {
-              return terminate(mutableState, 'error', {
-                code: 'refine_unresolved',
-                message: 'refine question cap exhausted',
-              });
-            }
-            continue;
-          }
-          mutableState = { ...mutableState, runPlan: r.plan, phase: 'planning' };
-          continue;
+        const step = await dispatchPhase(mutableState);
+        if (step.kind === 'terminal') {
+          return terminate(mutableState, step.status, step.error);
         }
-        if (mutableState.phase === 'planning') {
-          const expanded = await expandSourceHints({
-            hints: mutableState.runPlan!.sourceHints,
-            vault: deps.vault,
-            ...(deps.metadataCache !== undefined ? { metadataCache: deps.metadataCache } : {}),
-          });
-          if (expanded.items.length === 0 && mutableState.op === 'create') {
-            return terminate(mutableState, 'error', {
-              code: 'no_sources',
-              message:
-                'Refine produced no sources — provide specific files, tags, URLs, or attachments in the ask.',
-            });
-          }
-          mutableState = { ...mutableState, sources: expanded.items, phase: 'fetching' };
-          continue;
-        }
-        if (mutableState.phase === 'fetching') {
-          if (mutableState.op === 'create' && mutableState.targetPath !== '') {
-            const guard = await assertTargetDoesNotExist({
-              adapter: deps.vault,
-              targetPath: mutableState.targetPath,
-            });
-            if (!guard.ok) {
-              const code =
-                guard.error instanceof TargetExistsError ? 'target_path_exists' : 'invalid_path';
-              return terminate(mutableState, 'error', { code, message: guard.error.message });
-            }
-          }
-          const fetchResult = await fetchCanvasSources(
-            mutableState.sources,
-            {
-              vault: deps.vault,
-              ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-              ...(deps.url !== undefined ? { url: deps.url } : {}),
-              ...(deps.urlOverrides !== undefined ? { urlOverrides: deps.urlOverrides } : {}),
-              ...(deps.urlFetcher !== undefined ? { urlFetcher: deps.urlFetcher } : {}),
-            },
-            ctrl.signal,
-          );
-          if (aborted && !inUninterruptibleWrite) {
-            return terminate({ ...mutableState, fetched: fetchResult.items }, 'cancelled');
-          }
-          if (fetchResult.failedAll && fetchResult.items.length > 0) {
-            return terminate({ ...mutableState, fetched: fetchResult.items }, 'error', {
-              code: 'all_sources_failed',
-              message: 'every source fetch failed',
-            });
-          }
-          mutableState = { ...mutableState, fetched: fetchResult.items, phase: 'extracting' };
-          continue;
-        }
-        if (mutableState.phase === 'extracting') {
-          const extracted = await runExtractors(
-            {
-              items: mutableState.fetched,
-              schema: {
-                entityTypes: mutableState.runPlan!.entityTypes,
-                relationTypes: mutableState.runPlan!.relationTypes,
-              },
-              originalAsk: mutableState.originalAsk,
-              signal: ctrl.signal,
-              ...(deps.traceConfig !== undefined ? { traceConfig: deps.traceConfig } : {}),
-            },
-            {
-              provider: deps.provider,
-              model: deps.model,
-              ...(deps.temperature !== undefined ? { temperature: deps.temperature } : {}),
-              ...(deps.maxTokens !== undefined ? { maxTokens: deps.maxTokens } : {}),
-              ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-            },
-          );
-          if (aborted && !inUninterruptibleWrite) {
-            return terminate(
-              {
-                ...mutableState,
-                extractorOutputs: extracted.outputs,
-                extractorErrors: extracted.perSourceErrors as readonly CanvasFailedSource[],
-              },
-              'cancelled',
-            );
-          }
-          mutableState = {
-            ...mutableState,
-            extractorOutputs: extracted.outputs,
-            extractorErrors: extracted.perSourceErrors as readonly CanvasFailedSource[],
-            phase: 'reducing',
-          };
-          continue;
-        }
-        if (mutableState.phase === 'reducing') {
-          try {
-            const pageBasenames = await getPageBasenames();
-            const reduced = await reduceEntityGraph(
-              {
-                outputs: mutableState.extractorOutputs.values(),
-                signal: ctrl.signal,
-                ...(mutableState.runPlan !== null
-                  ? { relationTypes: mutableState.runPlan.relationTypes }
-                  : {}),
-                ...(deps.traceConfig !== undefined ? { traceConfig: deps.traceConfig } : {}),
-              },
-              {
-                provider: deps.provider,
-                model: deps.model,
-                ...(deps.temperature !== undefined ? { temperature: deps.temperature } : {}),
-                ...(deps.maxTokens !== undefined ? { maxTokens: deps.maxTokens } : {}),
-                ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-                ...(pageBasenames !== null ? { pageBasenames } : {}),
-              },
-            );
-            const resolvedGraph = resolveEntityFiles({
-              graph: reduced.graph,
-              fetched: mutableState.fetched,
-              ...(deps.metadataCache !== undefined ? { metadataCache: deps.metadataCache } : {}),
-              ...(pageBasenames !== null ? { pageBasenames } : {}),
-            });
-            mutableState = {
-              ...mutableState,
-              graph: resolvedGraph,
-              insights: reduced.insights,
-              phase: mutableState.op === 'create' ? 'laying_out' : 'diffing',
-            };
-            continue;
-          } catch (err) {
-            if (err instanceof ReducerInvalidError) {
-              return terminate(mutableState, 'error', {
-                code: 'reduce_invalid',
-                message: err.message,
-              });
-            }
-            throw err;
-          }
-        }
-        if (mutableState.phase === 'diffing') {
-          const sidecar = input.initialSidecar;
-          if (sidecar === null || sidecar === undefined) {
-            return terminate(mutableState, 'error', {
-              code: 'sidecar_missing',
-              message: 'content_edit requires an existing sidecar',
-            });
-          }
-          const parsed = await tryParseCurrentCanvas(deps.vault, mutableState.targetPath);
-          if (!parsed.ok) {
-            return terminate(mutableState, 'error', {
-              code: 'canvas_parse_failed',
-              message: parsed.error.message,
-            });
-          }
-          const diff = diffAgainstSidecar({
-            newGraph: mutableState.graph!,
-            sidecar,
-            currentCanvasJson: parsed.value,
-          });
-          const summary = buildTombstoneSummary(diff.removed, diff.edgesRemoved, sidecar);
-          mutableState = { ...mutableState, diff, tombstoneSummary: summary, phase: 'laying_out' };
-          continue;
-        }
-        if (mutableState.phase === 'laying_out') {
-          const preset = pickPreset(mutableState, input);
-          const lockedCoords = mutableState.diff?.lockedCoords ?? {};
-          const addedIds = new Set(mutableState.diff?.added ?? []);
-          const result = layout({
-            graph: mutableState.graph!,
-            preset,
-            lockedCoords,
-            addedIds,
-            budgets: {
-              freeSpacePadPx: CANVAS_BUDGETS.freeSpacePadPx,
-              bboxPadding: CANVAS_BUDGETS.bboxPadding,
-            },
-            paletteId: mutableState.paletteId,
-          });
-          mutableState = {
-            ...mutableState,
-            canvasJson: result.canvas,
-            ...(result.fellBackTo !== undefined ? { fellBackTo: result.fellBackTo } : {}),
-            phase: 'previewing',
-          };
-          continue;
-        }
-        if (mutableState.phase === 'previewing') {
-          const written = await writePreview({
-            adapter: deps.vault,
-            targetPath: mutableState.targetPath,
-            canvasJson: mutableState.canvasJson!,
-          });
-          if (!written.ok) {
-            return terminate(mutableState, 'error', {
-              code: 'preview_write_failed',
-              message: written.error.message,
-            });
-          }
-          mutableState = { ...mutableState, previewPath: written.value.previewPath };
-          // Re-emit `previewing` so subscribers see the previewPath now that it exists.
-          lastEmittedPhase = null;
-          emit(mutableState);
-
-          const decision = await deps.previewing.awaitDecision(mutableState);
-          if (aborted) {
-            await cleanupPreview({ adapter: deps.vault, previewPath: written.value.previewPath });
-            return terminate(mutableState, 'cancelled');
-          }
-          if (decision.kind === 'cancel') {
-            await cleanupPreview({ adapter: deps.vault, previewPath: written.value.previewPath });
-            return terminate(mutableState, 'cancelled');
-          }
-          if (decision.kind === 'edit') {
-            const nextIter = mutableState.editIterations + 1;
-            if (nextIter >= CANVAS_BUDGETS.editIterationsMax) {
-              await cleanupPreview({ adapter: deps.vault, previewPath: written.value.previewPath });
-              return terminate(mutableState, 'error', {
-                code: 'edit_iterations_exhausted',
-                message: 'edit cap exceeded',
-              });
-            }
-            const nextHistory: RefineMessage[] = [
-              ...mutableState.refineHistory,
-              { role: 'user', content: decision.instruction },
-            ];
-            await cleanupPreview({ adapter: deps.vault, previewPath: written.value.previewPath });
-            mutableState = {
-              ...mutableState,
-              refineHistory: nextHistory,
-              editIterations: nextIter,
-              previewPath: null,
-              phase: 'preparing',
-            };
-            continue;
-          }
-          // approve
-          mutableState = { ...mutableState, phase: 'writing' };
-          continue;
-        }
-        if (mutableState.phase === 'writing') {
-          inUninterruptibleWrite = true;
-          try {
-            const commit = await commitPreview({
-              adapter: deps.vault,
-              previewPath: mutableState.previewPath!,
-              targetPath: mutableState.targetPath,
-            });
-            if (!commit.ok) {
-              await cleanupPreview({ adapter: deps.vault, previewPath: mutableState.previewPath! });
-              return terminate(mutableState, 'error', {
-                code: 'commit_preview_failed',
-                message: commit.error.message,
-              });
-            }
-            const sidecar: SidecarV1 = {
-              schemaVersion: 1,
-              runId: mutableState.runId,
-              schema:
-                mutableState.runPlan !== null
-                  ? {
-                      entityTypes: mutableState.runPlan.entityTypes,
-                      relationTypes: mutableState.runPlan.relationTypes,
-                    }
-                  : (input.initialSidecar?.schema ?? { entityTypes: [], relationTypes: [] }),
-              entityGraph: mutableState.graph!,
-              coordMap: buildCoordMap(mutableState.canvasJson!),
-              tombstones: [
-                ...(input.initialSidecar?.tombstones ?? []),
-                ...(mutableState.diff?.removed ?? []),
-              ],
-              edgeTombstones: [
-                ...(input.initialSidecar?.edgeTombstones ?? []),
-                ...(mutableState.diff?.edgesRemoved ?? []),
-              ],
-              lastRunAt: new Date().toISOString(),
-            };
-            const sideWrite = await writeSidecarFromState({
-              adapter: deps.vault,
-              canvasVaultPath: mutableState.targetPath,
-              sidecar,
-            });
-            if (!sideWrite.ok) {
-              return terminate(mutableState, 'error', {
-                code: 'sidecar_write_failed',
-                message: sideWrite.error.message,
-              });
-            }
-            mutableState = { ...mutableState, sidecar, phase: 'done' };
-          } finally {
-            inUninterruptibleWrite = false;
-          }
-          continue;
-        }
-        if (mutableState.phase === 'done') {
-          return terminate(mutableState, 'done');
-        }
-        // Should never reach here.
-        return terminate(mutableState, 'error', {
-          code: 'unknown_phase',
-          message: `unknown phase ${mutableState.phase}`,
-        });
+        mutableState = step.state;
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -728,7 +772,7 @@ async function preparingPhase(
   state: CanvasState,
   deps: CanvasSubgraphDeps,
   signal: AbortSignal,
-  input: StartCanvasInput,
+  _input: StartCanvasInput,
 ): Promise<
   | { kind: 'plan'; plan: RunPlan }
   | { kind: 'question'; question: string }
@@ -748,7 +792,6 @@ async function preparingPhase(
           .filter((m) => m.role === 'user')
           .map((m) => m.content)
           .join('\n---\n')}`;
-  void input;
   const decision = await refine.step({
     originalAsk: ask,
     history: state.refineHistory,
@@ -791,7 +834,7 @@ function slug(s: string): string {
     s
       .toLowerCase()
       .normalize('NFKD')
-      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/[^a-z0-9]+/g, '-') // NOSONAR(typescript:S5852): single char class + quantifier, linear.
       .replace(/^-+|-+$/g, '')
       .slice(0, 60) || 'canvas'
   );

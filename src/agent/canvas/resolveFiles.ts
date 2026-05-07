@@ -74,46 +74,55 @@ export function resolveEntityFiles(input: ResolveEntityFilesInput): EntityGraph 
     return path;
   };
 
-  const nextEntities: Entity[] = input.graph.entities.map((ent) => {
-    if (ent.filePath !== undefined) return ent;
-    if (looksLikeUrl(ent.name)) return ent;
-    if (ent.type === 'url') return ent;
+  const tryAssign = (ent: Entity, candidate: string): Entity | null => {
+    const claimedPath = tryClaim(candidate, ent.id);
+    return claimedPath !== null ? { ...ent, filePath: claimedPath } : null;
+  };
 
-    if (ent.definedIn !== undefined) {
-      const viaDefined = resolveDefinedInPath(ent.definedIn, pageBasenames);
-      if (viaDefined !== null && definedInRelatesToEntity(viaDefined, ent)) {
-        const claimedPath = tryClaim(viaDefined, ent.id);
-        if (claimedPath !== null) return { ...ent, filePath: claimedPath };
-      }
-    }
+  const tryDefinedIn = (ent: Entity): Entity | null => {
+    if (ent.definedIn === undefined) return null;
+    const viaDefined = resolveDefinedInPath(ent.definedIn, pageBasenames);
+    if (viaDefined === null || !definedInRelatesToEntity(viaDefined, ent)) return null;
+    return tryAssign(ent, viaDefined);
+  };
 
+  const tryResolver = (ent: Entity): Entity | null => {
     const viaResolver = resolver?.(ent.name, anchor);
-    if (viaResolver !== null && viaResolver !== undefined && viaResolver.path.length > 0) {
-      const claimedPath = tryClaim(viaResolver.path, ent.id);
-      if (claimedPath !== null) return { ...ent, filePath: claimedPath };
-    }
+    if (viaResolver === null || viaResolver === undefined || viaResolver.path.length === 0)
+      return null;
+    return tryAssign(ent, viaResolver.path);
+  };
 
+  const trySlugMaps = (ent: Entity): Entity | null => {
     const slugCandidates = candidateSlugs(ent.name);
     for (const slug of slugCandidates) {
       const path = basenameMap.get(slug);
       if (path !== undefined) {
-        const claimedPath = tryClaim(path, ent.id);
-        if (claimedPath !== null) return { ...ent, filePath: claimedPath };
+        const next = tryAssign(ent, path);
+        if (next !== null) return next;
       }
     }
-    if (pageBasenames !== undefined) {
-      const idSlug = ent.id.includes(':') ? ent.id.slice(ent.id.indexOf(':') + 1) : '';
-      const slugs = idSlug.length > 0 ? [...slugCandidates, idSlug] : slugCandidates;
-      for (const slug of slugs) {
-        const path = pageBasenames.get(slug);
-        if (path !== undefined) {
-          const claimedPath = tryClaim(path, ent.id);
-          if (claimedPath !== null) return { ...ent, filePath: claimedPath };
-        }
+    if (pageBasenames === undefined) return null;
+    const idSlug = ent.id.includes(':') ? ent.id.slice(ent.id.indexOf(':') + 1) : '';
+    const slugs = idSlug.length > 0 ? [...slugCandidates, idSlug] : slugCandidates;
+    for (const slug of slugs) {
+      const path = pageBasenames.get(slug);
+      if (path !== undefined) {
+        const next = tryAssign(ent, path);
+        if (next !== null) return next;
       }
     }
-    return ent;
-  });
+    return null;
+  };
+
+  const resolveOne = (ent: Entity): Entity => {
+    if (ent.filePath !== undefined) return ent;
+    if (looksLikeUrl(ent.name)) return ent;
+    if (ent.type === 'url') return ent;
+    return tryDefinedIn(ent) ?? tryResolver(ent) ?? trySlugMaps(ent) ?? ent;
+  };
+
+  const nextEntities: Entity[] = input.graph.entities.map(resolveOne);
 
   return { ...input.graph, entities: nextEntities };
 }
@@ -281,7 +290,7 @@ function slugify(s: string): string {
   return s
     .toLowerCase()
     .normalize('NFKD')
-    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/[^a-z0-9]+/g, '-') // NOSONAR(typescript:S5852): single char class + quantifier, linear.
     .replace(/^-+|-+$/g, '');
 }
 

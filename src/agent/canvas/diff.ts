@@ -62,13 +62,13 @@ export function diffAgainstSidecar(input: DiffInput): DiffResult {
   for (const id of newIds) {
     if (!sidecarIds.has(id)) added.push(id);
   }
-  added.sort();
+  added.sort((a, b) => a.localeCompare(b));
 
   const removed: string[] = [];
   for (const id of sidecarIds) {
     if (!currentIds.has(id)) removed.push(id);
   }
-  removed.sort();
+  removed.sort((a, b) => a.localeCompare(b));
 
   const sidecarEdgeKeys = new Set<string>();
   for (const e of input.sidecar.entityGraph.edges) {

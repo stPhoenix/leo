@@ -19,7 +19,7 @@ function randomTail(length = 6): string {
   }
   let out = '';
   while (out.length < length) {
-    out += Math.random().toString(36).slice(2);
+    out += Math.random().toString(36).slice(2); // NOSONAR(typescript:S2245): non-cryptographic run ID; crypto.randomUUID is the primary path.
   }
   return out.slice(0, length);
 }

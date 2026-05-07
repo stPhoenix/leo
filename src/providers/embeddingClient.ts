@@ -134,7 +134,7 @@ export class EmbeddingClient {
       if (signal?.aborted === true) throw signal.reason ?? new Error('aborted');
       return embeddings.embedDocuments(texts);
     }
-    const baseURL = `${this.opts.endpoint().replace(/\/+$/, '')}/v1`;
+    const baseURL = `${this.opts.endpoint().replace(/\/+$/, '')}/v1`; // NOSONAR(typescript:S5852): anchored trailing-slash trim, linear.
     const apiKey = this.opts.apiKey?.() ?? 'placeholder';
     const embeddings = new OpenAIEmbeddings({
       model: this.opts.model(),

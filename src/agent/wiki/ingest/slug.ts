@@ -1,8 +1,8 @@
 export function slugifyLabel(label: string, max = 50): string {
   const ascii = label
     .toLowerCase()
-    .replace(/https?:\/\//g, '')
-    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/https?:\/\//g, '') // NOSONAR(typescript:S5852): literal scheme strip, linear.
+    .replace(/[^a-z0-9]+/g, '-') // NOSONAR(typescript:S5852): single char class + quantifier, linear.
     .replace(/^-+|-+$/g, '');
   const trimmed = ascii.length === 0 ? 'source' : ascii;
   return trimmed.length > max ? trimmed.slice(0, max).replace(/-+$/, '') : trimmed;

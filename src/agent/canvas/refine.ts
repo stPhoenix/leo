@@ -178,47 +178,55 @@ interface CollectedStream {
   readonly toolCalls: ReadonlyArray<{ name: string; argsJson: string }>;
 }
 
+type RefineToolBufMap = Map<number, { id: string; name: string; args: string }>;
+
+function applyRefineDelta(
+  ev: Extract<RefineStreamEvent, { type: 'block_delta' }>,
+  toolBufs: RefineToolBufMap,
+  textBuffer: string,
+): string {
+  if (ev.delta?.type === 'input_json_delta') {
+    const buf = toolBufs.get(ev.index);
+    if (buf !== undefined) buf.args += (ev.delta as { partial_json: string }).partial_json;
+    return textBuffer;
+  }
+  if (ev.delta?.type === 'text_delta') {
+    return textBuffer + (ev.delta as { text: string }).text;
+  }
+  return textBuffer;
+}
+
+function flushRefineToolBuf(
+  ev: Extract<RefineStreamEvent, { type: 'block_stop' }>,
+  toolBufs: RefineToolBufMap,
+  toolCalls: Array<{ name: string; argsJson: string }>,
+): void {
+  const buf = toolBufs.get(ev.index);
+  if (buf !== undefined) {
+    toolCalls.push({ name: buf.name, argsJson: buf.args.length === 0 ? '{}' : buf.args });
+    toolBufs.delete(ev.index);
+  }
+}
+
 async function collectStream(
   stream: AsyncIterable<StreamEvent>,
   signal: AbortSignal,
 ): Promise<CollectedStream> {
   let textBuffer = '';
   const toolCalls: Array<{ name: string; argsJson: string }> = [];
-  const toolBufs = new Map<number, { id: string; name: string; args: string }>();
+  const toolBufs: RefineToolBufMap = new Map();
   for await (const event of stream as AsyncIterable<RefineStreamEvent>) {
     if (signal.aborted) break;
-    if (event.type === 'token') {
-      textBuffer += event.text ?? '';
-      continue;
-    }
-    if (event.type === 'tool_call') {
+    if (event.type === 'token') textBuffer += event.text ?? '';
+    else if (event.type === 'tool_call')
       toolCalls.push({ name: event.call.name, argsJson: event.call.argsJson });
-      continue;
-    }
-    if (event.type === 'block_start' && event.block?.type === 'tool_use') {
+    else if (event.type === 'block_start' && event.block?.type === 'tool_use') {
       const block = event.block as { id: string; name: string };
       toolBufs.set(event.index, { id: block.id, name: block.name, args: '' });
-      continue;
-    }
-    if (event.type === 'block_delta') {
-      if (event.delta?.type === 'input_json_delta') {
-        const buf = toolBufs.get(event.index);
-        if (buf !== undefined) buf.args += (event.delta as { partial_json: string }).partial_json;
-      } else if (event.delta?.type === 'text_delta') {
-        textBuffer += (event.delta as { text: string }).text;
-      }
-      continue;
-    }
-    if (event.type === 'block_stop') {
-      const buf = toolBufs.get(event.index);
-      if (buf !== undefined) {
-        toolCalls.push({ name: buf.name, argsJson: buf.args.length === 0 ? '{}' : buf.args });
-        toolBufs.delete(event.index);
-      }
-      continue;
-    }
-    if (event.type === 'done') break;
-    if (event.type === 'error') break;
+    } else if (event.type === 'block_delta')
+      textBuffer = applyRefineDelta(event, toolBufs, textBuffer);
+    else if (event.type === 'block_stop') flushRefineToolBuf(event, toolBufs, toolCalls);
+    else if (event.type === 'done' || event.type === 'error') break;
   }
   return { textBuffer, toolCalls };
 }

@@ -30,6 +30,32 @@ export interface CollectCanvasStatusDeps {
 
 const DEFAULT_LIMIT = 20;
 
+async function readSidecar(
+  vault: VaultAdapter,
+  filePath: string,
+): Promise<CanvasStatusRecentSidecar | null> {
+  let raw: string;
+  try {
+    raw = await vault.read(filePath);
+  } catch {
+    return null;
+  }
+  let parsed: { runId?: unknown; lastRunAt?: unknown; schemaVersion?: unknown };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    return null;
+  }
+  if (parsed.schemaVersion !== 1) return null;
+  const runId = typeof parsed.runId === 'string' ? parsed.runId : '';
+  const lastRunAt = typeof parsed.lastRunAt === 'string' ? parsed.lastRunAt : '';
+  if (runId === '' || lastRunAt === '') return null;
+  const slug = filePath.replace(/^.*\//, '').replace(/\.json$/, '');
+  const parsedSlug = parseSidecarSlug(slug);
+  const leaf = parsedSlug !== null ? parsedSlug.leaf : slug;
+  return { slug, leaf, runId, lastRunAt };
+}
+
 export async function collectCanvasStatus(deps: CollectCanvasStatusDeps): Promise<CanvasStatus> {
   const { vault, mutex } = deps;
   const limit = deps.sidecarLimit ?? DEFAULT_LIMIT;
@@ -39,7 +65,7 @@ export async function collectCanvasStatus(deps: CollectCanvasStatusDeps): Promis
     op: s.op,
   }));
 
-  const dir = CANVAS_SIDECAR_PREFIX.replace(/\/+$/, '');
+  const dir = CANVAS_SIDECAR_PREFIX.replace(/\/+$/, ''); // NOSONAR(typescript:S5852): trailing-slash trim, anchored at $.
   let listing;
   try {
     listing = await vault.list(dir);
@@ -54,26 +80,8 @@ export async function collectCanvasStatus(deps: CollectCanvasStatusDeps): Promis
 
   const collected: CanvasStatusRecentSidecar[] = [];
   for (const filePath of jsonFiles) {
-    let raw: string;
-    try {
-      raw = await vault.read(filePath);
-    } catch {
-      continue;
-    }
-    let parsed: { runId?: unknown; lastRunAt?: unknown; schemaVersion?: unknown };
-    try {
-      parsed = JSON.parse(raw) as typeof parsed;
-    } catch {
-      continue;
-    }
-    if (parsed.schemaVersion !== 1) continue;
-    const runId = typeof parsed.runId === 'string' ? parsed.runId : '';
-    const lastRunAt = typeof parsed.lastRunAt === 'string' ? parsed.lastRunAt : '';
-    if (runId === '' || lastRunAt === '') continue;
-    const slug = filePath.replace(/^.*\//, '').replace(/\.json$/, '');
-    const parsedSlug = parseSidecarSlug(slug);
-    const leaf = parsedSlug !== null ? parsedSlug.leaf : slug;
-    collected.push({ slug, leaf, runId, lastRunAt });
+    const entry = await readSidecar(vault, filePath);
+    if (entry !== null) collected.push(entry);
   }
   collected.sort((a, b) => b.lastRunAt.localeCompare(a.lastRunAt));
   return {

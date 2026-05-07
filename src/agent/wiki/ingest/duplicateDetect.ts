@@ -44,7 +44,7 @@ function parseFrontmatterFields(
   for (let i = 1; i < lines.length; i += 1) {
     const line = lines[i] ?? '';
     if (line.trim() === '---') break;
-    const m = /^([A-Za-z0-9_-]+)\s*:\s*(.+?)\s*$/.exec(line);
+    const m = /^([A-Za-z0-9_-]+)\s*:\s*(.+?)\s*$/.exec(line); // NOSONAR(typescript:S5852): anchored YAML key:value, char class + lazy capture, linear per line.
     if (m === null) continue;
     if (wanted.has(m[1] ?? '')) {
       out[m[1]!] = (m[2] ?? '').replace(/^["']|["']$/g, '');

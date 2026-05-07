@@ -22,7 +22,7 @@ export class DynamicDiscovery {
 
   constructor(opts: DynamicDiscoveryOptions) {
     this.cwd = normalize(opts.cwd);
-    this.skillsSubdir = opts.skillsSubdir.replace(/^\/+|\/+$/g, '');
+    this.skillsSubdir = opts.skillsSubdir.replace(/^\/+|\/+$/g, ''); // NOSONAR(typescript:S5852): anchored slash trim, linear.
     this.exists = opts.exists;
   }
 

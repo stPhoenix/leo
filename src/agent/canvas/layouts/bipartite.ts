@@ -6,47 +6,69 @@ import { nodeSizeFor } from './nodeSize';
 const COL_GAP = 320;
 const ROW_GAP = 80;
 
-export function layoutBipartite(entities: readonly Entity[], edges: readonly Edge[]): CanvasJson {
-  if (entities.length === 0) return { nodes: [], edges: [] };
+function rankByType(entities: readonly Entity[]): [string, Entity[]][] {
   const byType = new Map<string, Entity[]>();
   for (const e of entities) {
     const list = byType.get(e.type);
     if (list === undefined) byType.set(e.type, [e]);
     else list.push(e);
   }
-  const ranked = [...byType.entries()].sort((a, b) => {
+  return [...byType.entries()].sort((a, b) => {
     if (b[1].length !== a[1].length) return b[1].length - a[1].length;
     return a[0].localeCompare(b[0]);
   });
-  if (ranked.length < 2) {
-    const sizes = entities.map((e) => nodeSizeFor(e));
-    const nodes: CanvasNode[] = entities.map((e, i) =>
-      buildCanvasNode(e, 0, i * (sizes[i]!.height + ROW_GAP), sizes[i]!),
-    );
-    return { nodes, edges: [] };
+}
+
+function pickSideByEdges(
+  entId: string,
+  edges: readonly Edge[],
+  colAssign: ReadonlyMap<string, 'left' | 'right'>,
+): 'left' | 'right' {
+  let leftHits = 0;
+  let rightHits = 0;
+  for (const ed of edges) {
+    const other = ed.from === entId ? ed.to : ed.to === entId ? ed.from : null;
+    if (other === null) continue;
+    const side = colAssign.get(other);
+    if (side === 'left') leftHits += 1;
+    else if (side === 'right') rightHits += 1;
   }
-  const leftType = ranked[0]![0];
-  const rightType = ranked[1]![0];
-  const leftIds = new Set(ranked[0]![1].map((e) => e.id));
-  const rightIds = new Set(ranked[1]![1].map((e) => e.id));
+  return leftHits >= rightHits ? 'left' : 'right';
+}
+
+function appendColumnNodes(
+  ordered: readonly Entity[],
+  sizes: readonly { width: number; height: number }[],
+  x: number,
+  nodes: CanvasNode[],
+): void {
+  ordered.forEach((e, i) => {
+    const s = sizes[i]!;
+    nodes.push(buildCanvasNode(e, x, i * (s.height + ROW_GAP), s));
+  });
+}
+
+function singleColumnLayout(entities: readonly Entity[]): CanvasJson {
+  const sizes = entities.map((e) => nodeSizeFor(e));
+  const nodes: CanvasNode[] = entities.map((e, i) =>
+    buildCanvasNode(e, 0, i * (sizes[i]!.height + ROW_GAP), sizes[i]!),
+  );
+  return { nodes, edges: [] };
+}
+
+export function layoutBipartite(entities: readonly Entity[], edges: readonly Edge[]): CanvasJson {
+  if (entities.length === 0) return { nodes: [], edges: [] };
+  const ranked = rankByType(entities);
+  if (ranked.length < 2) return singleColumnLayout(entities);
 
   const colAssign = new Map<string, 'left' | 'right'>();
-  for (const id of leftIds) colAssign.set(id, 'left');
-  for (const id of rightIds) colAssign.set(id, 'right');
+  for (const id of ranked[0]![1].map((e) => e.id)) colAssign.set(id, 'left');
+  for (const id of ranked[1]![1].map((e) => e.id)) colAssign.set(id, 'right');
 
   // Remaining types: assign to whichever column they connect to most.
   for (let i = 2; i < ranked.length; i += 1) {
     for (const ent of ranked[i]![1]) {
-      let leftHits = 0;
-      let rightHits = 0;
-      for (const ed of edges) {
-        const other = ed.from === ent.id ? ed.to : ed.to === ent.id ? ed.from : null;
-        if (other === null) continue;
-        const side = colAssign.get(other);
-        if (side === 'left') leftHits += 1;
-        else if (side === 'right') rightHits += 1;
-      }
-      colAssign.set(ent.id, leftHits >= rightHits ? 'left' : 'right');
+      colAssign.set(ent.id, pickSideByEdges(ent.id, edges, colAssign));
     }
   }
 
@@ -61,20 +83,11 @@ export function layoutBipartite(entities: readonly Entity[], edges: readonly Edg
   const sizesR = rightOrdered.map((e) => nodeSizeFor(e));
 
   const colWidthL = sizesL.reduce((m, s) => Math.max(m, s.width), 160);
-  const xLeft = 0;
   const xRight = colWidthL + COL_GAP;
 
   const nodes: CanvasNode[] = [];
-  leftOrdered.forEach((e, i) => {
-    const s = sizesL[i]!;
-    nodes.push(buildCanvasNode(e, xLeft, i * (s.height + ROW_GAP), s));
-  });
-  rightOrdered.forEach((e, i) => {
-    const s = sizesR[i]!;
-    nodes.push(buildCanvasNode(e, xRight, i * (s.height + ROW_GAP), s));
-  });
-  void leftType;
-  void rightType;
+  appendColumnNodes(leftOrdered, sizesL, 0, nodes);
+  appendColumnNodes(rightOrdered, sizesR, xRight, nodes);
   return { nodes, edges: [] };
 }
 

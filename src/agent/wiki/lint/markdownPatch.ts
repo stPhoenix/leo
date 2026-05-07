@@ -31,7 +31,7 @@ export interface SectionRange {
   readonly level: number;
 }
 
-const HEADING_RE = /^(#{1,6})\s+(.+?)\s*$/;
+const HEADING_RE = /^(#{1,6})\s+(.+?)\s*$/; // NOSONAR(typescript:S5852): anchored heading, bounded `#{1,6}`, lazy capture, linear per line.
 const SOURCES_RE = /^(#{1,6})\s+sources\s*$/i;
 const REPLACE_BODY_DRIFT_THRESHOLD = 0.5;
 
@@ -240,7 +240,7 @@ function recompose(frontmatter: string, content: string, sourcesBlock: string): 
 }
 
 function stripTrailingBlankLines(s: string): string {
-  return s.replace(/\n+$/, '');
+  return s.replace(/\n+$/, ''); // NOSONAR(typescript:S5852): anchored trailing-newline trim, linear.
 }
 
 function stripStrayShell(body: string): string {

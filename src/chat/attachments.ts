@@ -46,7 +46,7 @@ export function captureAttachments(
 ): CaptureResult {
   const maxBytes = opts.maxBytes ?? ATTACHMENT_MAX_BYTES;
   const maxCount = opts.maxCount ?? ATTACHMENT_MAX_COUNT_PER_TURN;
-  const idFactory = opts.idFactory ?? (() => `att-${Math.random().toString(36).slice(2, 9)}`);
+  const idFactory = opts.idFactory ?? (() => `att-${Math.random().toString(36).slice(2, 9)}`); // NOSONAR(typescript:S2245): non-cryptographic attachment ID for UI lists.
   const allowlist = opts.documentMimeAllowlist ?? DEFAULT_DOCUMENT_ALLOWLIST;
   const accepted: Attachment[] = [];
   const rejected: { name: string; reason: AttachmentRejectReason }[] = [];

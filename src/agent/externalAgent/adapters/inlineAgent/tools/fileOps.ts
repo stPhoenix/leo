@@ -464,6 +464,45 @@ async function* walkSandboxFiles(root: string, start: string): AsyncIterable<str
   }
 }
 
+function buildGrepMatcher(
+  parsed: GrepInput,
+): { ok: true; matcher: (line: string) => boolean } | { ok: false; error: 'invalid_pattern' } {
+  if (parsed.regex === true) {
+    let re: RegExp;
+    try {
+      re = new RegExp(parsed.pattern, parsed.ignoreCase === true ? 'i' : '');
+    } catch {
+      return { ok: false, error: 'invalid_pattern' };
+    }
+    return { ok: true, matcher: (line) => re.test(line) };
+  }
+  const needle = parsed.ignoreCase === true ? parsed.pattern.toLowerCase() : parsed.pattern;
+  const matcher = (line: string): boolean =>
+    (parsed.ignoreCase === true ? line.toLowerCase() : line).includes(needle);
+  return { ok: true, matcher };
+}
+
+function scanFileForMatches(
+  abs: string,
+  raw: Buffer,
+  sandboxRoot: string,
+  matcher: (line: string) => boolean,
+  max: number,
+  matches: GrepMatch[],
+): boolean {
+  const text = raw.toString('utf8');
+  const lines = text.split(/\r?\n/);
+  const relPath = relative(sandboxRoot, abs).split(sep).join('/');
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    if (matcher(line)) {
+      matches.push({ path: relPath, line: i + 1, text: line.slice(0, 500) });
+      if (matches.length >= max) return true;
+    }
+  }
+  return false;
+}
+
 export function createGrepTool(ctx: FileOpsCtx): GrepTool {
   return {
     name: 'grep',
@@ -482,21 +521,9 @@ export function createGrepTool(ctx: FileOpsCtx): GrepTool {
         if (safe.error === 'not_found') return { ok: false, error: 'not_found' };
         return { ok: false, error: 'path_outside_sandbox' };
       }
+      const matcherResult = buildGrepMatcher(parsed);
+      if (!matcherResult.ok) return { ok: false, error: matcherResult.error };
       const max = parsed.maxMatches ?? GREP_DEFAULT_MAX_MATCHES;
-      let matcher: (line: string) => boolean;
-      if (parsed.regex === true) {
-        let re: RegExp;
-        try {
-          re = new RegExp(parsed.pattern, parsed.ignoreCase === true ? 'i' : '');
-        } catch {
-          return { ok: false, error: 'invalid_pattern' };
-        }
-        matcher = (line) => re.test(line);
-      } else {
-        const needle = parsed.ignoreCase === true ? parsed.pattern.toLowerCase() : parsed.pattern;
-        matcher = (line) =>
-          (parsed.ignoreCase === true ? line.toLowerCase() : line).includes(needle);
-      }
 
       let stat;
       try {
@@ -514,7 +541,7 @@ export function createGrepTool(ctx: FileOpsCtx): GrepTool {
       const matches: GrepMatch[] = [];
       let filesScanned = 0;
       let truncated = false;
-      outer: for await (const abs of fileIter) {
+      for await (const abs of fileIter) {
         if (ctx.signal.aborted) break;
         filesScanned += 1;
         let raw: Buffer;
@@ -524,18 +551,9 @@ export function createGrepTool(ctx: FileOpsCtx): GrepTool {
           continue;
         }
         if (looksBinary(raw)) continue;
-        const text = raw.toString('utf8');
-        const lines = text.split(/\r?\n/);
-        const relPath = relative(ctx.sandbox.root, abs).split(sep).join('/');
-        for (let i = 0; i < lines.length; i += 1) {
-          const line = lines[i] ?? '';
-          if (matcher(line)) {
-            matches.push({ path: relPath, line: i + 1, text: line.slice(0, 500) });
-            if (matches.length >= max) {
-              truncated = true;
-              break outer;
-            }
-          }
+        if (scanFileForMatches(abs, raw, ctx.sandbox.root, matcherResult.matcher, max, matches)) {
+          truncated = true;
+          break;
         }
       }
       return { ok: true, data: { matches, truncated, filesScanned } };

@@ -168,6 +168,6 @@ async function collectAllVaultFiles(vault: VaultAdapter): Promise<string[]> {
     for (const f of listing.files) out.push(f);
     for (const d of listing.folders) queue.push(d);
   }
-  out.sort();
+  out.sort((a, b) => a.localeCompare(b));
   return out;
 }

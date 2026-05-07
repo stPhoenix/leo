@@ -107,8 +107,8 @@ export function createRefineSubAgent(opts: RefineSubAgentOptions): RefineDeps {
   };
 
   return {
-    async refine({ state, userInput, signal, traceConfig }) {
-      void userInput; // refineHistory already carries the user message; userInput is informational only.
+    async refine({ state, signal, traceConfig }) {
+      // refineHistory already carries the user message; userInput is informational only.
       const messages: ChatMessage[] = [
         { role: 'system', content: systemPrompt() },
         { role: 'user', content: state.originalAsk },

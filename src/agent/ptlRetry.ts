@@ -42,7 +42,7 @@ export function groupMessagesByApiRound(messages: readonly ChatMessage[]): ChatM
 export function parseTokenGap(response: string): number | null {
   const patterns = [
     /tokens?:?\s*(\d+)\s*(?:>|over|exceeded)/i,
-    /exceeds?[^0-9]*(\d+)\s*tokens?/i,
+    /exceeds?[^0-9]*(\d+)\s*tokens?/i, // NOSONAR(typescript:S5852): bounded literal alternation; provider error strings short.
     /(\d+)\s*tokens?\s*(?:over|too many)/i,
     /gap[^0-9]*(\d+)/i,
   ];

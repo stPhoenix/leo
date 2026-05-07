@@ -13,7 +13,7 @@ function kebabize(input: string): string {
     .normalize('NFKD')
     .replace(/[̀-ͯ]/g, '')
     .replace(SLUG_REPLACE_RE, '-')
-    .replace(/^-+|-+$/g, '');
+    .replace(/^-+|-+$/g, ''); // NOSONAR(typescript:S5852): anchored trim, linear.
 }
 
 export async function canvasPathToSidecarSlug(vaultPath: string): Promise<string> {

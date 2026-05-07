@@ -347,6 +347,7 @@ async function invokeVaultOp(
 }
 
 function compileJs(source: string): CompiledJsImpl {
+  // NOSONAR(typescript:S1523): user-defined tool snippets execute by design (documented user-extensibility); invocation gated by AbortSignal + ToolCtx.
   const factory = new Function(
     'ctx',
     'args',

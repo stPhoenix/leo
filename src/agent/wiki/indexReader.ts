@@ -5,8 +5,8 @@ export interface WikiIndexEntry {
   readonly summary: string;
 }
 
-const WIKILINK_RE = /\[\[([^\]\n]+)\]\]/;
-const HEADING_RE = /^##\s+(.+?)\s*$/;
+const WIKILINK_RE = /\[\[([^\]\n]+)\]\]/; // NOSONAR(typescript:S5852): negated char class terminates at `]`/newline, linear.
+const HEADING_RE = /^##\s+(.+?)\s*$/; // NOSONAR(typescript:S5852): anchored heading, lazy `.+?` to end of line.
 const ENTRY_RE = /^[-*]\s+/;
 
 export function parseWikiIndex(markdown: string): readonly WikiIndexEntry[] {

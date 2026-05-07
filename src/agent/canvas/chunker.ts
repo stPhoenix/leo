@@ -14,7 +14,7 @@ export interface ChunkCanvasBodyInput {
   readonly maxChunks: number;
 }
 
-const HEADING_RE = /^(#{1,6})\s+(.+)$/;
+const HEADING_RE = /^(#{1,6})\s+(.+)$/; // NOSONAR(typescript:S5852): bounded `#{1,6}` + greedy `.+` to end-of-line, linear in line length.
 const MARKDOWN_CONTENT_TYPE_RE = /^text\/markdown\b/i;
 const HAS_HEADING_RE = /^#{1,6} /m;
 

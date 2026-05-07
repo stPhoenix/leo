@@ -6,7 +6,12 @@ import { getInlineAgentResearchPrompt, getInlineAgentSynthesizePrompt } from './
 import { inlineAgentConfigSchema, type InlineAgentConfig } from './configSchema';
 import { Sandbox } from './sandbox';
 import { createInitialRunState, setPlan, type InlineAgentRunState } from './runState';
-import { composeAbortSignal, perStepBudget, selectMaxIterations } from './budgets';
+import {
+  composeAbortSignal,
+  perStepBudget,
+  selectMaxIterations,
+  type ComposedAbort,
+} from './budgets';
 import { bridgeStream, mapAdapterError, mapNodeComplete, type BridgeChunk } from './eventBridge';
 import { classifyTask } from './router';
 import { buildSimpleBranchTools, runManualLoop, type ReactLoopCtx } from './branches/simpleBranch';
@@ -70,6 +75,97 @@ export function assertNoExternalDelegate(
       }
     }
   }
+}
+
+interface InlineModelSetup {
+  readonly chatModel: BaseChatModel;
+  readonly manualAdapter: ManualChatModelAdapter;
+  readonly error: null;
+}
+
+interface InlineModelSetupError {
+  readonly chatModel: null;
+  readonly manualAdapter: null;
+  readonly error: ExternalEvent;
+}
+
+function resolveInlineModel(
+  deps: InlineAgentGraphDeps,
+  parsed: InlineAgentConfig,
+  composed: ComposedAbort,
+): InlineModelSetup | InlineModelSetupError {
+  let chatModel: BaseChatModel | null;
+  try {
+    chatModel = deps.providerFactory(parsed.providerId, parsed.model, {
+      temperature: parsed.temperature,
+      signal: composed.signal,
+    });
+  } catch {
+    chatModel = null;
+  }
+  if (chatModel === null) {
+    return {
+      chatModel: null,
+      manualAdapter: null,
+      error: mapAdapterError({
+        code: 'invalid_provider',
+        message: `providerFactory failed for ${parsed.providerId}/${parsed.model}`,
+      }),
+    };
+  }
+  const manualAdapter =
+    deps.chatModelAdapter !== undefined
+      ? deps.chatModelAdapter(chatModel, deps.traceConfig)
+      : ((chatModel as unknown as { manualAdapter?: ManualChatModelAdapter }).manualAdapter ??
+        null);
+  if (manualAdapter === null) {
+    return {
+      chatModel: null,
+      manualAdapter: null,
+      error: mapAdapterError({
+        code: 'invalid_provider',
+        message: 'inline agent requires a ManualChatModelAdapter (set deps.chatModelAdapter)',
+      }),
+    };
+  }
+  return { chatModel, manualAdapter, error: null };
+}
+
+async function* runPlanPhase(args: {
+  classifier: { route: 'simple' | 'multistep'; initialPlan?: readonly string[] };
+  deps: InlineAgentGraphDeps;
+  parsed: InlineAgentConfig;
+  input: InlineAgentGraphInput;
+  composed: ComposedAbort;
+  runState: InlineAgentRunState;
+  chatModel: BaseChatModel;
+}): AsyncGenerator<ExternalEvent, { route: 'simple' | 'multistep'; plan: readonly string[] }> {
+  const { classifier, deps, parsed, input, composed, runState, chatModel } = args;
+  if (classifier.route !== 'multistep') {
+    return { route: classifier.route, plan: [] };
+  }
+  const planResult = await planSteps({
+    providerFactory: deps.providerFactory,
+    config: parsed,
+    refinedAsk: input.refinedAsk,
+    ...(classifier.initialPlan !== undefined ? { initialPlan: classifier.initialPlan } : {}),
+    signal: composed.signal,
+    runState,
+    logger: deps.logger,
+    chatModel,
+    ...(deps.traceConfig !== undefined ? { traceConfig: deps.traceConfig } : {}),
+  });
+  if (planResult.ok) {
+    setPlan(runState, planResult.plan);
+    yield mapNodeComplete({ node: 'planner', durationMs: 0, planLength: planResult.plan.length });
+    return { route: 'multistep', plan: planResult.plan };
+  }
+  if (planResult.reason === 'empty') {
+    deps.logger.warn('externalAgent.adapter.inlineAgent.multistep.planner-fallback', {
+      reason: planResult.reason,
+    });
+  }
+  return { route: 'simple', plan: [] };
 }
 
 export async function* runInlineAgentGraph(
@@ -176,38 +272,14 @@ export async function* runInlineAgentGraph(
       override: null,
     });
 
-    const chatModel = (() => {
-      try {
-        return deps.providerFactory(parsed.providerId, parsed.model, {
-          temperature: parsed.temperature,
-          signal: composed.signal,
-        });
-      } catch {
-        return null;
-      }
-    })();
-    if (chatModel === null) {
-      yield mapAdapterError({
-        code: 'invalid_provider',
-        message: `providerFactory failed for ${parsed.providerId}/${parsed.model}`,
-      });
+    const modelSetup = resolveInlineModel(deps, parsed, composed);
+    if (modelSetup.error !== null) {
+      yield modelSetup.error;
       return;
     }
+    const { chatModel, manualAdapter } = modelSetup;
 
-    const manualAdapter =
-      deps.chatModelAdapter !== undefined
-        ? deps.chatModelAdapter(chatModel, deps.traceConfig)
-        : ((chatModel as unknown as { manualAdapter?: ManualChatModelAdapter }).manualAdapter ??
-          null);
-    if (manualAdapter === null) {
-      yield mapAdapterError({
-        code: 'invalid_provider',
-        message: 'inline agent requires a ManualChatModelAdapter (set deps.chatModelAdapter)',
-      });
-      return;
-    }
-
-    // Phase 1 — classify
+    // Phase 1 — classify + plan
     const classifier = await classifyTask({
       providerFactory: deps.providerFactory,
       config: parsed,
@@ -227,40 +299,17 @@ export async function* runInlineAgentGraph(
         : {}),
     });
 
-    let route = classifier.route;
-    let plan: readonly string[] = [];
-
-    if (route === 'multistep') {
-      const planResult = await planSteps({
-        providerFactory: deps.providerFactory,
-        config: parsed,
-        refinedAsk: input.refinedAsk,
-        ...(classifier.initialPlan !== undefined ? { initialPlan: classifier.initialPlan } : {}),
-        signal: composed.signal,
-        runState,
-        logger: deps.logger,
-        chatModel,
-        ...(deps.traceConfig !== undefined ? { traceConfig: deps.traceConfig } : {}),
-      });
-      if (planResult.ok) {
-        plan = planResult.plan;
-        setPlan(runState, plan);
-        yield mapNodeComplete({
-          node: 'planner',
-          durationMs: 0,
-          planLength: plan.length,
-        });
-      } else {
-        // planner.ts already logs warn on `unparsable`/`llm_error`; only the
-        // `empty` reason needs an additional warn here.
-        if (planResult.reason === 'empty') {
-          deps.logger.warn('externalAgent.adapter.inlineAgent.multistep.planner-fallback', {
-            reason: planResult.reason,
-          });
-        }
-        route = 'simple';
-      }
-    }
+    const planPhase = yield* runPlanPhase({
+      classifier,
+      deps,
+      parsed,
+      input,
+      composed,
+      runState,
+      chatModel,
+    });
+    const route = planPhase.route;
+    const plan = planPhase.plan;
 
     // Phase 2 — branch execution
     const branchOutcome =

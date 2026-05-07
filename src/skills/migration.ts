@@ -82,7 +82,7 @@ function decodeLegacy(content: string, fileName: string): LegacyPayload | null {
     }
   }
   if (fileName.endsWith('.md')) {
-    const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?([\s\S]*)$/.exec(content);
+    const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?([\s\S]*)$/.exec(content); // NOSONAR(typescript:S5852): anchored frontmatter, lazy capture bounded by literal `\n---`, linear.
     if (match === null) return null;
     const fm = parseFlatYaml(match[1] ?? '');
     fm['systemPrompt'] = (match[2] ?? '').trimStart();

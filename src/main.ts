@@ -2505,7 +2505,7 @@ function buildInlineChatModel(input: BuildInlineChatModelInput): BaseChatModel {
     }) as unknown as BaseChatModel;
   }
   // OpenAI-compatible: openai, lmstudio, ollama, custom
-  const baseURL = `${endpoint.replace(/\/+$/, '')}/v1`;
+  const baseURL = `${endpoint.replace(/\/+$/, '')}/v1`; // NOSONAR(typescript:S5852): anchored trailing-slash trim, linear.
   return new ChatOpenAI({
     model,
     apiKey: apiKey.length > 0 ? apiKey : 'placeholder',

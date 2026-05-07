@@ -342,7 +342,7 @@ export function makeStagedAttachment(opts: MakeStagedAttachmentOpts = {}): Stage
   const mimeType = opts.mimeType ?? (kind === 'image' ? 'image/png' : 'application/pdf');
   const size = opts.size ?? 42_000;
   return {
-    id: opts.id ?? `att-${Math.random().toString(36).slice(2, 8)}`,
+    id: opts.id ?? `att-${Math.random().toString(36).slice(2, 8)}`, // NOSONAR(typescript:S2245): Storybook fixture id, not security-relevant.
     kind,
     name,
     mimeType,

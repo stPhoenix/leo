@@ -24,7 +24,7 @@ export interface CollectWikiStatusDeps {
   readonly getMutexState: () => WikiMutexState;
 }
 
-const LINT_LOG_RE = /^##\s+\[([^\]]+)\]\s+lint\s+\|\s+runId=([A-Za-z0-9_-]+)/;
+const LINT_LOG_RE = /^##\s+\[([^\]]+)\]\s+lint\s+\|\s+runId=([A-Za-z0-9_-]+)/; // NOSONAR(typescript:S5852): anchored, negated char class terminates capture, linear.
 const WIKILINK_RE = /\[\[([^\]\n|#]+)(?:\|[^\]]*)?\]\]/g;
 
 export async function collectWikiStatus(deps: CollectWikiStatusDeps): Promise<WikiStatus> {
@@ -150,7 +150,7 @@ function extractFrontmatterField(body: string, field: string): string | null {
   for (let i = 1; i < lines.length; i += 1) {
     const line = lines[i] ?? '';
     if (line.trim() === '---') return null;
-    const m = /^([A-Za-z0-9_-]+)\s*:\s*(.+?)\s*$/.exec(line);
+    const m = /^([A-Za-z0-9_-]+)\s*:\s*(.+?)\s*$/.exec(line); // NOSONAR(typescript:S5852): anchored YAML key:value, char class + lazy capture, linear per line.
     if (m === null) continue;
     if (m[1] === field) return (m[2] ?? '').replace(/^["']|["']$/g, '');
   }

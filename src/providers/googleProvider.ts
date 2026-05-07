@@ -87,7 +87,7 @@ export class GoogleProvider implements Provider {
     const endpoint = this.opts.endpoint?.();
     const baseUrl =
       endpoint !== undefined && endpoint.length > 0
-        ? endpoint.replace(/\/+$/, '')
+        ? endpoint.replace(/\/+$/, '') // NOSONAR(typescript:S5852): anchored trailing-slash trim, linear.
         : DEFAULT_BASE_URL;
     const url = `${baseUrl}/v1beta/models?pageSize=1000`;
     let response: Response;

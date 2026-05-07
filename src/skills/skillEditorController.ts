@@ -237,7 +237,7 @@ function arrayEqual<T>(a: readonly T[], b: readonly T[]): boolean {
 }
 
 function defaultIdGenerator(): string {
-  return `skill-${Math.random().toString(36).slice(2, 8)}`;
+  return `skill-${Math.random().toString(36).slice(2, 8)}`; // NOSONAR(typescript:S2245): non-cryptographic UI id for editor scratch entries.
 }
 
 export type { SkillsStore };

@@ -104,21 +104,12 @@ export class ReducerInvalidError extends Error {
   }
 }
 
-export async function reduceEntityGraph(
-  input: ReduceEntityGraphInput,
-  deps: ReduceEntityGraphDeps,
-): Promise<ReduceEntityGraphResult> {
-  const outputs = Array.from(input.outputs);
-  if (outputs.length === 0) {
-    return {
-      graph: { schemaVersion: 1, entities: [], edges: [] },
-      insights: { hubs: [], components: { count: 0, sizes: [] }, orphans: [], perTypeCount: {} },
-    };
-  }
-
+function buildFragmentMaps(outputs: readonly ExtractorOutput[]): {
+  fragmentsByCanonical: Map<string, FragmentRef[]>;
+  tempIdMap: Map<string, string>;
+} {
   const fragmentsByCanonical = new Map<string, FragmentRef[]>();
-  const tempIdMap = new Map<string, string>(); // key: `${sourceRef}::${tempId}` → canonicalId
-
+  const tempIdMap = new Map<string, string>();
   for (const out of outputs) {
     for (const ent of out.entities) {
       const canonical = canonicalIdFor(ent);
@@ -129,48 +120,26 @@ export async function reduceEntityGraph(
       tempIdMap.set(`${out.sourceRef}::${ent.tempId}`, canonical);
     }
   }
+  return { fragmentsByCanonical, tempIdMap };
+}
 
-  // Pre-merge passes (deterministic, run BEFORE LLM alias resolvers).
-  // A — definedIn collisions: entities pointing to the same definitional
-  //     resource collapse regardless of name divergence.
-  applyCanonicalAliasMap(
-    buildDefinedInAliasMap(fragmentsByCanonical, deps.pageBasenames),
-    fragmentsByCanonical,
-    tempIdMap,
+function pickDominantFragment(refs: readonly FragmentRef[], canonical: string): EntityFragment {
+  const idPrefix = canonical.includes(':') ? canonical.slice(0, canonical.indexOf(':')) : null;
+  return (
+    refs.find((r) => canonicalIdFor(r.fragment) === canonical)?.fragment ??
+    (idPrefix !== null
+      ? (refs.find((r) => r.fragment.type === idPrefix)?.fragment ?? refs[0]!.fragment)
+      : refs[0]!.fragment)
   );
-  // B — (type, fields.position) collisions: ordinal-series bridge.
-  applyCanonicalAliasMap(
-    buildPositionAliasMap(fragmentsByCanonical),
-    fragmentsByCanonical,
-    tempIdMap,
-  );
-  // C — token-subset within type: `be-truthful` ⊂ `be-truthful-and-never-deceive`.
-  applyCanonicalAliasMap(
-    buildTokenSubsetAliasMap(fragmentsByCanonical),
-    fragmentsByCanonical,
-    tempIdMap,
-  );
+}
 
-  // Detect ambiguous overlaps: same normalized-name across different types.
-  const aliasMap = await maybeResolveAliases(fragmentsByCanonical, input, deps);
-  applyCanonicalAliasMap(aliasMap, fragmentsByCanonical, tempIdMap);
-
-  // Materialize entities. Prefer the fragment whose (type, name) regenerates
-  // the canonical id — that fragment is authoritative for the rendered name.
-  // After alias merges, multiple fragments may share a canonical, but only the
-  // merge target's own fragments self-match. Picking by `type === idPrefix`
-  // alone is unsafe: the rebuilt fragment list (insertion order in
-  // `applyCanonicalAliasMap`) may put alias-source fragments first, leaving
-  // id and rendered name out of sync (e.g. id=be-loyal-and-faithful but
-  // name=be-truthful-and-never-deceive).
+function materializeEntities(
+  fragmentsByCanonical: ReadonlyMap<string, FragmentRef[]>,
+  pageBasenames: ReadonlyMap<string, string> | undefined,
+): Entity[] {
   const entitiesArr: Entity[] = [];
   for (const [canonical, refs] of fragmentsByCanonical) {
-    const idPrefix = canonical.includes(':') ? canonical.slice(0, canonical.indexOf(':')) : null;
-    const dominant =
-      refs.find((r) => canonicalIdFor(r.fragment) === canonical)?.fragment ??
-      (idPrefix !== null
-        ? (refs.find((r) => r.fragment.type === idPrefix)?.fragment ?? refs[0]!.fragment)
-        : refs[0]!.fragment);
+    const dominant = pickDominantFragment(refs, canonical);
     const sources = uniqueSorted(refs.map((r) => r.sourceRef)).slice(0, 20);
     const fields = refs.reduce<Record<string, unknown>>((acc, r) => {
       if (r.fragment.fields !== undefined) Object.assign(acc, r.fragment.fields);
@@ -182,25 +151,59 @@ export async function reduceEntityGraph(
         .map((r) => r.fragment.definedIn),
     );
     const definedInResolved =
-      definedInRaw !== undefined ? normalizeDefinedIn(definedInRaw, deps.pageBasenames) : undefined;
-    const entity: Entity = {
+      definedInRaw !== undefined ? normalizeDefinedIn(definedInRaw, pageBasenames) : undefined;
+    entitiesArr.push({
       id: canonical,
       type: dominant.type,
       name: dominant.name,
       ...(Object.keys(fields).length > 0 ? { fields } : {}),
       sources,
       ...(definedInResolved !== undefined ? { definedIn: definedInResolved } : {}),
-    };
-    entitiesArr.push(entity);
+    });
   }
   entitiesArr.sort((a, b) => a.id.localeCompare(b.id));
+  return entitiesArr;
+}
 
-  // Edges: validate direction against relationTypes ontology, then dedupe by (from, to, type).
+function reorientEdgeEndpoints(
+  from: string,
+  to: string,
+  edgeType: string,
+  entityTypeById: ReadonlyMap<string, string>,
+  relIndex: ReadonlyMap<string, { readonly from: string; readonly to: string }>,
+  knownEntityTypes: ReadonlySet<string>,
+): { from: string; to: string } | null {
+  const rel = relIndex.get(edgeType);
+  if (rel === undefined || rel.from === rel.to) return { from, to };
+  const fromType = entityTypeById.get(from);
+  const toType = entityTypeById.get(to);
+  const matchesForward = fromType === rel.from && toType === rel.to;
+  const matchesReverse = fromType === rel.to && toType === rel.from;
+  if (!matchesForward && matchesReverse) return { from: to, to: from };
+  if (
+    !matchesForward &&
+    !matchesReverse &&
+    fromType !== undefined &&
+    toType !== undefined &&
+    knownEntityTypes.has(fromType) &&
+    knownEntityTypes.has(toType)
+  ) {
+    return null;
+  }
+  return { from, to };
+}
+
+function materializeEdges(
+  outputs: readonly ExtractorOutput[],
+  tempIdMap: ReadonlyMap<string, string>,
+  entitiesArr: readonly Entity[],
+  relationTypes: ReduceEntityGraphInput['relationTypes'],
+): Map<string, Edge> {
   const entityTypeById = new Map<string, string>();
   for (const ent of entitiesArr) entityTypeById.set(ent.id, ent.type);
   const relIndex = new Map<string, { readonly from: string; readonly to: string }>();
   const knownEntityTypes = new Set<string>();
-  for (const rel of input.relationTypes ?? []) {
+  for (const rel of relationTypes ?? []) {
     relIndex.set(rel.name, { from: rel.from, to: rel.to });
     knownEntityTypes.add(rel.from);
     knownEntityTypes.add(rel.to);
@@ -208,28 +211,19 @@ export async function reduceEntityGraph(
   const seenEdges = new Map<string, Edge>();
   for (const out of outputs) {
     for (const ef of out.edges) {
-      let from = tempIdMap.get(`${out.sourceRef}::${ef.fromTempId}`);
-      let to = tempIdMap.get(`${out.sourceRef}::${ef.toTempId}`);
-      if (from === undefined || to === undefined) continue;
-      const rel = relIndex.get(ef.type);
-      if (rel !== undefined && rel.from !== rel.to) {
-        const fromType = entityTypeById.get(from);
-        const toType = entityTypeById.get(to);
-        const matchesForward = fromType === rel.from && toType === rel.to;
-        const matchesReverse = fromType === rel.to && toType === rel.from;
-        if (!matchesForward && matchesReverse) {
-          [from, to] = [to, from];
-        } else if (
-          !matchesForward &&
-          !matchesReverse &&
-          fromType !== undefined &&
-          toType !== undefined &&
-          knownEntityTypes.has(fromType) &&
-          knownEntityTypes.has(toType)
-        ) {
-          continue;
-        }
-      }
+      const rawFrom = tempIdMap.get(`${out.sourceRef}::${ef.fromTempId}`);
+      const rawTo = tempIdMap.get(`${out.sourceRef}::${ef.toTempId}`);
+      if (rawFrom === undefined || rawTo === undefined) continue;
+      const oriented = reorientEdgeEndpoints(
+        rawFrom,
+        rawTo,
+        ef.type,
+        entityTypeById,
+        relIndex,
+        knownEntityTypes,
+      );
+      if (oriented === null) continue;
+      const { from, to } = oriented;
       if (from === to) continue;
       const id = `${from}|${to}|${ef.type}`;
       if (seenEdges.has(id)) continue;
@@ -242,6 +236,46 @@ export async function reduceEntityGraph(
       });
     }
   }
+  return seenEdges;
+}
+
+export async function reduceEntityGraph(
+  input: ReduceEntityGraphInput,
+  deps: ReduceEntityGraphDeps,
+): Promise<ReduceEntityGraphResult> {
+  const outputs = Array.from(input.outputs);
+  if (outputs.length === 0) {
+    return {
+      graph: { schemaVersion: 1, entities: [], edges: [] },
+      insights: { hubs: [], components: { count: 0, sizes: [] }, orphans: [], perTypeCount: {} },
+    };
+  }
+
+  const { fragmentsByCanonical, tempIdMap } = buildFragmentMaps(outputs);
+
+  // Pre-merge passes (deterministic, run BEFORE LLM alias resolvers).
+  applyCanonicalAliasMap(
+    buildDefinedInAliasMap(fragmentsByCanonical, deps.pageBasenames),
+    fragmentsByCanonical,
+    tempIdMap,
+  );
+  applyCanonicalAliasMap(
+    buildPositionAliasMap(fragmentsByCanonical),
+    fragmentsByCanonical,
+    tempIdMap,
+  );
+  applyCanonicalAliasMap(
+    buildTokenSubsetAliasMap(fragmentsByCanonical),
+    fragmentsByCanonical,
+    tempIdMap,
+  );
+
+  // Detect ambiguous overlaps: same normalized-name across different types.
+  const aliasMap = await maybeResolveAliases(fragmentsByCanonical, input, deps);
+  applyCanonicalAliasMap(aliasMap, fragmentsByCanonical, tempIdMap);
+
+  const entitiesArr = materializeEntities(fragmentsByCanonical, deps.pageBasenames);
+  const seenEdges = materializeEdges(outputs, tempIdMap, entitiesArr, input.relationTypes);
 
   let aliased: PerTypeResolveResult = { entities: entitiesArr, edges: seenEdges };
   for (let pass = 0; pass < 2; pass += 1) {
@@ -325,12 +359,44 @@ function slugify(s: string): string {
   return s
     .toLowerCase()
     .normalize('NFKD')
-    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/[^a-z0-9]+/g, '-') // NOSONAR(typescript:S5852): single char class + quantifier, linear.
     .replace(/^-+|-+$/g, '');
 }
 
-function uniqueSorted<T>(arr: readonly T[]): T[] {
-  return Array.from(new Set(arr)).sort();
+function uniqueSorted(arr: readonly string[]): string[] {
+  return Array.from(new Set(arr)).sort((a, b) => a.localeCompare(b));
+}
+
+function isOrphanTwin(orph: Entity, other: Entity, degree: ReadonlyMap<string, number>): boolean {
+  if (other.id === orph.id) return false;
+  if (other.type !== orph.type) return false;
+  if ((degree.get(other.id) ?? 0) === 0) return false;
+  const orphSlug = stripIdPrefix(orph.id);
+  const otherSlug = stripIdPrefix(other.id);
+  const orphPos = extractPositionalKey(orphSlug);
+  return (
+    isSlugTokenSuffix(otherSlug, orphSlug) ||
+    isSlugTokenSuffix(orphSlug, otherSlug) ||
+    sharesPositionalKey(orphPos, otherSlug) ||
+    slugJaccard(orphSlug, otherSlug) >= 0.5
+  );
+}
+
+function shouldDropOrphan(
+  orph: Entity,
+  entities: readonly Entity[],
+  degree: ReadonlyMap<string, number>,
+  typeCount: ReadonlyMap<string, number>,
+  dropPerType: ReadonlyMap<string, number>,
+): boolean {
+  for (const other of entities) {
+    if (!isOrphanTwin(orph, other, degree)) continue;
+    const typeTotal = typeCount.get(orph.type) ?? 0;
+    const alreadyDropped = dropPerType.get(orph.type) ?? 0;
+    if (typeTotal > 0 && (alreadyDropped + 1) * 2 > typeTotal) continue;
+    return true;
+  }
+  return false;
 }
 
 function dropOrphanTwins(entities: readonly Entity[], edges: ReadonlyMap<string, Edge>): Entity[] {
@@ -347,27 +413,9 @@ function dropOrphanTwins(entities: readonly Entity[], edges: ReadonlyMap<string,
   const drop = new Set<string>();
   for (const orph of entities) {
     if ((degree.get(orph.id) ?? 0) !== 0) continue;
-    const orphSlug = stripIdPrefix(orph.id);
-    const orphPos = extractPositionalKey(orphSlug);
-    for (const other of entities) {
-      if (other.id === orph.id) continue;
-      if (other.type !== orph.type) continue;
-      if ((degree.get(other.id) ?? 0) === 0) continue;
-      const otherSlug = stripIdPrefix(other.id);
-      const isTwin =
-        isSlugTokenSuffix(otherSlug, orphSlug) ||
-        isSlugTokenSuffix(orphSlug, otherSlug) ||
-        sharesPositionalKey(orphPos, otherSlug) ||
-        slugJaccard(orphSlug, otherSlug) >= 0.5;
-      if (!isTwin) continue;
-      // Per-type cap: skip drop if it would remove >50% of the type in this pass.
-      const typeTotal = typeCount.get(orph.type) ?? 0;
-      const alreadyDropped = dropPerType.get(orph.type) ?? 0;
-      if (typeTotal > 0 && (alreadyDropped + 1) * 2 > typeTotal) continue;
-      drop.add(orph.id);
-      dropPerType.set(orph.type, alreadyDropped + 1);
-      break;
-    }
+    if (!shouldDropOrphan(orph, entities, degree, typeCount, dropPerType)) continue;
+    drop.add(orph.id);
+    dropPerType.set(orph.type, (dropPerType.get(orph.type) ?? 0) + 1);
   }
   if (drop.size === 0) return [...entities];
   return entities.filter((e) => !drop.has(e.id));
@@ -555,9 +603,9 @@ export function buildPositionAliasMap(
   return groupAliasMap(keyByCanonical);
 }
 
-export function buildTokenSubsetAliasMap(
+function groupCanonicalsByType(
   fragmentsByCanonical: ReadonlyMap<string, readonly unknown[]>,
-): Map<string, string> {
+): Map<string, string[]> {
   const byType = new Map<string, string[]>();
   for (const canonical of fragmentsByCanonical.keys()) {
     const type = stripTypePrefix(canonical);
@@ -568,43 +616,57 @@ export function buildTokenSubsetAliasMap(
     if (list === undefined) byType.set(type, [canonical]);
     else list.push(canonical);
   }
+  return byType;
+}
+
+function tokenizeIds(ids: readonly string[]): Map<string, Set<string>> {
+  const tokens = new Map<string, Set<string>>();
+  for (const id of ids) {
+    const set = new Set(
+      stripIdPrefix(id)
+        .split('-')
+        .filter((t) => t.length > 0 && !SLUG_FUNCTION_WORDS.has(t)),
+    );
+    tokens.set(id, set);
+  }
+  return tokens;
+}
+
+function tokenSubsetAliasPair(
+  a: string,
+  b: string,
+  ta: ReadonlySet<string>,
+  tb: ReadonlySet<string>,
+): { from: string; to: string } | null {
+  if (ta.size === tb.size) return null;
+  const aIsSmaller = ta.size < tb.size;
+  const smaller = aIsSmaller ? a : b;
+  const larger = aIsSmaller ? b : a;
+  const smallerSet = aIsSmaller ? ta : tb;
+  const largerSet = aIsSmaller ? tb : ta;
+  if (smallerSet.size < 2) return null;
+  for (const t of smallerSet) if (!largerSet.has(t)) return null;
+  if (smallerSet.size / largerSet.size < 0.5) return null;
+  // Larger merges into smaller — shorter form is usually the canonical wiki-page
+  // title; verbose phrasings or qualifier prefixes should not absorb the canonical.
+  return { from: larger, to: smaller };
+}
+
+export function buildTokenSubsetAliasMap(
+  fragmentsByCanonical: ReadonlyMap<string, readonly unknown[]>,
+): Map<string, string> {
+  const byType = groupCanonicalsByType(fragmentsByCanonical);
   const aliasMap = new Map<string, string>();
   for (const [, ids] of byType) {
     if (ids.length < 2) continue;
-    const sorted = [...ids].sort();
-    const tokens = new Map<string, Set<string>>();
-    for (const id of sorted) {
-      const set = new Set(
-        stripIdPrefix(id)
-          .split('-')
-          .filter((t) => t.length > 0 && !SLUG_FUNCTION_WORDS.has(t)),
-      );
-      tokens.set(id, set);
-    }
+    const sorted = [...ids].sort((a, b) => a.localeCompare(b));
+    const tokens = tokenizeIds(sorted);
     for (let i = 0; i < sorted.length; i += 1) {
       for (let j = i + 1; j < sorted.length; j += 1) {
         const a = sorted[i]!;
         const b = sorted[j]!;
-        const ta = tokens.get(a)!;
-        const tb = tokens.get(b)!;
-        if (ta.size === tb.size) continue;
-        const [smaller, larger] = ta.size < tb.size ? [a, b] : [b, a];
-        const smallerSet = ta.size < tb.size ? ta : tb;
-        const largerSet = ta.size < tb.size ? tb : ta;
-        if (smallerSet.size < 2) continue;
-        let allIn = true;
-        for (const t of smallerSet) {
-          if (!largerSet.has(t)) {
-            allIn = false;
-            break;
-          }
-        }
-        if (!allIn) continue;
-        if (smallerSet.size / largerSet.size < 0.5) continue;
-        // Larger merges into smaller — shorter form is usually the canonical
-        // wiki-page title (e.g. `be-truthful.md`), and verbose phrasings or
-        // qualifier prefixes (e.g. `old-…`) should not absorb the canonical.
-        aliasMap.set(larger, smaller);
+        const pair = tokenSubsetAliasPair(a, b, tokens.get(a)!, tokens.get(b)!);
+        if (pair !== null) aliasMap.set(pair.from, pair.to);
       }
     }
   }
@@ -621,7 +683,7 @@ function groupAliasMap(keyByCanonical: ReadonlyMap<string, string>): Map<string,
   const aliasMap = new Map<string, string>();
   for (const [, ids] of byKey) {
     if (ids.length < 2) continue;
-    const sorted = [...ids].sort();
+    const sorted = [...ids].sort((a, b) => a.localeCompare(b));
     const target = sorted[0]!;
     for (const src of sorted.slice(1)) aliasMap.set(src, target);
   }
@@ -705,7 +767,10 @@ function detectAmbiguousOverlaps(
   const groups: OverlapGroup[] = [];
   for (const [nameKey, ids] of byNormalizedName) {
     if (ids.size > 1) {
-      groups.push({ normalizedName: nameKey, canonicalIds: Array.from(ids).sort() });
+      groups.push({
+        normalizedName: nameKey,
+        canonicalIds: Array.from(ids).sort((a, b) => a.localeCompare(b)),
+      });
     }
   }
   return groups;
@@ -772,6 +837,89 @@ interface PerTypeResolveResult {
   readonly edges: Map<string, Edge>;
 }
 
+type PerTypeAliasGroup = {
+  readonly type: string;
+  readonly members: readonly {
+    id: string;
+    name: string;
+    sources: readonly string[];
+    neighbors: readonly string[];
+    positionalKey?: string;
+  }[];
+};
+
+function buildPerTypeAliasGroups(
+  entities: readonly Entity[],
+  edges: ReadonlyMap<string, Edge>,
+): PerTypeAliasGroup[] {
+  const byType = new Map<string, Entity[]>();
+  for (const e of entities) {
+    const list = byType.get(e.type);
+    if (list === undefined) byType.set(e.type, [e]);
+    else list.push(e);
+  }
+  const neighbors = new Map<string, Set<string>>();
+  for (const e of entities) neighbors.set(e.id, new Set());
+  for (const ed of edges.values()) {
+    neighbors.get(ed.from)?.add(ed.to);
+    neighbors.get(ed.to)?.add(ed.from);
+  }
+  const groups: PerTypeAliasGroup[] = [];
+  for (const [type, list] of byType) {
+    if (list.length < 2) continue;
+    groups.push({
+      type,
+      members: list.map((e) => {
+        const positionalKey = extractPositionalKey(stripIdPrefix(e.id));
+        return {
+          id: e.id,
+          name: e.name,
+          sources: e.sources.slice(0, 3),
+          neighbors: [...(neighbors.get(e.id) ?? [])].sort((a, b) => a.localeCompare(b)),
+          ...(positionalKey !== null ? { positionalKey } : {}),
+        };
+      }),
+    });
+  }
+  return groups;
+}
+
+function resolveTransitiveRedirects(
+  directRedirect: ReadonlyMap<string, string>,
+): Map<string, string> {
+  const finalRedirect = new Map<string, string>();
+  for (const src of directRedirect.keys()) {
+    let cur = src;
+    const seen = new Set<string>([cur]);
+    for (let i = 0; i < 8; i += 1) {
+      const next = directRedirect.get(cur);
+      if (next === undefined || next === cur || seen.has(next)) break;
+      cur = next;
+      seen.add(cur);
+    }
+    if (cur !== src) finalRedirect.set(src, cur);
+  }
+  return finalRedirect;
+}
+
+function buildDirectRedirect(
+  aliasMap: Record<string, unknown>,
+  entities: readonly Entity[],
+): Map<string, string> {
+  const validIds = new Set(entities.map((e) => e.id));
+  const entityType = new Map<string, string>();
+  for (const e of entities) entityType.set(e.id, e.type);
+  const directRedirect = new Map<string, string>();
+  for (const [srcId, target] of Object.entries(aliasMap)) {
+    if (typeof target !== 'string') continue;
+    if (target === srcId) continue;
+    if (!validIds.has(srcId) || !validIds.has(target)) continue;
+    if (entityType.get(srcId) !== entityType.get(target)) continue;
+    directRedirect.set(srcId, target);
+  }
+  return directRedirect;
+}
+
 async function maybeResolvePerTypeAliases(
   entities: readonly Entity[],
   edges: ReadonlyMap<string, Edge>,
@@ -786,45 +934,7 @@ async function maybeResolvePerTypeAliases(
   if (input.signal.aborted) return passthrough;
   if (entities.length === 0) return passthrough;
 
-  const byType = new Map<string, Entity[]>();
-  for (const e of entities) {
-    const list = byType.get(e.type);
-    if (list === undefined) byType.set(e.type, [e]);
-    else list.push(e);
-  }
-  const neighbors = new Map<string, Set<string>>();
-  for (const e of entities) neighbors.set(e.id, new Set());
-  for (const ed of edges.values()) {
-    neighbors.get(ed.from)?.add(ed.to);
-    neighbors.get(ed.to)?.add(ed.from);
-  }
-
-  const groups: {
-    readonly type: string;
-    readonly members: readonly {
-      id: string;
-      name: string;
-      sources: readonly string[];
-      neighbors: readonly string[];
-      positionalKey?: string;
-    }[];
-  }[] = [];
-  for (const [type, list] of byType) {
-    if (list.length < 2) continue;
-    groups.push({
-      type,
-      members: list.map((e) => {
-        const positionalKey = extractPositionalKey(stripIdPrefix(e.id));
-        return {
-          id: e.id,
-          name: e.name,
-          sources: e.sources.slice(0, 3),
-          neighbors: [...(neighbors.get(e.id) ?? [])].sort(),
-          ...(positionalKey !== null ? { positionalKey } : {}),
-        };
-      }),
-    });
-  }
+  const groups = buildPerTypeAliasGroups(entities, edges);
   if (groups.length === 0) return passthrough;
 
   const messages: ChatMessage[] = [
@@ -880,32 +990,10 @@ async function maybeResolvePerTypeAliases(
   }
   if (aliasMap === null) return passthrough;
 
-  const validIds = new Set(entities.map((e) => e.id));
-  const entityType = new Map<string, string>();
-  for (const e of entities) entityType.set(e.id, e.type);
-
-  const directRedirect = new Map<string, string>();
-  for (const [srcId, target] of Object.entries(aliasMap)) {
-    if (typeof target !== 'string') continue;
-    if (target === srcId) continue;
-    if (!validIds.has(srcId) || !validIds.has(target)) continue;
-    if (entityType.get(srcId) !== entityType.get(target)) continue;
-    directRedirect.set(srcId, target);
-  }
+  const directRedirect = buildDirectRedirect(aliasMap, entities);
   if (directRedirect.size === 0) return passthrough;
 
-  const finalRedirect = new Map<string, string>();
-  for (const src of directRedirect.keys()) {
-    let cur = src;
-    const seen = new Set<string>([cur]);
-    for (let i = 0; i < 8; i += 1) {
-      const next = directRedirect.get(cur);
-      if (next === undefined || next === cur || seen.has(next)) break;
-      cur = next;
-      seen.add(cur);
-    }
-    if (cur !== src) finalRedirect.set(src, cur);
-  }
+  const finalRedirect = resolveTransitiveRedirects(directRedirect);
   if (finalRedirect.size === 0) return passthrough;
 
   const sourceMerge = new Map<string, Set<string>>();
@@ -923,7 +1011,7 @@ async function maybeResolvePerTypeAliases(
       if (extra === undefined) return e;
       const merged = new Set<string>(e.sources);
       for (const s of extra) merged.add(s);
-      const sorted = [...merged].sort().slice(0, 20);
+      const sorted = [...merged].sort((a, b) => a.localeCompare(b)).slice(0, 20);
       return { ...e, sources: sorted };
     });
 
@@ -984,7 +1072,7 @@ function computeInsights(graph: EntityGraphT): InsightsT {
   const orphans = graph.entities
     .filter((e) => (degree.get(e.id) ?? 0) === 0)
     .map((e) => e.id)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .slice(0, 50);
 
   const perTypeCount: Record<string, number> = {};
@@ -1000,46 +1088,54 @@ function computeInsights(graph: EntityGraphT): InsightsT {
   };
 }
 
+type ReducerToolBufMap = Map<number, { id: string; name: string; args: string }>;
+
+function applyReducerDelta(
+  ev: Extract<ReducerStreamEvent, { type: 'block_delta' }>,
+  toolBufs: ReducerToolBufMap,
+  textBuffer: string,
+): string {
+  if (ev.delta?.type === 'input_json_delta') {
+    const buf = toolBufs.get(ev.index);
+    if (buf !== undefined) buf.args += (ev.delta as { partial_json: string }).partial_json;
+    return textBuffer;
+  }
+  if (ev.delta?.type === 'text_delta') {
+    return textBuffer + (ev.delta as { text: string }).text;
+  }
+  return textBuffer;
+}
+
+function flushReducerToolBuf(
+  ev: Extract<ReducerStreamEvent, { type: 'block_stop' }>,
+  toolBufs: ReducerToolBufMap,
+  toolCalls: Array<{ name: string; argsJson: string }>,
+): void {
+  const buf = toolBufs.get(ev.index);
+  if (buf !== undefined) {
+    toolCalls.push({ name: buf.name, argsJson: buf.args.length === 0 ? '{}' : buf.args });
+    toolBufs.delete(ev.index);
+  }
+}
+
 async function collectStream(
   stream: AsyncIterable<StreamEvent>,
   signal: AbortSignal,
 ): Promise<{ textBuffer: string; toolCalls: ReadonlyArray<{ name: string; argsJson: string }> }> {
   let textBuffer = '';
   const toolCalls: Array<{ name: string; argsJson: string }> = [];
-  const toolBufs = new Map<number, { id: string; name: string; args: string }>();
+  const toolBufs: ReducerToolBufMap = new Map();
   for await (const ev of stream as AsyncIterable<ReducerStreamEvent>) {
     if (signal.aborted) break;
-    if (ev.type === 'token') {
-      textBuffer += ev.text ?? '';
-      continue;
-    }
-    if (ev.type === 'tool_call') {
+    if (ev.type === 'token') textBuffer += ev.text ?? '';
+    else if (ev.type === 'tool_call')
       toolCalls.push({ name: ev.call.name, argsJson: ev.call.argsJson });
-      continue;
-    }
-    if (ev.type === 'block_start' && ev.block?.type === 'tool_use') {
+    else if (ev.type === 'block_start' && ev.block?.type === 'tool_use') {
       const block = ev.block as { id: string; name: string };
       toolBufs.set(ev.index, { id: block.id, name: block.name, args: '' });
-      continue;
-    }
-    if (ev.type === 'block_delta') {
-      if (ev.delta?.type === 'input_json_delta') {
-        const buf = toolBufs.get(ev.index);
-        if (buf !== undefined) buf.args += (ev.delta as { partial_json: string }).partial_json;
-      } else if (ev.delta?.type === 'text_delta') {
-        textBuffer += (ev.delta as { text: string }).text;
-      }
-      continue;
-    }
-    if (ev.type === 'block_stop') {
-      const buf = toolBufs.get(ev.index);
-      if (buf !== undefined) {
-        toolCalls.push({ name: buf.name, argsJson: buf.args.length === 0 ? '{}' : buf.args });
-        toolBufs.delete(ev.index);
-      }
-      continue;
-    }
-    if (ev.type === 'done' || ev.type === 'error') break;
+    } else if (ev.type === 'block_delta') textBuffer = applyReducerDelta(ev, toolBufs, textBuffer);
+    else if (ev.type === 'block_stop') flushReducerToolBuf(ev, toolBufs, toolCalls);
+    else if (ev.type === 'done' || ev.type === 'error') break;
   }
   return { textBuffer, toolCalls };
 }

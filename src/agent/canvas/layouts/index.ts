@@ -6,7 +6,6 @@ import { layoutGrid } from './grid';
 import { layoutRadial } from './radial';
 import { layoutTimeline } from './timeline';
 import { layoutTree } from './tree';
-import { nodeSizeFor } from './nodeSize';
 import type { LayoutInput, LayoutPreset, LayoutResult, LockedCoords } from './types';
 
 export type { LayoutBudgets, LayoutHint, LayoutInput, LayoutPreset, LayoutResult } from './types';
@@ -276,5 +275,3 @@ function isAcyclicConnected(graph: {
   }
   return true;
 }
-
-void nodeSizeFor;

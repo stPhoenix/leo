@@ -97,6 +97,7 @@ async function runSnippet(args: {
   const { source, wrapAsFunction, opts, timeoutMs } = args;
   const sandboxCtx = buildSandbox(opts);
   const body = wrapAsFunction ? source : `return (${source});`;
+  // NOSONAR(typescript:S1523): user-defined skill shell snippets execute by design; sandbox + timeout + AbortSignal applied around invocation.
   const factory = new Function(
     'ctx',
     `"use strict"; return (async function __leoSkillShell(ctx) { ${body} })(ctx);`,

@@ -114,17 +114,18 @@ export function cidrContains(cidr: string, ip: string): boolean {
   return base.hi === t.hi && (base.lo & loMask) === (t.lo & loMask);
 }
 
+// NOSONAR(typescript:S1313): RFC1918 / link-local / CGNAT / IPv6 ULA CIDRs intentionally hardcoded — SSRF guard for fetchUrl.
 const PRIVATE_V4_CIDRS = [
   '127.0.0.0/8',
   '0.0.0.0/8',
-  '10.0.0.0/8',
-  '172.16.0.0/12',
-  '192.168.0.0/16',
-  '100.64.0.0/10',
-  '169.254.0.0/16',
+  '10.0.0.0/8', // NOSONAR(typescript:S1313)
+  '172.16.0.0/12', // NOSONAR(typescript:S1313)
+  '192.168.0.0/16', // NOSONAR(typescript:S1313)
+  '100.64.0.0/10', // NOSONAR(typescript:S1313)
+  '169.254.0.0/16', // NOSONAR(typescript:S1313)
 ] as const;
 
-const PRIVATE_V6_CIDRS = ['::1/128', 'fc00::/7', 'fe80::/10', '64:ff9b::/96'] as const;
+const PRIVATE_V6_CIDRS = ['::1/128', 'fc00::/7', 'fe80::/10', '64:ff9b::/96'] as const; // NOSONAR(typescript:S1313): IPv6 loopback + ULA + link-local + NAT64 ranges, SSRF guard.
 
 export function isPrivateOrLoopbackIp(ip: string): boolean {
   const parsed = parseIp(ip);
@@ -134,6 +135,7 @@ export function isPrivateOrLoopbackIp(ip: string): boolean {
   }
   // IPv4-mapped (::ffff:0:0/96) — extract embedded v4 and re-check.
   if (cidrContains('::ffff:0:0/96', ip)) {
+    // NOSONAR(typescript:S1313): IPv4-mapped IPv6 prefix, re-check embedded v4 against private CIDRs.
     const lo = parsed.lo;
     const v4n = Number(lo & 0xffffffffn);
     const a = (v4n >>> 24) & 0xff;

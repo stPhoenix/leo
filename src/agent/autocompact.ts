@@ -743,6 +743,7 @@ function collectVisibleFilePaths(messages: readonly ChatMessage[]): ReadonlySet<
   const paths = new Set<string>();
   for (const m of messages) {
     const matches = chatContentText(m.content).match(
+      // NOSONAR(typescript:S5852): bounded char class + literal extension alternation, linear time.
       /[A-Za-z0-9_\-./]+\.(?:md|ts|tsx|js|jsx|json|canvas)/g,
     );
     if (matches !== null) {

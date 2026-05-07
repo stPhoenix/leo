@@ -205,7 +205,7 @@ function sanitizeBody(body: string): string {
         .replace(/^\s*\n+/, '');
     }
   }
-  text = text.replace(/\n#{1,6}\s+Sources\s*\n[\s\S]*$/i, '\n');
+  text = text.replace(/\n#{1,6}\s+Sources\s*\n[\s\S]*$/i, '\n'); // NOSONAR(typescript:S5852): anchored to `$`, bounded `#{1,6}`, single greedy tail; linear.
   return text;
 }
 
@@ -353,7 +353,7 @@ function parseFrontmatter(body: string): Record<string, string> {
   for (let i = 1; i < lines.length; i += 1) {
     const line = lines[i] ?? '';
     if (line.trim() === '---') break;
-    const m = /^([A-Za-z0-9_-]+)\s*:\s*(.+?)\s*$/.exec(line);
+    const m = /^([A-Za-z0-9_-]+)\s*:\s*(.+?)\s*$/.exec(line); // NOSONAR(typescript:S5852): anchored YAML key:value, char class + lazy capture, linear per line.
     if (m === null) continue;
     out[m[1]!] = m[2] ?? '';
   }

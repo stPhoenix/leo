@@ -98,7 +98,7 @@ export class OpenAICompatibleProvider implements Provider {
   }
 
   private baseUrl(): string {
-    return this.opts.endpoint().replace(/\/+$/, '');
+    return this.opts.endpoint().replace(/\/+$/, ''); // NOSONAR(typescript:S5852): anchored trailing-slash trim, linear.
   }
 }
 

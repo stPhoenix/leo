@@ -1,20 +1,21 @@
 import { z } from 'zod';
 
+// NOSONAR(typescript:S1313): RFC1918 / link-local / CGNAT / IPv4-mapped / IPv6 ULA CIDRs intentionally hardcoded — SSRF blocklist for fetchUrl.
 export const DEFAULT_FETCH_URL_BLOCKLIST: readonly string[] = [
   'localhost',
-  '127.0.0.0/8',
-  '0.0.0.0/8',
-  '10.0.0.0/8',
-  '172.16.0.0/12',
-  '192.168.0.0/16',
-  '100.64.0.0/10',
-  '169.254.0.0/16',
+  '127.0.0.0/8', // NOSONAR(typescript:S1313)
+  '0.0.0.0/8', // NOSONAR(typescript:S1313)
+  '10.0.0.0/8', // NOSONAR(typescript:S1313)
+  '172.16.0.0/12', // NOSONAR(typescript:S1313)
+  '192.168.0.0/16', // NOSONAR(typescript:S1313)
+  '100.64.0.0/10', // NOSONAR(typescript:S1313)
+  '169.254.0.0/16', // NOSONAR(typescript:S1313)
   '*.local',
   '::1',
-  'fc00::/7',
-  'fe80::/10',
-  '::ffff:0:0/96',
-  '64:ff9b::/96',
+  'fc00::/7', // NOSONAR(typescript:S1313)
+  'fe80::/10', // NOSONAR(typescript:S1313)
+  '::ffff:0:0/96', // NOSONAR(typescript:S1313)
+  '64:ff9b::/96', // NOSONAR(typescript:S1313)
 ];
 
 export const DEFAULT_FETCH_URL_HEADER_DENYLIST: readonly string[] = [

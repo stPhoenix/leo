@@ -404,46 +404,54 @@ interface CollectedStream {
   readonly toolCalls: ReadonlyArray<{ name: string; argsJson: string }>;
 }
 
+type ToolBufMap = Map<number, { id: string; name: string; args: string }>;
+
+function applyExtractDelta(
+  ev: Extract<ExtractStreamEvent, { type: 'block_delta' }>,
+  toolBufs: ToolBufMap,
+  textBuffer: string,
+): string {
+  if (ev.delta?.type === 'input_json_delta') {
+    const buf = toolBufs.get(ev.index);
+    if (buf !== undefined) buf.args += (ev.delta as { partial_json: string }).partial_json;
+    return textBuffer;
+  }
+  if (ev.delta?.type === 'text_delta') {
+    return textBuffer + (ev.delta as { text: string }).text;
+  }
+  return textBuffer;
+}
+
+function flushToolBuf(
+  ev: Extract<ExtractStreamEvent, { type: 'block_stop' }>,
+  toolBufs: ToolBufMap,
+  toolCalls: Array<{ name: string; argsJson: string }>,
+): void {
+  const buf = toolBufs.get(ev.index);
+  if (buf !== undefined) {
+    toolCalls.push({ name: buf.name, argsJson: buf.args.length === 0 ? '{}' : buf.args });
+    toolBufs.delete(ev.index);
+  }
+}
+
 async function collectStream(
   stream: AsyncIterable<StreamEvent>,
   signal: AbortSignal,
 ): Promise<CollectedStream> {
   let textBuffer = '';
   const toolCalls: Array<{ name: string; argsJson: string }> = [];
-  const toolBufs = new Map<number, { id: string; name: string; args: string }>();
+  const toolBufs: ToolBufMap = new Map();
   for await (const ev of stream as AsyncIterable<ExtractStreamEvent>) {
     if (signal.aborted) break;
-    if (ev.type === 'token') {
-      textBuffer += ev.text ?? '';
-      continue;
-    }
-    if (ev.type === 'tool_call') {
+    if (ev.type === 'token') textBuffer += ev.text ?? '';
+    else if (ev.type === 'tool_call')
       toolCalls.push({ name: ev.call.name, argsJson: ev.call.argsJson });
-      continue;
-    }
-    if (ev.type === 'block_start' && ev.block?.type === 'tool_use') {
+    else if (ev.type === 'block_start' && ev.block?.type === 'tool_use') {
       const block = ev.block as { id: string; name: string };
       toolBufs.set(ev.index, { id: block.id, name: block.name, args: '' });
-      continue;
-    }
-    if (ev.type === 'block_delta') {
-      if (ev.delta?.type === 'input_json_delta') {
-        const buf = toolBufs.get(ev.index);
-        if (buf !== undefined) buf.args += (ev.delta as { partial_json: string }).partial_json;
-      } else if (ev.delta?.type === 'text_delta') {
-        textBuffer += (ev.delta as { text: string }).text;
-      }
-      continue;
-    }
-    if (ev.type === 'block_stop') {
-      const buf = toolBufs.get(ev.index);
-      if (buf !== undefined) {
-        toolCalls.push({ name: buf.name, argsJson: buf.args.length === 0 ? '{}' : buf.args });
-        toolBufs.delete(ev.index);
-      }
-      continue;
-    }
-    if (ev.type === 'done' || ev.type === 'error') break;
+    } else if (ev.type === 'block_delta') textBuffer = applyExtractDelta(ev, toolBufs, textBuffer);
+    else if (ev.type === 'block_stop') flushToolBuf(ev, toolBufs, toolCalls);
+    else if (ev.type === 'done' || ev.type === 'error') break;
   }
   return { textBuffer, toolCalls };
 }
