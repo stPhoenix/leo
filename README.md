@@ -37,12 +37,28 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 - Per-thread tool allowlists — "Allow for thread" remembered until the thread is deleted.
 - Cancellation everywhere via `AbortController`.
 - External-agent delegation subgraph (refine → ready → running → writing) with adapter registry, per-thread one-slot concurrency, and a live widget.
+- Deferred / on-demand tool fetcher — large tool catalogs surfaced by name, schemas pulled in only when the agent calls `ToolSearch` (keyword or `select:` query).
+- `/compact` live widget with phase sink — manual compaction with a terminal snapshot of what got summarized.
+
+### Canvas
+
+- First-class Obsidian Canvas authoring: create, content-edit, and layout-edit subgraphs delegated through `delegate_canvas_*` tools (gated by an inline confirm dialog) plus a `reveal_in_canvas` tool.
+- Pure layout engines — grid, tree, radial, force, timeline, bipartite — with palette + sizing helpers; deterministic and undo-friendly.
+- Live widget (phase state + terminal snapshot) so you watch the canvas being assembled while the run is in flight.
+- Canvas chunks indexed alongside markdown — RAG and `search_vault` cover them too.
+
+### Skills
+
+- Markdown / JSON skill files in `.leo/skills/` parsed into `Skill` objects (`{name, description, systemPrompt, allowedTools?, defaultModel?}`). Built-ins bundled, user skills user-editable.
+- Conditional skills (auto-trigger on matchers), pre/post hooks, per-skill permission overrides, shell-command skills, slash-command skills, and dynamic (LLM-generated) skills.
+- Selected skill's `systemPrompt` injected into LangGraph state at thread init; `allowedTools` filters the registry per thread.
+- `/slash_expanded` chat block renders the resolved slash invocation inline so you can audit what the skill actually expanded to.
 
 ### Retrieval (RAG / GraphRAG)
 
 - Heading-based chunking with fixed-size fallback (~512-token overlap); markdown + canvas.
 - Local embeddings via LM Studio (or any OpenAI-compatible `/v1/embeddings`).
-- IndexedDB vector store with `{model, dim, version}` Index Header — reindex on model change.
+- VaultAdapter-backed vector store — in-memory cosine scan, JSON file persistence under `<vault>/.leo/`, `{model, dim, version}` Index Header, reindex on model change. Encryption-friendly, sync-friendly, no IndexedDB dependency.
 - 1-hop + 2-hop graph boost from `metadataCache.resolvedLinks`, plus tag-shared boost.
 - Tag and exclude (glob) filters.
 - Lazy dirty-queue indexing yielding to the main thread; status-bar progress.
@@ -63,8 +79,9 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 - Ollama (local) — local OpenAI-shim endpoint, no API key.
 - Ollama Cloud — Bearer `apiKey` (default endpoint `https://ollama.com`).
 - OpenAI, Anthropic via official SDKs.
+- Google Gemini via `@langchain/google-genai` — `gemini-2.5-pro`, `2.5-flash`, `2.5-flash-lite`, `2.0-flash` bundled; auto-detect through Generative Language API.
 - Streaming, FIFO request queue, exponential-backoff retries, 120 s per-request timeout.
-- Auto-detect models via `/v1/models`.
+- Auto-detect models via `/v1/models` (or provider-native list endpoint).
 - Cloud API keys stored in Electron `safeStorage` (OS keyring) — never plaintext in the vault.
 - Langfuse tracing integration (optional).
 
@@ -86,7 +103,7 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 ### Privacy
 
 - 100% local by default. No telemetry. No cloud calls unless you configure a cloud provider or cloud-backed MCP server.
-- All vault state lives under `<vault>/.leo/` — config, conversations, skills, plans, logs. Embeddings live in IndexedDB.
+- All vault state — config, conversations, skills, plans, logs, embeddings — lives under `<vault>/.leo/` via `VaultAdapter`. Encryption-friendly (your vault encryption applies), sync-friendly.
 
 ---
 
@@ -162,21 +179,26 @@ High-level — see `.agent/standards/project-structure.md` for the full tree.
 
 ```
 src/
-├── agent/        agent loop, compaction, plan mode, todos, context, streaming, external-agent subgraph
-├── chat/         message store, streaming, attachments, usage, run state
-├── editor/       CM6 edit lock, focused context, highlights, workspace navigation
-├── graph/        link graph cache
-├── indexer/      vault + canvas chunking, dirty queue, reindex
-├── mcp/          MCP client, config, reconnect, resource picker, prompt-skill adapter
-├── platform/     logger, sinks, error channel, langfuse tracer
-├── providers/    LLM + embedding providers, langchain bridge, content normalization
-├── rag/          RAG engine, graph traversal, scoring, exclude / tag matchers
-├── settings/     settings tab, wizard, commands, exclude store
-├── skills/       skill parse / store / editor, registry, runtime
-├── storage/      IndexedDB stores, vault adapter, safeStorage, vectors
-├── tools/        tool registry + builtin + user tool loader + zod adapter
-├── ui/           chat view, blocks, widgets, composer, picker, dialogs
-└── main.ts       Obsidian plugin entry
+├── agent/         agent loop, compaction, plan mode, todos, context, streaming
+│   ├── canvas/        canvas slice — create / content_edit / layout_edit subgraphs, layouts, palette, widget
+│   ├── compact/       /compact live + terminal widget, phase sink
+│   ├── externalAgent/ external-agent delegation — adapter contract, refine, FSM, slot, writer, widget
+│   ├── toolSearch/    deferred-tool fetcher — request assembly, gating, mapping, session
+│   └── wiki/          wiki slice — ingest, lint, search, inbox; mutex-gated
+├── chat/          message store, streaming, attachments, usage, run state
+├── editor/        CM6 edit lock, focused context, highlights, workspace navigation
+├── graph/         link graph cache
+├── indexer/       vault + canvas chunking, dirty queue, reindex
+├── mcp/           MCP client, config, reconnect, resource picker, prompt-skill adapter
+├── platform/      logger, sinks, error channel, langfuse tracer, ALS init
+├── providers/     LLM + embedding providers (LM Studio, OpenAI-compatible, Ollama, OpenAI, Anthropic, Google), langchain bridge, manager, registry, trace
+├── rag/           RAG engine, graph traversal, scoring, exclude / tag matchers, snapshot
+├── settings/      settings tab, wizard, commands, exclude store, external-agents UI
+├── skills/        skill parse / store / runtime — conditional, hooks, perms, shell, slash, dynamic
+├── storage/       VaultAdapter-backed stores (vectors, conversations, threads, plans, safeStorage)
+├── tools/         tool registry + builtin + user tool loader + zod adapter (+ deferred toolSearch wiring)
+├── ui/            chat view, blocks (incl. /slash_expanded), widgets, composer, picker, dialogs
+└── main.ts        Obsidian plugin entry
 ```
 
 ### Standards
