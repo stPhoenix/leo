@@ -8,6 +8,13 @@ export interface AgentUserMessage {
   readonly role: 'user';
   readonly content: string;
   readonly blocks?: readonly ContentBlock[];
+  /**
+   * Initial tool allowlist to seed `state.toolAllowlist` for this turn.
+   * Used when a user-typed slash skill (e.g. `/canvas-create`) needs to restrict
+   * the agent to the skill's `allowedTools` for the upcoming turn — the regular
+   * skill-envelope path only fires after a tool result, which is too late.
+   */
+  readonly initialAllowedTools?: readonly string[];
 }
 
 export interface AgentAssistantMessage {

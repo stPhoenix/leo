@@ -73,6 +73,8 @@ function toTokenBlock(b: ContentBlock): TokenBlock {
       return { type: 'text', text: b.tool_name };
     case 'redacted_thinking':
       return { type: 'redacted_thinking', data: b.data };
+    case 'slash_expanded':
+      return { type: 'text', text: b.expandedBody };
   }
 }
 

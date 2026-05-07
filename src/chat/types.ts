@@ -74,6 +74,13 @@ export interface DocumentBlock {
   readonly size?: number;
 }
 
+export interface SlashExpandedBlock {
+  readonly type: 'slash_expanded';
+  readonly command: string;
+  readonly typed: string;
+  readonly expandedBody: string;
+}
+
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock
@@ -82,7 +89,8 @@ export type ContentBlock =
   | ToolResultBlock
   | ToolReferenceBlock
   | ImageBlock
-  | DocumentBlock;
+  | DocumentBlock
+  | SlashExpandedBlock;
 
 export interface ChatMessageRecord {
   readonly id: string;

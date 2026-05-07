@@ -4,11 +4,16 @@ import type { StreamingTurnController } from '@/chat/streamingController';
 import type { StreamEvent } from '@/agent/streamEvents';
 import { computeTokenUsage } from '@/chat/tokenUsage';
 
+export interface TurnStarterOptions {
+  readonly initialAllowedTools?: readonly string[];
+}
+
 export interface TurnDispatcherStarter {
   (
     prompt: string,
     signal: AbortSignal,
     blocks?: readonly ContentBlock[],
+    options?: TurnStarterOptions,
   ): AsyncIterable<StreamEvent>;
 }
 
@@ -26,6 +31,7 @@ interface PendingTurn {
   readonly assistantId: string;
   readonly text: string;
   readonly blocks?: readonly ContentBlock[];
+  readonly initialAllowedTools?: readonly string[];
 }
 
 export class TurnDispatcher {
@@ -39,7 +45,12 @@ export class TurnDispatcher {
 
   submit(
     text: string,
-    opts: { appendUserRecord?: boolean; blocks?: readonly ContentBlock[] } = {},
+    opts: {
+      appendUserRecord?: boolean;
+      blocks?: readonly ContentBlock[];
+      slashCommand?: { readonly typed: string; readonly command: string };
+      initialAllowedTools?: readonly string[];
+    } = {},
   ): void {
     if (this.disposed) return;
     if (text.length === 0 && (opts.blocks === undefined || opts.blocks.length === 0)) return;
@@ -47,13 +58,28 @@ export class TurnDispatcher {
     const userId = `${this.deps.idPrefixUser ?? 'u-'}${this.counter}`;
     const assistantId = `${this.deps.idPrefixAssistant ?? 'a-'}${this.counter}`;
     const now = this.nowIso();
+    const displayContent = opts.slashCommand?.typed ?? text;
+    const composedBlocks: readonly ContentBlock[] | undefined =
+      opts.slashCommand !== undefined
+        ? [
+            {
+              type: 'slash_expanded',
+              command: opts.slashCommand.command,
+              typed: opts.slashCommand.typed,
+              expandedBody: text,
+            },
+            ...(opts.blocks ?? []),
+          ]
+        : opts.blocks;
     if (opts.appendUserRecord !== false) {
       const userRecord: ChatMessageRecord = {
         id: userId,
         role: 'user',
-        content: text,
+        content: displayContent,
         createdAt: now,
-        ...(opts.blocks !== undefined && opts.blocks.length > 0 ? { blocks: opts.blocks } : {}),
+        ...(composedBlocks !== undefined && composedBlocks.length > 0
+          ? { blocks: composedBlocks }
+          : {}),
       };
       this.deps.messageStore.append(userRecord);
     }
@@ -62,6 +88,9 @@ export class TurnDispatcher {
       assistantId,
       text,
       ...(opts.blocks !== undefined && opts.blocks.length > 0 ? { blocks: opts.blocks } : {}),
+      ...(opts.initialAllowedTools !== undefined && opts.initialAllowedTools.length > 0
+        ? { initialAllowedTools: opts.initialAllowedTools }
+        : {}),
     });
     this.notify();
     void this.pump();
@@ -108,9 +137,16 @@ export class TurnDispatcher {
           this.deps.controller.consume({ type: 'done' });
           continue;
         }
-        const stream =
-          turn.blocks !== undefined && turn.blocks.length > 0
-            ? starter(turn.text, signal, turn.blocks)
+        const starterOptions: TurnStarterOptions =
+          turn.initialAllowedTools !== undefined && turn.initialAllowedTools.length > 0
+            ? { initialAllowedTools: turn.initialAllowedTools }
+            : {};
+        const hasOptions = starterOptions.initialAllowedTools !== undefined;
+        const hasBlocks = turn.blocks !== undefined && turn.blocks.length > 0;
+        const stream = hasBlocks
+          ? starter(turn.text, signal, turn.blocks, hasOptions ? starterOptions : undefined)
+          : hasOptions
+            ? starter(turn.text, signal, undefined, starterOptions)
             : starter(turn.text, signal);
         const tracked = this.trackUsage(turn, stream);
         try {

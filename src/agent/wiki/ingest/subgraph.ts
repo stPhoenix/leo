@@ -23,7 +23,13 @@ import type { WikiPhase } from '@/agent/wiki/widgetState';
 import { WikiWidgetController } from '@/agent/wiki/widgetController';
 import { WIKI_RUN_DEFAULTS, resolveWikiBudgets, type WikiBudgets } from '@/agent/wiki/budgets';
 import { WIKI_INDEX_PATH, WIKI_RAW_DIR, WIKI_SCHEMA_PATH } from '@/agent/wiki/paths';
-import { fetchIngestSource, type AttachmentResolver, type FetchUrlConfig } from './fetchSource';
+import {
+  fetchIngestSource,
+  type AttachmentResolver,
+  type FetchUrlConfigSource,
+  type FetchUrlOverrides,
+  type UrlFetcher,
+} from './fetchSource';
 import { findDuplicateRawBySha } from './duplicateDetect';
 import { computeFetchedSha256, persistRaw } from './persistRaw';
 import { runPlanner, runExtractor, runReducer, type LlmJsonInvoker } from './subagents';
@@ -52,7 +58,9 @@ export interface IngestRunInput {
 
 export interface ProcessSourceFetchDeps {
   readonly attachments?: AttachmentResolver;
-  readonly url?: FetchUrlConfig;
+  readonly url?: FetchUrlConfigSource;
+  readonly urlOverrides?: FetchUrlOverrides;
+  readonly urlFetcher?: UrlFetcher;
 }
 
 export interface IngestRunDeps {
@@ -280,8 +288,9 @@ function buildIngestGraph(b: NodeBindings) {
         vault: deps.vault,
         ...(deps.fetch.attachments !== undefined ? { attachments: deps.fetch.attachments } : {}),
         ...(deps.fetch.url !== undefined ? { url: deps.fetch.url } : {}),
+        ...(deps.fetch.urlOverrides !== undefined ? { urlOverrides: deps.fetch.urlOverrides } : {}),
+        ...(deps.fetch.urlFetcher !== undefined ? { urlFetcher: deps.fetch.urlFetcher } : {}),
         ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-        ...(deps.now !== undefined ? { now: deps.now } : {}),
       },
       signal,
     );

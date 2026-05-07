@@ -211,8 +211,11 @@ import {
   unregisterLiveController,
 } from '@/agent/externalAgent/liveControllerRegistry';
 import { ExternalAgentWidgetController } from '@/agent/externalAgent/widgetController';
+import { createOrchestratorUrlFetcher } from '@/agent/wiki/ingest/orchestratorUrlFetcher';
+import type { RunHandle as ExternalAgentRunHandle } from '@/agent/externalAgent/subgraph';
 import {
   InlineAgentAdapter,
+  inlineAgentConfigSchema,
   type ProviderFactory as InlineAgentProviderFactory,
   type ManualChatModelAdapter as InlineAgentManualChatModelAdapter,
   type AssistantStep as InlineAgentAssistantStep,
@@ -220,6 +223,7 @@ import {
   type InlineAgentConfig,
   type InvokeTraceConfig as InlineAgentInvokeTraceConfig,
 } from '@/agent/externalAgent/adapters/inlineAgent';
+import type { FetchUrlConfig } from '@/agent/externalAgent/adapters/inlineAgent/tools/fetchUrl';
 import { ChatOpenAI } from '@langchain/openai';
 import { ChatAnthropic } from '@langchain/anthropic';
 import { AIMessage, HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
@@ -415,6 +419,59 @@ export default class LeoPlugin extends Plugin {
 
   private getActiveThreadId(): string {
     return this.threadsStore?.activeIdOrNull() ?? DEFAULT_THREAD_ID;
+  }
+
+  /**
+   * Resolve the current inlineAgent `tools.fetchUrl` config from settings.
+   * Wiki ingest + canvas create call this lazily on each URL fetch so that
+   * `delegate_external` and the wiki/canvas pipelines share a single
+   * allowlist/blocklist/timeout policy without a plugin reload.
+   *
+   * Note: stored config is `Record<string, unknown>` until parsed; we run it
+   * through `inlineAgentConfigSchema` so Zod defaults populate any missing
+   * fields. Secrets aren't part of the fetchUrl subtree, so no async
+   * `safeStorage` walk is needed.
+   */
+  private resolveInlineAgentFetchUrlConfig(): FetchUrlConfig {
+    const stored = this.store.get().externalAgents.adapters['inline-agent']?.config ?? {};
+    const parsed = inlineAgentConfigSchema.safeParse(stored);
+    const config = parsed.success ? parsed.data : inlineAgentConfigSchema.parse({});
+    return config.tools.fetchUrl;
+  }
+
+  /**
+   * Hook that, for each programmatic `delegate_external` run kicked off by
+   * canvas/wiki URL fetching, creates a live widget controller, registers it,
+   * and appends a widget block to the chat thread so the user sees and
+   * approves the run inline (refine clarification + ready phase + progress).
+   * Mirrors the wiring `delegateExternal.ts` uses for chat-side invocations.
+   */
+  private surfaceExternalAgentWidget(handle: ExternalAgentRunHandle): void {
+    const controller = new ExternalAgentWidgetController({
+      runId: handle.runId,
+      threadId: handle.threadId,
+      slots: this.externalAgentSlots,
+      registry: this.adapterRegistry,
+      findHandle: (id) => this.externalAgentOrchestrator.findHandle(id),
+    });
+    registerLiveController(handle.runId, controller);
+    try {
+      this.chatMessageStore.append({
+        id: `ea-${handle.runId}`,
+        role: 'widget',
+        content: '',
+        createdAt: new Date().toISOString(),
+        widget: {
+          kind: EXTERNAL_AGENT_LIVE_KIND,
+          props: { runId: handle.runId, threadId: handle.threadId },
+        },
+      });
+    } catch (err) {
+      this.logger.warn('externalAgent.live.append-failed', {
+        runId: handle.runId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   override async onload(): Promise<void> {
@@ -918,6 +975,14 @@ export default class LeoPlugin extends Plugin {
           : {}),
         previewing: this.canvasPreviewingDispatcher,
         logger: this.logger,
+        url: () => this.resolveInlineAgentFetchUrlConfig(),
+        urlFetcher: createOrchestratorUrlFetcher({
+          orchestrator: this.externalAgentOrchestrator,
+          vault: vaultAdapter,
+          threadId: () => this.getActiveThreadId(),
+          onHandle: (handle) => this.surfaceExternalAgentWidget(handle),
+          logger: this.logger,
+        }),
       },
       logger: this.logger,
       beginTrace: ({ runId, threadId, op }) => {
@@ -1124,7 +1189,16 @@ export default class LeoPlugin extends Plugin {
               input.providerOverride !== undefined
                 ? buildWikiOverrideInvoker(input.providerOverride)
                 : wikiLlmInvoker,
-            fetch: {},
+            fetch: {
+              url: () => this.resolveInlineAgentFetchUrlConfig(),
+              urlFetcher: createOrchestratorUrlFetcher({
+                orchestrator: this.externalAgentOrchestrator,
+                vault: vaultAdapter,
+                threadId: () => input.threadId,
+                onHandle: (handle) => this.surfaceExternalAgentWidget(handle),
+                logger: this.logger,
+              }),
+            },
             requestDuplicateChoice: async () => 'skip',
             contextWindow: wikiContextWindow(),
             maxOutputTokens: wikiMaxOutputTokens(),
@@ -1696,14 +1770,19 @@ export default class LeoPlugin extends Plugin {
     });
 
     const confirmationController = this.confirmationController;
-    const streamStarter: ChatStreamStarter = (prompt, signal, blocks) => {
+    const streamStarter: ChatStreamStarter = (prompt, signal, blocks, options) => {
       const thread = this.getActiveThreadId();
       const onAbort = (): void => this.agentRunner.cancel(thread);
       signal.addEventListener('abort', onAbort, { once: true });
-      const message: AgentUserMessage =
-        blocks !== undefined && blocks.length > 0
-          ? { role: 'user', content: prompt, blocks }
-          : { role: 'user', content: prompt };
+      const initialAllowedTools = options?.initialAllowedTools;
+      const message: AgentUserMessage = {
+        role: 'user',
+        content: prompt,
+        ...(blocks !== undefined && blocks.length > 0 ? { blocks } : {}),
+        ...(initialAllowedTools !== undefined && initialAllowedTools.length > 0
+          ? { initialAllowedTools }
+          : {}),
+      };
       const source = this.agentRunner.send(message, thread);
       return (async function* () {
         try {
@@ -1763,7 +1842,13 @@ export default class LeoPlugin extends Plugin {
                 return null;
               }
               const content = processed.messages.map((m) => m.content).join('\n\n');
-              return content;
+              const modifier = processed.contextModifier;
+              return {
+                content,
+                ...(modifier?.allowedTools !== undefined && modifier.allowedTools.length > 0
+                  ? { initialAllowedTools: modifier.allowedTools }
+                  : {}),
+              };
             },
           },
           planMode: {

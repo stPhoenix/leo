@@ -517,6 +517,11 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     });
     const workingMessages: ChatMessage[] = [...baseMessages];
     const workingTimestamps: number[] = baseMessages.map(() => deps.clock().getTime());
+    const initialAllowedTools = turn.message.initialAllowedTools;
+    const initialToolAllowlist: ReadonlySet<string> | null =
+      initialAllowedTools !== undefined && initialAllowedTools.length > 0
+        ? new Set(initialAllowedTools)
+        : null;
     return {
       workingMessages,
       workingTimestamps,
@@ -525,7 +530,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       assistantText: '',
       iterationAssistantText: '',
       pendingToolCalls: [],
-      toolAllowlist: null,
+      toolAllowlist: initialToolAllowlist,
       roundTrip: 0,
       turnHadToolCall: false,
       turnCalledTodoWrite: false,

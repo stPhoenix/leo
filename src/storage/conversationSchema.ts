@@ -214,6 +214,19 @@ function parseSingleBlock(obj: Record<string, unknown>): ContentBlock | null {
   if (type === 'tool_reference' && typeof obj.tool_name === 'string') {
     return { type: 'tool_reference', tool_name: obj.tool_name };
   }
+  if (
+    type === 'slash_expanded' &&
+    typeof obj.command === 'string' &&
+    typeof obj.typed === 'string' &&
+    typeof obj.expandedBody === 'string'
+  ) {
+    return {
+      type: 'slash_expanded',
+      command: obj.command,
+      typed: obj.typed,
+      expandedBody: obj.expandedBody,
+    };
+  }
   return null;
 }
 

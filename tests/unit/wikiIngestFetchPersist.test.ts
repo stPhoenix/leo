@@ -8,6 +8,17 @@ import { computeSha256Hex } from '@/agent/wiki/ingest/sha256';
 import { WIKI_RAW_DIR } from '@/agent/wiki/paths';
 import type { VaultAdapter, VaultListing } from '@/storage/vaultAdapter';
 import type { DuplicateMatch } from '@/agent/wiki/ingest/types';
+import type { FetchUrlConfig } from '@/agent/externalAgent/adapters/inlineAgent/tools/fetchUrl';
+
+const TEST_FETCH_URL_CONFIG: FetchUrlConfig = {
+  enabled: true,
+  allowlist: [],
+  blocklist: [],
+  timeoutMs: 30_000,
+  maxBytes: 5 * 1024 * 1024,
+  requireDnsResolveCheck: false,
+  headerDenylist: [],
+};
 
 class FakeVault implements VaultAdapter {
   readonly files = new Map<string, string>();
@@ -127,7 +138,7 @@ describe('fetchIngestSource — url', () => {
     const vault = new FakeVault();
     const r = await fetchIngestSource(
       { kind: 'url', url: 'ftp://example.com' },
-      { vault, url: { skipDnsCheck: true } },
+      { vault, url: TEST_FETCH_URL_CONFIG },
       new AbortController().signal,
     );
     expect(r.ok).toBe(false);
@@ -146,7 +157,11 @@ describe('fetchIngestSource — url', () => {
     );
     const r = await fetchIngestSource(
       { kind: 'url', url: 'https://example.com/page' },
-      { vault, url: { fetchImpl: fetchImpl as unknown as typeof fetch, skipDnsCheck: true } },
+      {
+        vault,
+        url: TEST_FETCH_URL_CONFIG,
+        urlOverrides: { fetchImpl: fetchImpl as unknown as typeof fetch },
+      },
       new AbortController().signal,
     );
     expect(fetchImpl).toHaveBeenCalled();
@@ -162,7 +177,8 @@ describe('fetchIngestSource — url', () => {
       { kind: 'url', url: 'https://internal.example' },
       {
         vault,
-        url: {
+        url: { ...TEST_FETCH_URL_CONFIG, requireDnsResolveCheck: true },
+        urlOverrides: {
           dnsLookup: async () => [{ address: '10.0.0.1', family: 4 }],
           fetchImpl: vi.fn() as unknown as typeof fetch,
         },
@@ -292,7 +308,7 @@ describe('processSourceFetchPersist — orchestration', () => {
       { kind: 'url', url: 'ftp://nope' },
       {
         vault,
-        url: { skipDnsCheck: true },
+        url: TEST_FETCH_URL_CONFIG,
         requestDuplicateChoice: async () => 'skip',
       },
       new AbortController().signal,

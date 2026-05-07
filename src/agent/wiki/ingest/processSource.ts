@@ -1,7 +1,13 @@
 import type { Logger } from '@/platform/Logger';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import { WIKI_LOG } from '@/agent/wiki/loggingNamespaces';
-import { fetchIngestSource, type AttachmentResolver, type FetchUrlConfig } from './fetchSource';
+import {
+  fetchIngestSource,
+  type AttachmentResolver,
+  type FetchUrlConfigSource,
+  type FetchUrlOverrides,
+  type UrlFetcher,
+} from './fetchSource';
 import { findDuplicateRawBySha } from './duplicateDetect';
 import { resolveDuplicateChoice } from './duplicatePrompt';
 import { computeFetchedSha256, persistRaw } from './persistRaw';
@@ -10,7 +16,9 @@ import type { DuplicateChoice, DuplicateMatch, IngestSource, SourceTerminalRecor
 export interface ProcessSourceDeps {
   readonly vault: VaultAdapter;
   readonly attachments?: AttachmentResolver;
-  readonly url?: FetchUrlConfig;
+  readonly url?: FetchUrlConfigSource;
+  readonly urlOverrides?: FetchUrlOverrides;
+  readonly urlFetcher?: UrlFetcher;
   readonly logger?: Logger;
   readonly now?: () => Date;
   readonly requestDuplicateChoice: (match: DuplicateMatch) => Promise<DuplicateChoice | null>;

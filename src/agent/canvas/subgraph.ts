@@ -8,6 +8,11 @@ import type { CanvasMutex, CanvasOp } from './mutex';
 import { createCanvasRefine, type CanvasRefineProvider, type RefineMessage } from './refine';
 import { expandSourceHints, type CanvasMetadataCacheLike } from './plan';
 import { fetchCanvasSources } from './fetch';
+import type {
+  FetchUrlConfigSource,
+  FetchUrlOverrides,
+  UrlFetcher,
+} from '@/agent/wiki/ingest/fetchSource';
 import { runExtractors, type CanvasExtractorProvider } from './extract';
 import { reduceEntityGraph, type CanvasReducerProvider, ReducerInvalidError } from './reduce';
 import { buildPageBasenameMap, resolveEntityFiles } from './resolveFiles';
@@ -84,6 +89,18 @@ export interface CanvasSubgraphDeps {
    * `[WIKI_PAGES_DIR]`. Pass `[]` to disable the broad fallback.
    */
   readonly pagesDirs?: readonly string[];
+  /**
+   * URL fetch policy + test seams. Resolved from inlineAgent's adapter config.
+   * Used only when `urlFetcher` is unset (test/non-orchestrator wiring).
+   */
+  readonly url?: FetchUrlConfigSource;
+  readonly urlOverrides?: FetchUrlOverrides;
+  /**
+   * Production: routes URL-kind fetches through `delegate_external`. Each URL
+   * triggers a per-run external-agent widget for user approval; body comes
+   * from the result writer's `response.md`.
+   */
+  readonly urlFetcher?: UrlFetcher;
 }
 
 export interface RunHandle {
@@ -251,7 +268,13 @@ export function startCanvasRun(
           }
           const fetchResult = await fetchCanvasSources(
             mutableState.sources,
-            { vault: deps.vault },
+            {
+              vault: deps.vault,
+              ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+              ...(deps.url !== undefined ? { url: deps.url } : {}),
+              ...(deps.urlOverrides !== undefined ? { urlOverrides: deps.urlOverrides } : {}),
+              ...(deps.urlFetcher !== undefined ? { urlFetcher: deps.urlFetcher } : {}),
+            },
             ctrl.signal,
           );
           if (aborted && !inUninterruptibleWrite) {

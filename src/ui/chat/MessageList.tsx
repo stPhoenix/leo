@@ -12,7 +12,7 @@ import { enhanceCodeBlocks, type CodeBlockClipboard } from './codeBlockEnhancer'
 import { isNearBottom } from './scrollAnchoring';
 import { InlineEditor, MessageActionBar, type MessageActions } from './MessageActionBar';
 import { lookupWidget } from './widgets/registry';
-import { AssistantBlocks, type ToolUseBlockSlots } from './blocks';
+import { AssistantBlocks, SlashExpandedBlockView, type ToolUseBlockSlots } from './blocks';
 import { SentAttachmentList } from './SentAttachmentList';
 
 export interface MarkdownRenderFn {
@@ -147,6 +147,8 @@ function renderMessageRow(args: {
         editing={editing}
         onStartEdit={startEdit}
         onFinishEdit={endEdit}
+        renderMarkdown={props.renderMarkdown}
+        clipboard={props.clipboard}
       />
     );
   }
@@ -171,6 +173,8 @@ interface UserBubbleProps {
   readonly editing: boolean;
   readonly onStartEdit: (id: string) => void;
   readonly onFinishEdit: () => void;
+  readonly renderMarkdown?: MarkdownRenderFn;
+  readonly clipboard?: CodeBlockClipboard;
 }
 
 function UserBubble(props: UserBubbleProps): JSX.Element {
@@ -197,6 +201,7 @@ function UserBubble(props: UserBubbleProps): JSX.Element {
   }
   const userBlocks = record.blocks ?? [];
   const hasAttachments = userBlocks.some((b) => b.type === 'image' || b.type === 'document');
+  const slashExpanded = userBlocks.filter((b) => b.type === 'slash_expanded');
   return (
     <div className="leo-bubble leo-bubble-user">
       <header className="leo-bubble-header">
@@ -209,6 +214,20 @@ function UserBubble(props: UserBubbleProps): JSX.Element {
       <div className="leo-bubble-body" data-slot="user-text">
         {record.content}
       </div>
+      {slashExpanded.map((b, i) =>
+        b.type === 'slash_expanded' ? (
+          <SlashExpandedBlockView
+            key={`${record.id}:slash:${i}`}
+            block={b}
+            blockId={`${record.id}:slash:${i}`}
+            {...(props.renderMarkdown !== undefined
+              ? { renderMarkdown: props.renderMarkdown }
+              : {})}
+            {...(props.clipboard !== undefined ? { clipboard: props.clipboard } : {})}
+            {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+          />
+        ) : null,
+      )}
       {props.actions !== undefined ? (
         <MessageActionBar
           record={record}

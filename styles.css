@@ -3773,7 +3773,8 @@
 .leo-tool-result-body-wrap,
 .leo-diff-body-wrap,
 .leo-grouped-tool-uses-body-wrap,
-.leo-ea-terminal-body-wrap {
+.leo-ea-terminal-body-wrap,
+.leo-slash-expanded-body-wrap {
   display: grid;
   grid-template-rows: 1fr;
   transition: grid-template-rows 180ms ease;
@@ -3784,7 +3785,8 @@
 .leo-tool-result.is-collapsed .leo-tool-result-body-wrap,
 .leo-diff.is-collapsed .leo-diff-body-wrap,
 .leo-grouped-tool-uses.is-collapsed .leo-grouped-tool-uses-body-wrap,
-.leo-ea-terminal.is-collapsed .leo-ea-terminal-body-wrap {
+.leo-ea-terminal.is-collapsed .leo-ea-terminal-body-wrap,
+.leo-slash-expanded.is-collapsed .leo-slash-expanded-body-wrap {
   grid-template-rows: 0fr;
 }
 
@@ -3793,7 +3795,8 @@
 .leo-tool-result-body-wrap > *,
 .leo-diff-body-wrap > *,
 .leo-grouped-tool-uses-body-wrap > *,
-.leo-ea-terminal-body-wrap > * {
+.leo-ea-terminal-body-wrap > *,
+.leo-slash-expanded-body-wrap > * {
   overflow: hidden;
   min-height: 0;
 }
@@ -3822,8 +3825,64 @@
 .leo-wiki-status-widget,
 .leo-canvas-widget,
 .leo-canvas-status-widget,
-.leo-canvas-terminal-block {
+.leo-canvas-terminal-block,
+.leo-slash-expanded {
   animation: leo-block-in 160ms ease both;
+}
+
+/* ── Slash-expanded prompt reveal (user bubble) ──────────────────────── */
+
+.leo-slash-expanded {
+  margin-top: var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--text-faint);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-2) var(--size-4-3);
+  background: color-mix(in srgb, var(--background-secondary-alt) 70%, transparent);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.leo-slash-expanded-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--size-4-2);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.leo-slash-expanded-toggle {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-accent);
+  cursor: pointer;
+  margin-left: auto;
+  font-size: inherit;
+  padding: 2px var(--size-4-1);
+  border-radius: var(--radius-s);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.leo-slash-expanded-toggle:hover {
+  background: var(--background-modifier-hover);
+}
+
+.leo-slash-expanded-body {
+  margin-top: var(--size-4-2);
+  line-height: 1.5;
+}
+
+.leo-slash-expanded-pre {
+  white-space: pre-wrap;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  margin: 0;
+  color: var(--text-normal);
 }
 
 .leo-wiki-widget {
@@ -4515,7 +4574,11 @@
   gap: var(--size-4-2);
   padding: var(--size-4-3);
   border: 1px dashed
-    color-mix(in srgb, var(--color-yellow, var(--interactive-accent)) 50%, var(--background-modifier-border));
+    color-mix(
+      in srgb,
+      var(--color-yellow, var(--interactive-accent)) 50%,
+      var(--background-modifier-border)
+    );
   border-radius: var(--radius-m);
   background: color-mix(in srgb, var(--color-yellow, var(--interactive-accent)) 6%, transparent);
 }

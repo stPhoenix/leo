@@ -47,8 +47,8 @@ describe('delegate_canvas_create tool', () => {
     expect(tool.requiresConfirmation).toBe(true);
   });
 
-  it('plan-mode allowlist excludes delegate_canvas_create', () => {
-    expect(DEFAULT_PLAN_MODE_ALLOWLIST.has(DELEGATE_CANVAS_CREATE_TOOL_ID)).toBe(false);
+  it('plan-mode allowlist includes delegate_canvas_create (gated by per-call confirmation)', () => {
+    expect(DEFAULT_PLAN_MODE_ALLOWLIST.has(DELEGATE_CANVAS_CREATE_TOOL_ID)).toBe(true);
   });
 
   it('rejects invalid targetPath at validate boundary', () => {

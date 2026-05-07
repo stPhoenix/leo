@@ -79,11 +79,16 @@ import type { IndexStatusSource } from './chat/IndexStatusBlock';
 import type { DrainListener } from '@/indexer/vaultIndexer';
 import { VIEW_TYPE_LEO_CHAT } from './viewType';
 
+export interface ChatStreamStarterOptions {
+  readonly initialAllowedTools?: readonly string[];
+}
+
 export interface ChatStreamStarter {
   (
     prompt: string,
     signal: AbortSignal,
     blocks?: readonly ContentBlock[],
+    options?: ChatStreamStarterOptions,
   ): AsyncIterable<StreamEvent>;
 }
 
@@ -144,9 +149,14 @@ export interface SkillSlashCommandInfo {
   readonly whenToUse?: string;
 }
 
+export interface SkillSlashRunResult {
+  readonly content: string;
+  readonly initialAllowedTools?: readonly string[];
+}
+
 export interface SkillSlashAdapter {
   readonly list: () => readonly SkillSlashCommandInfo[];
-  readonly run: (name: string, args: string) => Promise<string | null>;
+  readonly run: (name: string, args: string) => Promise<SkillSlashRunResult | null>;
 }
 
 export class ChatView extends ItemView {
@@ -448,20 +458,37 @@ export class ChatView extends ItemView {
     host?.empty();
   }
 
-  private beginTurn(text: string): void {
+  private beginTurn(
+    text: string,
+    opts: {
+      slashCommand?: { typed: string; command: string };
+      initialAllowedTools?: readonly string[];
+    } = {},
+  ): void {
+    const slashCommand = opts.slashCommand;
+    const initialAllowedTools = opts.initialAllowedTools;
+    const carry = {
+      ...(slashCommand !== undefined ? { slashCommand } : {}),
+      ...(initialAllowedTools !== undefined && initialAllowedTools.length > 0
+        ? { initialAllowedTools }
+        : {}),
+    };
     const wiring = this.deps.attachments;
     if (wiring === undefined) {
-      this.turnDispatcher?.submit(text);
+      this.turnDispatcher?.submit(text, carry);
       return;
     }
     const staged = wiring.store.getSnapshot();
     if (staged.length === 0) {
-      this.turnDispatcher?.submit(text);
+      this.turnDispatcher?.submit(text, carry);
       return;
     }
     const drained = wiring.store.drainForNext();
     const blocks = wiring.buildUserContent(text, drained);
-    this.turnDispatcher?.submit(text, { blocks });
+    this.turnDispatcher?.submit(text, {
+      blocks,
+      ...carry,
+    });
   }
 
   private attachmentItems(): readonly StagedAttachment[] {
@@ -564,9 +591,14 @@ export class ChatView extends ItemView {
           description,
           match: (ctx) => ctx.name === cmd.name.toLowerCase(),
           run: async (ctx): Promise<void> => {
-            const content = await skillSlash.run(cmd.name, ctx.args);
-            if (content === null) return;
-            this.beginTurn(content);
+            const out = await skillSlash.run(cmd.name, ctx.args);
+            if (out === null) return;
+            this.beginTurn(out.content, {
+              slashCommand: { typed: ctx.raw, command: cmd.name },
+              ...(out.initialAllowedTools !== undefined && out.initialAllowedTools.length > 0
+                ? { initialAllowedTools: out.initialAllowedTools }
+                : {}),
+            });
           },
         });
       }

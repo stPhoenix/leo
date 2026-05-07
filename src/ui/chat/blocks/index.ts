@@ -4,6 +4,8 @@ export { TextBlockView } from './TextBlockView';
 export type { TextBlockViewProps } from './TextBlockView';
 export { ThinkingBlockView } from './ThinkingBlockView';
 export type { ThinkingBlockViewProps } from './ThinkingBlockView';
+export { SlashExpandedBlockView } from './SlashExpandedBlock';
+export type { SlashExpandedBlockViewProps } from './SlashExpandedBlock';
 export { ToolUseBlockView } from './ToolUseBlockView';
 export type { ToolUseBlockSlots, ToolUseBlockViewProps } from './ToolUseBlockView';
 export { ToolResultBlockView } from './ToolResultBlockView';

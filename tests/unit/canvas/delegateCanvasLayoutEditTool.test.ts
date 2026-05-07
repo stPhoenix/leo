@@ -85,8 +85,8 @@ describe('delegate_canvas_layout_edit tool', () => {
     expect(tool.requiresConfirmation).toBe(true);
   });
 
-  it('plan-mode allowlist excludes tool', () => {
-    expect(DEFAULT_PLAN_MODE_ALLOWLIST.has(DELEGATE_CANVAS_LAYOUT_EDIT_TOOL_ID)).toBe(false);
+  it('plan-mode allowlist includes tool (gated by per-call confirmation)', () => {
+    expect(DEFAULT_PLAN_MODE_ALLOWLIST.has(DELEGATE_CANVAS_LAYOUT_EDIT_TOOL_ID)).toBe(true);
   });
 
   it('rejects invalid path at validate boundary', () => {

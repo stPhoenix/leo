@@ -100,7 +100,10 @@ The source hints MUST be specific. Globs like \`**/*.md\` are forbidden — they
 - \`{ kind: "url", url: "<https://…>" }\` for external pages the user named.
 - \`{ kind: "vaultFrontmatter", field: "type", value: "project" }\` for typed notes.
 
-## Step 6 — Present plan, get approval
+## Step 6 — Verify the delegate tool is loaded
+Before exiting plan mode, call \`ToolSearch\` with \`select:delegate_canvas_create\` to make its schema visible. \`delegate_canvas_create\` is the ONLY correct way to build a canvas — never substitute \`delegate_external\`, \`create_note\`, or any other write tool. If \`ToolSearch\` does not return a schema for \`delegate_canvas_create\`, abort with a clear error message; do not invent a fallback.
+
+## Step 7 — Present plan, get approval
 Call \`ExitPlanMode\` with a markdown plan body containing:
 - The Outcome line.
 - A short bullet list of the entity types and relation types you will request.
@@ -110,7 +113,7 @@ Call \`ExitPlanMode\` with a markdown plan body containing:
 
 Wait for user approval. If the user edits the plan, re-read the edited plan file before continuing.
 
-## Step 7 — Invoke delegate_canvas_create
+## Step 8 — Invoke delegate_canvas_create
 Compose the \`ask\` argument as a self-contained brief that the refine sub-agent can turn into a RunPlan without further questions. It must include:
 - The outcome.
 - The exact entity-type and relation-type names + descriptions.
@@ -121,8 +124,7 @@ Compose the \`ask\` argument as a self-contained brief that the refine sub-agent
 Call \`delegate_canvas_create\` once. Do not retry on first error — surface it to the user with the original error message so they can decide.
 
 ## Notes
-- You are running with a restricted tool allowlist. Do not attempt write or edit tools — they will be denied.
-- Plan mode also blocks \`delegate_canvas_create\`; that is intentional — it runs only after you exit plan mode and the user approves.
+- You are running with a restricted tool allowlist. Do not attempt write or edit tools — they will be denied. \`delegate_external\` is NOT in the allowlist; it is the wrong tool for canvas creation.
 - If you cannot find any concrete sources after Step 3 and Step 4, abort with a message explaining why; do not invoke \`delegate_canvas_create\` with an empty source list.
 `;
 
