@@ -93,8 +93,8 @@ export async function runRename(
     }
 
     if (ctx.readState !== undefined) {
-      ctx.readState.invalidate(args.path);
-      ctx.readState.invalidate(args.new_path);
+      ctx.readState.invalidate(ctx.thread, args.path);
+      ctx.readState.invalidate(ctx.thread, args.new_path);
     }
 
     return {

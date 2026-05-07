@@ -26,6 +26,7 @@ import {
   type AutoCompactTrackingState,
   type BreakerStatusChannel,
 } from './autocompactBreaker';
+import type { CompactPhaseSink } from './compact/phaseSink';
 import {
   estimateMessageTokens,
   roughTokenCountEstimation,
@@ -135,6 +136,7 @@ export interface AutocompactOptions {
   readonly now?: () => number;
   readonly tracking?: AutoCompactTrackingState;
   readonly breakerNotifications?: BreakerStatusChannel;
+  readonly phaseSink?: CompactPhaseSink;
 }
 
 const DEFAULT_KEEP_ALIVE_MS = 30_000;
@@ -191,6 +193,10 @@ export async function autoCompactIfNeeded(
 ): Promise<CompactionResult | null> {
   if (opts.querySource === 'compact') return null;
   if (opts.tracking !== undefined && shouldSkipForCircuitBreaker(opts.tracking)) {
+    opts.phaseSink?.error(
+      'circuit_broken',
+      'Autocompact disabled for this session (3 consecutive failures)',
+    );
     return null;
   }
   if (
@@ -218,6 +224,10 @@ export async function runManualCompaction(
   opts: AutocompactOptions,
 ): Promise<CompactionResult | null> {
   if (opts.tracking !== undefined && shouldSkipForCircuitBreaker(opts.tracking)) {
+    opts.phaseSink?.error(
+      'circuit_broken',
+      'Compaction disabled for this session (3 consecutive failures)',
+    );
     return null;
   }
   return runCompaction(messages, { ...opts, trigger: 'manual' });
@@ -229,17 +239,23 @@ export async function runCompaction(
 ): Promise<CompactionResult | null> {
   const preCompactTokenCount = estimateMessageTokens(toTokenMessages(messages));
   const trigger: CompactTrigger = opts.trigger ?? 'auto';
+  opts.phaseSink?.start(trigger, preCompactTokenCount);
   const summaryPrompt = getCompactPrompt(opts.customInstructions);
   const afterBoundary = getMessagesAfterCompactBoundary(messages);
   const prepared: ChatMessage[] = stripReinjectedAttachments(afterBoundary);
   prepared.push({ role: 'user', content: summaryPrompt });
   const normalized = normalizeMessagesForAPI(stripImagesFromMessages(prepared));
 
+  opts.phaseSink?.summarizing();
+
   let messagesToSummarize: readonly ChatMessage[] = normalized;
   let streamResult: StreamCallResult | null = null;
   let ptlAttempts = 0;
   for (;;) {
-    if (opts.signal?.aborted) return null;
+    if (opts.signal?.aborted) {
+      opts.phaseSink?.cancelled();
+      return null;
+    }
     streamResult = await runSummarizationWithRetries(
       {
         systemPrompt: COMPACT_SYSTEM_PROMPT,
@@ -254,6 +270,8 @@ export async function runCompaction(
         preCompactTokenCount,
       });
       recordFailureIfTracked(opts);
+      if (opts.signal?.aborted) opts.phaseSink?.cancelled();
+      else opts.phaseSink?.error('no_stream', 'No streaming response from provider');
       return null;
     }
     if (!streamResult.text.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break;
@@ -264,6 +282,7 @@ export async function runCompaction(
         preCompactTokenCount,
       });
       recordFailureIfTracked(opts);
+      opts.phaseSink?.error('prompt_too_long', ERROR_MESSAGE_PROMPT_TOO_LONG);
       throw new Error(ERROR_MESSAGE_PROMPT_TOO_LONG);
     }
     const truncated = truncateHeadForPTLRetry(messagesToSummarize, streamResult.text);
@@ -273,6 +292,7 @@ export async function runCompaction(
         preCompactTokenCount,
       });
       recordFailureIfTracked(opts);
+      opts.phaseSink?.error('prompt_too_long', ERROR_MESSAGE_PROMPT_TOO_LONG);
       throw new Error(ERROR_MESSAGE_PROMPT_TOO_LONG);
     }
     opts.logger.info('tengu_compact_ptl_retry', {
@@ -292,8 +312,11 @@ export async function runCompaction(
       preCompactTokenCount,
     });
     recordFailureIfTracked(opts);
+    opts.phaseSink?.error('no_summary', 'Could not extract summary from response');
     return null;
   }
+
+  opts.phaseSink?.buildingAttachments();
 
   const boundaryMarker: SystemCompactBoundaryMessage = {
     role: 'system',
@@ -366,6 +389,7 @@ export async function runCompaction(
     compactionTotalTokens: streamResult.inputTokens + streamResult.outputTokens,
   });
 
+  opts.phaseSink?.done(result);
   return result;
 }
 
@@ -445,10 +469,20 @@ async function runStreamOnce(
     for await (const ev of opts.provider.stream(req, innerAbort.signal)) {
       sawEvent = true;
       if (innerAbort.signal.aborted) break;
-      if (ev.type === 'token') text += ev.text;
-      else if (ev.type === 'usage') {
+      if (ev.type === 'token') {
+        text += ev.text;
+      } else if (ev.type === 'block_delta' && ev.delta.type === 'text_delta') {
+        // langchain-backed providers (lmstudio/openai/anthropic/ollama/custom)
+        // emit text through content-block framing, not the legacy `token` shape.
+        // Without this branch the summarizer always saw empty output for those
+        // providers and tripped the circuit breaker.
+        text += ev.delta.text;
+      } else if (ev.type === 'usage') {
         inputTokens = ev.input;
         outputTokens = ev.output;
+      } else if (ev.type === 'message_delta' && ev.usage !== undefined) {
+        if (typeof ev.usage.input === 'number') inputTokens = ev.usage.input;
+        if (typeof ev.usage.output === 'number') outputTokens = ev.usage.output;
       } else if (ev.type === 'error') {
         throw ev.error;
       } else if (ev.type === 'done') {

@@ -2,6 +2,7 @@ import type { z } from 'zod';
 import type { Logger } from '@/platform/Logger';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
+import type { CanvasNavigator } from '@/editor/canvasNavigator';
 import type { ReadFileStateStore } from './builtin/readFileState';
 
 /**
@@ -46,6 +47,7 @@ export interface ToolCtx {
   readonly vault: VaultAdapter;
   readonly editor: EditNoteBridge;
   readonly navigator?: WorkspaceNavigator;
+  readonly canvasNavigator?: CanvasNavigator;
   readonly logger?: Logger;
   readonly agentId?: string | null;
   readonly progress?: (event: ToolProgressEvent) => void;

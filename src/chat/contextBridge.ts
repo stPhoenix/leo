@@ -1,5 +1,9 @@
 import type { ChatMessageRecord, ContentBlock } from './types';
 import type { TokenBlock, TokenMessage, TokenUsage } from '@/agent/tokenEstimator';
+import {
+  COMPACT_TERMINAL_KIND,
+  tryParseCompactTerminalSnapshot,
+} from '@/agent/compact/terminalSnapshot';
 
 export interface AnalyzerInputs {
   readonly messages: readonly TokenMessage[];
@@ -10,6 +14,19 @@ export function recordsToAnalyzerInputs(records: readonly ChatMessageRecord[]): 
   const messages: TokenMessage[] = [];
   const originalMessages: TokenMessage[] = [];
   for (const r of records) {
+    if (r.role === 'widget' && r.widget?.kind === COMPACT_TERMINAL_KIND) {
+      const snap = tryParseCompactTerminalSnapshot(r.widget.props);
+      if (snap !== null && snap.terminalPhase === 'done' && snap.postTokens !== null) {
+        messages.length = 0;
+        originalMessages.length = 0;
+        originalMessages.push({
+          role: 'assistant',
+          content: '',
+          usage: { input_tokens: snap.postTokens },
+        });
+      }
+      continue;
+    }
     if (r.role !== 'user' && r.role !== 'assistant') continue;
     const role: TokenMessage['role'] = r.role;
     const content = recordContent(r);

@@ -1,0 +1,7 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildTombstoneSummary > matches snapshot wording 1`] = `
+"User previously removed entities from this canvas. Do not re-emit unless the new instruction explicitly requests them.
+Removed entities: p:alice, p:bob
+Removed edges: (p:alice -[attended]-> e:conf)"
+`;

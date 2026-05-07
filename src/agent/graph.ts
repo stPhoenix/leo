@@ -13,6 +13,7 @@ import type { EditNoteBridge } from '@/tools/types';
 import type { ReadFileStateStore } from '@/tools/builtin/readFileState';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
+import type { CanvasNavigator } from '@/editor/canvasNavigator';
 import type { FocusedContext } from '@/editor/types';
 import type { ContextModifier } from '@/skills/types';
 import type { RagMode } from '@/settings/settingsStore';
@@ -35,6 +36,7 @@ import {
 import {
   autoCompactIfNeeded,
   buildPostCompactMessages,
+  shouldAutoCompact,
   type AutocompactProvider,
   type CompactionResult,
   type InvokedSkill,
@@ -42,7 +44,12 @@ import {
   type PlanSource,
   type RecentFileSource,
 } from './autocompact';
-import type { AutoCompactTrackingState, BreakerStatusChannel } from './autocompactBreaker';
+import {
+  shouldSkipForCircuitBreaker,
+  type AutoCompactTrackingState,
+  type BreakerStatusChannel,
+} from './autocompactBreaker';
+import type { CompactPhaseSink } from './compact/phaseSink';
 import {
   type AgentAssistantMessage,
   type AgentHistoryMessage,
@@ -155,6 +162,13 @@ export interface GraphAutocompactOptions {
   readonly breakerNotifications?: BreakerStatusChannel;
   readonly onResult?: (result: CompactionResult) => void;
   readonly replaceHistory?: (thread: ThreadId, result: CompactionResult) => void;
+  /**
+   * Lazy widget hook — invoked only when an autocompact run is actually about
+   * to start (or when the circuit breaker has tripped and we want to surface
+   * the failure as a chat block). Returns the sink that drives the live
+   * widget's phase transitions.
+   */
+  readonly beginRun?: (input: { trigger: 'auto'; threadId: ThreadId }) => CompactPhaseSink;
 }
 
 export type ConfirmationDecision = 'allow-once' | 'allow-thread' | 'deny';
@@ -181,6 +195,7 @@ export interface GraphDeps {
   readonly vault: VaultAdapter;
   readonly editor: EditNoteBridge;
   readonly navigator?: WorkspaceNavigator;
+  readonly canvasNavigator?: CanvasNavigator;
   readonly readState?: ReadFileStateStore;
   readonly excludeMatcher?: (path: string) => boolean;
   readonly maxToolRoundTrips: number;
@@ -194,7 +209,6 @@ export interface GraphDeps {
   readonly appendHistory: (thread: ThreadId, msg: AgentHistoryMessage) => void;
   readonly toolSearch?: ToolSearchSession;
   readonly disableParallelToolCalls?: () => boolean;
-  readonly disableThinking?: () => boolean;
 }
 
 export interface GraphTraceContext {
@@ -527,6 +541,20 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     if (!ac?.enabled) return {};
     if (state.workingMessages.length === 0) return {};
     const userOverride = ac.userOverride?.();
+    const breakerTripped = ac.tracking !== undefined && shouldSkipForCircuitBreaker(ac.tracking);
+    const willRun = shouldAutoCompact({
+      messages: state.workingMessages,
+      model: state.effectiveModel,
+      ...(ac.providerMaxInputTokens !== undefined
+        ? { providerMaxInputTokens: ac.providerMaxInputTokens }
+        : {}),
+      ...(userOverride !== undefined ? { userOverride } : {}),
+      ...(ac.maxOutputTokensForModel !== undefined
+        ? { maxOutputTokensForModel: ac.maxOutputTokensForModel }
+        : {}),
+    });
+    if (!willRun && !breakerTripped) return {};
+    const phaseSink = ac.beginRun?.({ trigger: 'auto', threadId: turn.thread });
     let result: CompactionResult | null = null;
     try {
       result = await autoCompactIfNeeded(state.workingMessages, {
@@ -551,12 +579,15 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
         ...(ac.invokedSkills !== undefined ? { invokedSkills: ac.invokedSkills() } : {}),
         ...(ac.plan !== undefined ? { plan: ac.plan } : {}),
         ...(ac.planMode !== undefined ? { planMode: ac.planMode } : {}),
+        ...(phaseSink !== undefined ? { phaseSink } : {}),
       });
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       deps.logger.warn('agent.autocompact.error', {
         thread: turn.thread,
-        error: err instanceof Error ? err.message : String(err),
+        error: message,
       });
+      phaseSink?.error('unknown', message);
       return {};
     }
     if (result === null) return {};
@@ -634,12 +665,10 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     providerHints: ProviderHints | undefined,
   ): ProviderHints | undefined => {
     const disableParallel = deps.disableParallelToolCalls?.() === true;
-    const disableThinking = deps.disableThinking?.() === true;
-    if (!disableParallel && !disableThinking && providerHints === undefined) return undefined;
+    if (!disableParallel && providerHints === undefined) return undefined;
     return {
       ...(providerHints ?? {}),
       ...(disableParallel ? { disableParallelToolCalls: true } : {}),
-      ...(disableThinking ? { disableThinking: true } : {}),
     };
   };
 
@@ -861,6 +890,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       vault: deps.vault,
       editor: deps.editor,
       ...(deps.navigator !== undefined ? { navigator: deps.navigator } : {}),
+      ...(deps.canvasNavigator !== undefined ? { canvasNavigator: deps.canvasNavigator } : {}),
       logger: deps.logger,
       agentId,
       ...(deps.readState !== undefined ? { readState: deps.readState } : {}),
@@ -994,12 +1024,45 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
         calledTodoWrite: state.turnCalledTodoWrite,
       });
     }
+
+    // If we exited because the tool round-trip cap was hit AND the model
+    // never got a chance to produce text, the user otherwise sees an empty
+    // bubble. Inject a synthetic assistant message naming the cap so the
+    // termination is visible + actionable.
+    let assistantText = state.assistantText;
+    let injectedRoundTripNotice = false;
+    if (
+      !cancelled &&
+      !state.errored &&
+      state.assistantText.length === 0 &&
+      state.roundTrip >= deps.maxToolRoundTrips
+    ) {
+      const notice =
+        `[Tool round-trip limit reached (${deps.maxToolRoundTrips}). The agent stopped without writing a final answer. ` +
+        `Raise Provider › Max tool round-trips in Settings, or send another message to continue.]`;
+      const idx = state.blockIndexOffset;
+      turn.events.push({ type: 'block_start', index: idx, block: { type: 'text' } });
+      turn.events.push({
+        type: 'block_delta',
+        index: idx,
+        delta: { type: 'text_delta', text: notice },
+      });
+      turn.events.push({ type: 'block_stop', index: idx });
+      assistantText = notice;
+      injectedRoundTripNotice = true;
+      deps.logger.warn('agent.turn.maxRoundTrips', {
+        thread,
+        cap: deps.maxToolRoundTrips,
+        roundTrip: state.roundTrip,
+      });
+    }
+
     const historyUser: AgentUserMessage = { role: 'user', content: turn.message.content };
     deps.appendHistory(thread, historyUser);
-    if (!cancelled && !state.errored && state.assistantText.length > 0) {
+    if (!cancelled && !state.errored && assistantText.length > 0) {
       const assistant: AgentAssistantMessage = {
         role: 'assistant',
-        content: state.assistantText,
+        content: assistantText,
       };
       deps.appendHistory(thread, assistant);
     }
@@ -1009,7 +1072,8 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       thread,
       cancelled,
       errored: false,
-      assistantChars: state.assistantText.length,
+      assistantChars: assistantText.length,
+      ...(injectedRoundTripNotice ? { maxRoundTripsHit: true } : {}),
     });
     return { cancelled };
   };

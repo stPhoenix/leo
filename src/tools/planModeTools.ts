@@ -65,7 +65,7 @@ export const ENTER_PLAN_MODE_DESCRIPTION = [
   '',
   '## What to do once in plan mode',
   '',
-  '1. Explore the vault read-only with read_note, read_file, search_vault, list_notes, glob_vault, grep_vault, open_note, reveal_in_note.',
+  '1. Explore the vault read-only with read_note, read_file, search_vault, list_notes, glob_vault, grep_vault, open_note, reveal_in_note, reveal_in_canvas.',
   '2. Inspect existing frontmatter, links, tags, headings, structure of relevant notes.',
   '3. Use AskUserQuestion if the structure depends on a user preference you cannot infer (flat vs hierarchical, MOC vs tag-driven, one deep note vs several connected notes). Provide 2–4 concrete options with one-line trade-offs.',
   '4. Design the structure: which notes to create, which to edit, link graph, headings, frontmatter, ordering of operations.',

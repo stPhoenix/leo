@@ -170,6 +170,25 @@ describe('read_file dedup via ReadFileStateStore', () => {
       expect(second.data.numLines).toBe(2);
     }
   });
+
+  it('does not short-circuit when reading the same path from a different thread', async () => {
+    const vault = new MtimeVault();
+    vault.files.set('a.md', FIVE_LINE);
+    vault.setMtime('a.md', 500);
+    const readState = new ReadFileStateStore();
+    const tool = createReadFileTool();
+    const ctxA = makeToolCtx({ thread: 'A', vault, readState });
+    const ctxB = makeToolCtx({ thread: 'B', vault, readState });
+    const first = await tool.invoke({ path: 'a.md' }, ctxA);
+    expect(first.ok).toBe(true);
+    const fromB = await tool.invoke({ path: 'a.md' }, ctxB);
+    expect(fromB.ok).toBe(true);
+    if (fromB.ok) {
+      expect(fromB.data.unchanged).toBeUndefined();
+      expect(fromB.data.numLines).toBe(5);
+      expect(fromB.data.content).toContain('1\tline1');
+    }
+  });
 });
 
 describe('read_file ENOENT suggestions', () => {

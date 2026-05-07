@@ -428,6 +428,23 @@ export class SettingsTab extends PluginSettingTab {
       });
 
     new Setting(body)
+      .setName('Max tool round-trips')
+      .setDesc(
+        'Cap on tool-call cycles per turn. Once hit, the agent loop stops without another model call (so the model cannot write a final summary). ' +
+          'Raise for tool-heavy work; lower to bound runaway loops. Range 1–256, default 16.',
+      )
+      .addText((t) => {
+        t.setValue(String(settings.provider.maxToolRoundTrips)).onChange(async (value) => {
+          const parsed = Number.parseInt(value, 10);
+          if (!Number.isFinite(parsed) || parsed < 1 || parsed > 256) return;
+          await this.deps.store.update((prev) => ({
+            ...prev,
+            provider: { ...prev.provider, maxToolRoundTrips: parsed },
+          }));
+        });
+      });
+
+    new Setting(body)
       .setName('Forbid parallel tool calls')
       .setDesc(
         'Force the model to emit one tool call per turn. ' +
@@ -440,23 +457,6 @@ export class SettingsTab extends PluginSettingTab {
           await this.deps.store.update((prev) => ({
             ...prev,
             provider: { ...prev.provider, disableParallelToolCalls: value },
-          }));
-        });
-      });
-
-    new Setting(body)
-      .setName('Disable Qwen thinking (LM Studio only)')
-      .setDesc(
-        'Skip the reasoning chain on Qwen3 / Qwen3.6 family served via LM Studio. ' +
-          'Sends extra_body.chat_template_kwargs.enable_thinking=false (canonical Qwen flag). ' +
-          'Much faster generation, mild quality cost on multi-step tasks. ' +
-          'Only applied when the active provider is LM Studio; whether the model honors it depends on its chat template.',
-      )
-      .addToggle((t) => {
-        t.setValue(settings.provider.disableThinking).onChange(async (value) => {
-          await this.deps.store.update((prev) => ({
-            ...prev,
-            provider: { ...prev.provider, disableThinking: value },
           }));
         });
       });

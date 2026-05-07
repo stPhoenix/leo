@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildSkillListingAttachment } from '@/skills/listingAttachment';
 import { SkillRegistry, MAIN_AGENT_ID } from '@/skills/registry';
 import { SkillsStore } from '@/skills/skillsStore';
+import { BUILTIN_SKILLS } from '@/skills/builtins';
 import type { VaultAdapter, VaultListing } from '@/storage/vaultAdapter';
 
 class FakeVault implements VaultAdapter {
@@ -53,14 +54,21 @@ function makeRegistryWithSkills(count: number): SkillRegistry {
   return { store } as unknown as SkillRegistry;
 }
 
+const USER_INVOCABLE_BUILTINS = BUILTIN_SKILLS.filter((s) => s.userInvocable);
+
 describe('buildSkillListingAttachment', () => {
-  it('returns null when no skills are available', async () => {
+  it('returns null when neither store nor builtins contribute user-invocable skills', async () => {
     const vault = new FakeVault();
     const store = new SkillsStore({ vault });
     await store.loadAll();
     const registry = new SkillRegistry({ store });
     const result = buildSkillListingAttachment({ registry, agentId: MAIN_AGENT_ID });
-    expect(result).toBeNull();
+    if (USER_INVOCABLE_BUILTINS.length === 0) {
+      expect(result).toBeNull();
+      return;
+    }
+    expect(result).not.toBeNull();
+    expect(result!.skillCount).toBe(USER_INVOCABLE_BUILTINS.length);
   });
 
   it('lists available skills once and suppresses future sends for the same agent', async () => {
@@ -76,7 +84,8 @@ describe('buildSkillListingAttachment', () => {
     const first = buildSkillListingAttachment({ registry, agentId: MAIN_AGENT_ID });
     expect(first).not.toBeNull();
     expect(first!.content).toContain('- foo: Foo helper');
-    expect(first!.skillCount).toBe(1);
+    expect(first!.skillCount).toBe(1 + USER_INVOCABLE_BUILTINS.length);
+    expect(first!.skillNames).toContain('foo');
     const second = buildSkillListingAttachment({ registry, agentId: MAIN_AGENT_ID });
     expect(second).toBeNull();
   });

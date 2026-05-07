@@ -64,9 +64,16 @@ import {
   type WikiStatusCommandHandle,
 } from './wikiStatusCommand';
 import type { WikiStatus } from '@/agent/wiki/wikiStatus';
+import {
+  createCanvasStatusCommand,
+  CANVAS_STATUS_WIDGET_KIND,
+  type CanvasStatusCommandHandle,
+} from './canvasStatusCommand';
+import type { CanvasStatus } from '@/agent/canvas/canvasStatus';
 import './chat/widgets/ContextWidget';
 import './chat/widgets/RagWidget';
 import './chat/widgets/WikiStatusWidget';
+import './chat/widgets/CanvasStatusWidget';
 import type { MessageActions } from './chat/MessageActionBar';
 import type { IndexStatusSource } from './chat/IndexStatusBlock';
 import type { DrainListener } from '@/indexer/vaultIndexer';
@@ -109,6 +116,7 @@ export interface ChatViewDeps {
   readonly contextSnapshot?: ContextSnapshotStore;
   readonly collectRagSnapshot?: (signal: AbortSignal) => Promise<RagSnapshot>;
   readonly collectWikiStatus?: (signal: AbortSignal) => Promise<WikiStatus>;
+  readonly collectCanvasStatus?: (signal: AbortSignal) => Promise<CanvasStatus>;
   readonly indexStatusSource?: IndexStatusSource;
   readonly indexDrainSubscribe?: (listener: DrainListener) => () => void;
   readonly onReindexAll?: () => void;
@@ -123,6 +131,7 @@ export interface ChatViewDeps {
   readonly vaultFiles?: () => readonly VaultFileEntry[];
   readonly readVaultFile?: (path: string) => Promise<CaptureFileInput | null>;
   readonly piiDetector?: PiiDetectAgent;
+  readonly clearThreadReadState?: (threadId: string) => void;
 }
 
 export interface CompactRunnerAdapter {
@@ -153,6 +162,7 @@ export class ChatView extends ItemView {
   private contextCommand: ContextCommandHandle | null = null;
   private ragCommand: RagCommandHandle | null = null;
   private wikiStatusCommand: WikiStatusCommandHandle | null = null;
+  private canvasStatusCommand: CanvasStatusCommandHandle | null = null;
   private liveRegionEl: HTMLElement | null = null;
   private readonly phaseListeners = new Set<(p: StreamingPhase) => void>();
   private lastPhase: StreamingPhase = 'idle';
@@ -227,6 +237,12 @@ export class ChatView extends ItemView {
       ...(this.deps.streamStarter !== undefined ? { starter: this.deps.streamStarter } : {}),
     });
     this.slashRegistry = this.buildSlashRegistry();
+    const slashList = this.slashRegistry.list();
+    this.deps.logger?.info('compact.slash.registry_built', {
+      commandCount: slashList.length,
+      compactRegistered: slashList.some((c) => c.name === 'compact'),
+      hasCompactRunner: this.deps.compactRunner !== undefined,
+    });
 
     const observeWidth = (cb: (w: number) => void): (() => void) => {
       this.widthListeners.add(cb);
@@ -352,7 +368,15 @@ export class ChatView extends ItemView {
       composer: {
         onSubmit: (text) => {
           this.deps.logger?.info('composer.submit', { length: text.length });
-          if (this.slashRegistry?.tryHandle(text) === true) return;
+          const isCompactSlash = /^\s*\/compact(\s|$)/i.test(text);
+          const handled = this.slashRegistry?.tryHandle(text) === true;
+          if (isCompactSlash) {
+            this.deps.logger?.info('compact.composer.submit_intercept', {
+              tryHandleResult: handled,
+              hasRegistry: this.slashRegistry !== null,
+            });
+          }
+          if (handled) return;
           this.beginTurn(text);
         },
         onStopIntent: () => {
@@ -548,7 +572,11 @@ export class ChatView extends ItemView {
       }
     }
     const compact = this.deps.compactRunner;
+    if (compact === undefined) {
+      this.deps.logger?.info('compact.slash.skipped_no_runner', {});
+    }
     if (compact !== undefined) {
+      this.deps.logger?.info('compact.slash.registered', {});
       registry.register({
         name: 'compact',
         description: 'Compact conversation now (optional custom instructions)',
@@ -638,6 +666,36 @@ export class ChatView extends ItemView {
         this.beginTurn(seed);
       },
     });
+    const collectCanvasStatus = this.deps.collectCanvasStatus;
+    if (collectCanvasStatus !== undefined) {
+      this.canvasStatusCommand = createCanvasStatusCommand({
+        collect: collectCanvasStatus,
+        render: (status) => this.renderCanvasStatusAsWidget(status),
+        onError: (err) => new Notice(`Canvas status: ${err.message}`),
+        ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
+      });
+      const handle = this.canvasStatusCommand;
+      registry.register({
+        name: 'canvas-status',
+        description: 'Show canvas runs + recent canvases',
+        run: () => handle.invoke(),
+      });
+    }
+    // /canvas-create is provided by the canvas-create built-in skill (src/skills/builtins.ts)
+    // and exposed via skillSlash above. No imperative registration here — the skill body
+    // drives the research → plan → delegate workflow.
+    registry.register({
+      name: 'canvas-edit',
+      description: 'Edit content of an existing canvas (add/remove/relabel entities)',
+      run: (ctx) => {
+        const args = ctx.args.trim();
+        const seed =
+          args.length > 0
+            ? `Edit a canvas: ${args}`
+            : 'Edit a canvas. Ask me which canvas to edit and the change to make, then call delegate_canvas_content_edit.';
+        this.beginTurn(seed);
+      },
+    });
     return registry;
   }
 
@@ -652,6 +710,9 @@ export class ChatView extends ItemView {
       return;
     }
     const oldId = threads.getSnapshot().activeId;
+    if (oldId !== null) {
+      this.deps.clearThreadReadState?.(oldId);
+    }
     void (async (): Promise<void> => {
       try {
         const newId = await threads.create();
@@ -702,6 +763,17 @@ export class ChatView extends ItemView {
       content: '',
       createdAt: now,
       widget: { kind: WIKI_STATUS_WIDGET_KIND, props: { status } },
+    });
+  }
+
+  private renderCanvasStatusAsWidget(status: CanvasStatus): void {
+    const now = new Date().toISOString();
+    this.messageStore.append({
+      id: `canvas-status-${Date.now()}`,
+      role: 'widget',
+      content: '',
+      createdAt: now,
+      widget: { kind: CANVAS_STATUS_WIDGET_KIND, props: { status } },
     });
   }
 

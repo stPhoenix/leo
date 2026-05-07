@@ -34,8 +34,8 @@ export interface ProviderSettings {
   embeddingModel: string;
   temperature: number;
   maxTokens: number;
+  maxToolRoundTrips: number;
   disableParallelToolCalls: boolean;
-  disableThinking: boolean;
 }
 
 export interface UiSettings {
@@ -124,8 +124,8 @@ export const DEFAULT_PROVIDER: ProviderSettings = {
   embeddingModel: '',
   temperature: 0.7,
   maxTokens: 2048,
+  maxToolRoundTrips: 16,
   disableParallelToolCalls: false,
-  disableThinking: false,
 };
 
 export const PROVIDER_KINDS: readonly ProviderKind[] = [
@@ -320,12 +320,11 @@ function mergeProvider(raw: unknown): ProviderSettings {
       typeof o.embeddingModel === 'string' ? o.embeddingModel : DEFAULT_PROVIDER.embeddingModel,
     temperature: clampNumber(o.temperature, 0, 2, DEFAULT_PROVIDER.temperature),
     maxTokens: clampInt(o.maxTokens, 1, 1_000_000, DEFAULT_PROVIDER.maxTokens),
+    maxToolRoundTrips: clampInt(o.maxToolRoundTrips, 1, 256, DEFAULT_PROVIDER.maxToolRoundTrips),
     disableParallelToolCalls:
       typeof o.disableParallelToolCalls === 'boolean'
         ? o.disableParallelToolCalls
         : DEFAULT_PROVIDER.disableParallelToolCalls,
-    disableThinking:
-      typeof o.disableThinking === 'boolean' ? o.disableThinking : DEFAULT_PROVIDER.disableThinking,
   };
 }
 

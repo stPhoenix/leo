@@ -101,7 +101,7 @@ export function createDeleteNoteTool(
         if (ctx.readState !== undefined) {
           if (reverted) {
             const stat = await ctx.vault.stat(args.path);
-            ctx.readState.set(args.path, {
+            ctx.readState.set(ctx.thread, args.path, {
               content: before,
               mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
               offset: undefined,
@@ -109,7 +109,7 @@ export function createDeleteNoteTool(
               isPartialView: false,
             });
           } else {
-            ctx.readState.invalidate(args.path);
+            ctx.readState.invalidate(ctx.thread, args.path);
           }
         }
 

@@ -1,6 +1,7 @@
 import type { ToolCtx, EditNoteBridge } from '@/tools/types';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { WorkspaceNavigator } from '@/editor/workspaceNavigator';
+import type { CanvasNavigator } from '@/editor/canvasNavigator';
 import type { ReadFileStateStore } from '@/tools/builtin/readFileState';
 
 export const noopEditor: EditNoteBridge = {
@@ -12,6 +13,7 @@ export function makeToolCtx(overrides: {
   readonly vault?: VaultAdapter;
   readonly editor?: EditNoteBridge;
   readonly navigator?: WorkspaceNavigator;
+  readonly canvasNavigator?: CanvasNavigator;
   readonly thread?: string;
   readonly signal?: AbortSignal;
   readonly readState?: ReadFileStateStore;
@@ -23,6 +25,9 @@ export function makeToolCtx(overrides: {
     vault: overrides.vault ?? ({} as VaultAdapter),
     editor: overrides.editor ?? noopEditor,
     ...(overrides.navigator !== undefined ? { navigator: overrides.navigator } : {}),
+    ...(overrides.canvasNavigator !== undefined
+      ? { canvasNavigator: overrides.canvasNavigator }
+      : {}),
     ...(overrides.readState !== undefined ? { readState: overrides.readState } : {}),
     ...(overrides.excludeMatcher !== undefined ? { excludeMatcher: overrides.excludeMatcher } : {}),
   };

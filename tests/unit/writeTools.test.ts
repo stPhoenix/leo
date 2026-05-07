@@ -130,7 +130,7 @@ describe('append_to_note tool', () => {
     vault.files.set('n.md', 'hello');
     vault.mtimes.set('n.md', 100);
     const readState = new ReadFileStateStore();
-    readState.set('n.md', {
+    readState.set('t', 'n.md', {
       content: 'hello',
       mtimeMs: 100,
       offset: undefined,
@@ -209,7 +209,7 @@ describe('append_to_note tool', () => {
     vault.files.set('n.md', 'hi');
     vault.mtimes.set('n.md', 5000);
     const readState = new ReadFileStateStore();
-    readState.set('n.md', {
+    readState.set('t', 'n.md', {
       content: 'hi',
       mtimeMs: 100,
       offset: undefined,

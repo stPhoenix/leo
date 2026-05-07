@@ -1,0 +1,176 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`CANVAS_LOG > matches snapshot to keep the surface stable 1`] = `
+{
+  "contentEdit": {
+    "cancel": "canvas.contentEdit.cancel",
+    "cancelled": "canvas.contentEdit.subgraph.cancelled",
+    "diff": {
+      "done": "canvas.contentEdit.diff.done",
+      "start": "canvas.contentEdit.diff.start",
+    },
+    "error": "canvas.contentEdit.error",
+    "extract": {
+      "done": "canvas.contentEdit.extract.done",
+      "failed": "canvas.contentEdit.extract.failed",
+      "start": "canvas.contentEdit.extract.start",
+    },
+    "fetch": {
+      "done": "canvas.contentEdit.fetch.done",
+      "failed": "canvas.contentEdit.fetch.failed",
+      "start": "canvas.contentEdit.fetch.start",
+    },
+    "layout": {
+      "done": "canvas.contentEdit.layout.done",
+      "start": "canvas.contentEdit.layout.start",
+    },
+    "mutex": {
+      "acquire": "canvas.contentEdit.mutex.acquire",
+      "busy": "canvas.contentEdit.mutex.busy",
+      "release": "canvas.contentEdit.mutex.release",
+    },
+    "plan": {
+      "done": "canvas.contentEdit.plan.done",
+      "start": "canvas.contentEdit.plan.start",
+    },
+    "preview": {
+      "write": "canvas.contentEdit.preview.write",
+    },
+    "reduce": {
+      "done": "canvas.contentEdit.reduce.done",
+      "failed": "canvas.contentEdit.reduce.failed",
+      "start": "canvas.contentEdit.reduce.start",
+    },
+    "refine": {
+      "done": "canvas.contentEdit.refine.done",
+      "failed": "canvas.contentEdit.refine.failed",
+      "start": "canvas.contentEdit.refine.start",
+    },
+    "transition": "canvas.contentEdit.subgraph.transition",
+    "write": {
+      "done": "canvas.contentEdit.write.done",
+      "failed": "canvas.contentEdit.write.failed",
+      "start": "canvas.contentEdit.write.start",
+    },
+  },
+  "create": {
+    "cancel": "canvas.create.cancel",
+    "cancelled": "canvas.create.subgraph.cancelled",
+    "diff": {
+      "done": "canvas.create.diff.done",
+      "start": "canvas.create.diff.start",
+    },
+    "error": "canvas.create.error",
+    "extract": {
+      "done": "canvas.create.extract.done",
+      "failed": "canvas.create.extract.failed",
+      "start": "canvas.create.extract.start",
+    },
+    "fetch": {
+      "done": "canvas.create.fetch.done",
+      "failed": "canvas.create.fetch.failed",
+      "start": "canvas.create.fetch.start",
+    },
+    "layout": {
+      "done": "canvas.create.layout.done",
+      "start": "canvas.create.layout.start",
+    },
+    "mutex": {
+      "acquire": "canvas.create.mutex.acquire",
+      "busy": "canvas.create.mutex.busy",
+      "release": "canvas.create.mutex.release",
+    },
+    "plan": {
+      "done": "canvas.create.plan.done",
+      "start": "canvas.create.plan.start",
+    },
+    "preview": {
+      "write": "canvas.create.preview.write",
+    },
+    "reduce": {
+      "done": "canvas.create.reduce.done",
+      "failed": "canvas.create.reduce.failed",
+      "start": "canvas.create.reduce.start",
+    },
+    "refine": {
+      "done": "canvas.create.refine.done",
+      "failed": "canvas.create.refine.failed",
+      "start": "canvas.create.refine.start",
+    },
+    "transition": "canvas.create.subgraph.transition",
+    "write": {
+      "done": "canvas.create.write.done",
+      "failed": "canvas.create.write.failed",
+      "start": "canvas.create.write.start",
+    },
+  },
+  "layoutEdit": {
+    "cancel": "canvas.layoutEdit.cancel",
+    "cancelled": "canvas.layoutEdit.subgraph.cancelled",
+    "diff": {
+      "done": "canvas.layoutEdit.diff.done",
+      "start": "canvas.layoutEdit.diff.start",
+    },
+    "error": "canvas.layoutEdit.error",
+    "extract": {
+      "done": "canvas.layoutEdit.extract.done",
+      "failed": "canvas.layoutEdit.extract.failed",
+      "start": "canvas.layoutEdit.extract.start",
+    },
+    "fetch": {
+      "done": "canvas.layoutEdit.fetch.done",
+      "failed": "canvas.layoutEdit.fetch.failed",
+      "start": "canvas.layoutEdit.fetch.start",
+    },
+    "layout": {
+      "done": "canvas.layoutEdit.layout.done",
+      "start": "canvas.layoutEdit.layout.start",
+    },
+    "mutex": {
+      "acquire": "canvas.layoutEdit.mutex.acquire",
+      "busy": "canvas.layoutEdit.mutex.busy",
+      "release": "canvas.layoutEdit.mutex.release",
+    },
+    "plan": {
+      "done": "canvas.layoutEdit.plan.done",
+      "start": "canvas.layoutEdit.plan.start",
+    },
+    "preview": {
+      "write": "canvas.layoutEdit.preview.write",
+    },
+    "reduce": {
+      "done": "canvas.layoutEdit.reduce.done",
+      "failed": "canvas.layoutEdit.reduce.failed",
+      "start": "canvas.layoutEdit.reduce.start",
+    },
+    "refine": {
+      "done": "canvas.layoutEdit.refine.done",
+      "failed": "canvas.layoutEdit.refine.failed",
+      "start": "canvas.layoutEdit.refine.start",
+    },
+    "transition": "canvas.layoutEdit.subgraph.transition",
+    "write": {
+      "done": "canvas.layoutEdit.write.done",
+      "failed": "canvas.layoutEdit.write.failed",
+      "start": "canvas.layoutEdit.write.start",
+    },
+  },
+  "reveal": {
+    "error": "canvas.reveal.error",
+    "invoke": {
+      "fail": "canvas.reveal.invoke.fail",
+      "ok": "canvas.reveal.invoke.ok",
+    },
+    "openCanvas": {
+      "error": "canvas.reveal.openCanvas.error",
+      "opened": "canvas.reveal.openCanvas.opened",
+      "revealed": "canvas.reveal.openCanvas.revealed",
+    },
+    "probe": {
+      "fail": "canvas.reveal.probe.fail",
+      "ok": "canvas.reveal.probe.ok",
+    },
+    "unknownNodeIds": "canvas.reveal.unknownNodeIds",
+  },
+}
+`;

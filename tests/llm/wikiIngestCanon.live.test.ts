@@ -48,7 +48,6 @@ interface PluginProviderSettings {
   readonly temperature: number;
   readonly maxTokens: number;
   readonly contextWindowOverride: number | undefined;
-  readonly disableThinking: boolean;
 }
 
 const DEFAULT_PROVIDER: PluginProviderSettings = {
@@ -57,7 +56,6 @@ const DEFAULT_PROVIDER: PluginProviderSettings = {
   temperature: 0.7,
   maxTokens: 8192,
   contextWindowOverride: undefined,
-  disableThinking: false,
 };
 
 async function loadPluginProviderSettings(): Promise<PluginProviderSettings> {
@@ -94,17 +92,12 @@ async function loadPluginProviderSettings(): Promise<PluginProviderSettings> {
     typeof root.contextWindowOverride === 'number' && root.contextWindowOverride > 0
       ? root.contextWindowOverride
       : undefined;
-  const disableThinking =
-    typeof provider.disableThinking === 'boolean'
-      ? provider.disableThinking
-      : DEFAULT_PROVIDER.disableThinking;
   return {
     endpoint,
     model,
     temperature,
     maxTokens,
     contextWindowOverride,
-    disableThinking,
   };
 }
 
@@ -564,9 +557,6 @@ function buildChatModelInvoker(
       maxTokens: 8192,
       streaming: false,
       streamUsage: false,
-      ...(provider.disableThinking
-        ? { modelKwargs: { extra_body: { chat_template_kwargs: { enable_thinking: false } } } }
-        : {}),
       configuration: { baseURL, dangerouslyAllowBrowser: true },
     });
   }
@@ -611,10 +601,6 @@ describe('wiki-ingest canon ingest — live loop iteration', () => {
           process.env.LEO_LLM_CONTEXT_WINDOW !== undefined
             ? Number.parseInt(process.env.LEO_LLM_CONTEXT_WINDOW, 10)
             : pluginSettings.contextWindowOverride,
-        disableThinking:
-          process.env.LEO_LLM_DISABLE_THINKING !== undefined
-            ? /^(1|true|yes)$/i.test(process.env.LEO_LLM_DISABLE_THINKING)
-            : pluginSettings.disableThinking,
       };
 
       const providerKind = (process.env.LEO_LLM_PROVIDER ?? 'lmstudio').toLowerCase();
@@ -706,7 +692,6 @@ describe('wiki-ingest canon ingest — live loop iteration', () => {
         contextWindow,
         maxOutputTokens: provider.maxTokens,
         contextWindowOverride: provider.contextWindowOverride ?? null,
-        disableThinking: provider.disableThinking,
       });
 
       const deps: IngestRunDeps = {

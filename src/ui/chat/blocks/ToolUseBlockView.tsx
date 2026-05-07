@@ -39,18 +39,32 @@ function defaultArgsLine(block: ToolUseBlock): string {
   }
 }
 
+function defaultArgsFull(block: ToolUseBlock): string | null {
+  if (block.raw !== undefined) return block.raw;
+  const input = block.input;
+  if (input === undefined || input === null) return null;
+  if (typeof input === 'object' && Object.keys(input as object).length === 0) return null;
+  try {
+    return JSON.stringify(input, null, 2);
+  } catch {
+    return null;
+  }
+}
+
 function ToolUseBlockViewImpl(props: ToolUseBlockViewProps): JSX.Element {
   const { block, slots } = props;
   const runStateStatus = useToolUseStatus(slots?.runState, block.id);
   const status: ToolUseStatus = resolveStatus(runStateStatus, block);
   const argsContent = slots?.renderArgs?.(block) ?? defaultArgsLine(block);
+  const fullArgs = slots?.renderArgs === undefined ? defaultArgsFull(block) : null;
 
   const autoCollapsed = TERMINAL_STATUSES.has(status);
   const initialCollapsed = props.defaultCollapsed ?? autoCollapsed;
   const [userOverride, setUserOverride] = useState<boolean | null>(null);
   const collapsed = userOverride ?? initialCollapsed;
 
-  const hasBody = slots?.renderProgress !== undefined || slots?.renderResult !== undefined;
+  const hasBody =
+    slots?.renderProgress !== undefined || slots?.renderResult !== undefined || fullArgs !== null;
 
   return (
     <section
@@ -85,6 +99,11 @@ function ToolUseBlockViewImpl(props: ToolUseBlockViewProps): JSX.Element {
       {hasBody ? (
         <div className="leo-tool-use-body-wrap">
           <div className="leo-tool-use-body" aria-hidden={collapsed}>
+            {fullArgs !== null ? (
+              <pre className="leo-tool-use-args-full" data-slot="tool-use-args-full">
+                {fullArgs}
+              </pre>
+            ) : null}
             {slots?.renderProgress !== undefined ? (
               <div className="leo-tool-use-progress" data-slot="tool-use-progress">
                 {slots.renderProgress(block, status)}

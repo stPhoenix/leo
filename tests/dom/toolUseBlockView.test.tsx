@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { ToolUseBlockView } from '@/ui/chat/blocks/ToolUseBlockView';
 import { RunStateStore } from '@/chat/runStateStore';
 import type { ToolUseBlock } from '@/chat/types';
@@ -93,6 +93,51 @@ describe('ToolUseBlockView — args parse failure (F04 AC4)', () => {
   it('renders … placeholder when input is unparsed (raw set)', () => {
     const { container } = render(<ToolUseBlockView block={block({ raw: '{partial' })} />);
     expect(container.querySelector('[data-slot="tool-use-args"]')?.textContent).toContain('…');
+  });
+});
+
+describe('ToolUseBlockView — expanded body shows full args', () => {
+  it('renders pretty-printed full args in body and toggles via header button', () => {
+    const longPath = 'a'.repeat(500);
+    const longQ = 'b'.repeat(500);
+    const { container } = render(
+      <ToolUseBlockView block={block({ input: { path: longPath, q: longQ } })} />,
+    );
+    const full = container.querySelector('[data-slot="tool-use-args-full"]');
+    expect(full).not.toBeNull();
+    expect(full?.textContent).toContain(longPath);
+    expect(full?.textContent).toContain(longQ);
+    const body = container.querySelector('.leo-tool-use-body');
+    expect(body?.getAttribute('aria-hidden')).toBe('false');
+    const toggle = container.querySelector(
+      '[data-slot="tool-use-toggle"]',
+    ) as HTMLButtonElement | null;
+    expect(toggle).not.toBeNull();
+    act(() => {
+      fireEvent.click(toggle!);
+    });
+    expect(container.querySelector('.leo-tool-use-body')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('omits full-args body when input is empty', () => {
+    const { container } = render(<ToolUseBlockView block={block({ input: {} })} />);
+    expect(container.querySelector('[data-slot="tool-use-args-full"]')).toBeNull();
+  });
+
+  it('omits full-args body when custom renderArgs is provided', () => {
+    const { container } = render(
+      <ToolUseBlockView
+        block={block({ input: { path: 'a'.repeat(200) } })}
+        slots={{ renderArgs: (b) => <em data-slot="custom-args">{b.name}</em> }}
+      />,
+    );
+    expect(container.querySelector('[data-slot="tool-use-args-full"]')).toBeNull();
+  });
+
+  it('falls back to raw text when input is unparsed', () => {
+    const { container } = render(<ToolUseBlockView block={block({ raw: '{partial' })} />);
+    const full = container.querySelector('[data-slot="tool-use-args-full"]');
+    expect(full?.textContent).toBe('{partial');
   });
 });
 

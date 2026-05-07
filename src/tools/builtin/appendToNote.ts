@@ -109,10 +109,10 @@ export function createAppendToNoteTool(
 
         if (ctx.readState !== undefined) {
           if (reverted) {
-            ctx.readState.invalidate(args.path);
+            ctx.readState.invalidate(ctx.thread, args.path);
           } else {
             const stat = await ctx.vault.stat(args.path);
-            ctx.readState.set(args.path, {
+            ctx.readState.set(ctx.thread, args.path, {
               content: next,
               mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
               offset: undefined,

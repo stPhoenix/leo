@@ -195,7 +195,7 @@ describe('edit_note tool', () => {
     vault.files.set('n.md', 'A');
     vault.statMtime = 9999;
     const readState = new ReadFileStateStore();
-    readState.set('n.md', {
+    readState.set('t', 'n.md', {
       content: 'A',
       mtimeMs: 100,
       offset: undefined,

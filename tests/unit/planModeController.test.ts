@@ -127,7 +127,7 @@ describe('PlanModeController', () => {
     expect(c.drainAttachments('t-1').length).toBe(0);
   });
 
-  it('allowlist passes read tools + TodoWrite + AskUserQuestion + open_note + reveal_in_note; denies write tools', () => {
+  it('allowlist passes read tools + TodoWrite + AskUserQuestion + open_note + reveal_in_note + reveal_in_canvas; denies write tools', () => {
     const { logger } = newLogger();
     const c = new PlanModeController({ logger, todoStore: store });
     for (const id of [
@@ -139,14 +139,17 @@ describe('PlanModeController', () => {
       'ExitPlanMode',
       'TodoWrite',
       'AskUserQuestion',
+      'ToolSearch',
       'read_note',
       'read_file',
       'search_vault',
+      'search_wiki',
       'list_notes',
       'glob_vault',
       'grep_vault',
       'open_note',
       'reveal_in_note',
+      'reveal_in_canvas',
     ]) {
       expect(c.isToolAllowedInPlan(id)).toBe(true);
     }

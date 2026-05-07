@@ -89,7 +89,13 @@ export function createReadFileTool(): ToolSpec<ReadFileArgs, ReadFileResult> {
         const mtimeMs = Math.floor(stat?.mtimeMs ?? 0);
         const startLine = args.offset ?? 1;
         if (ctx.readState !== undefined && stat !== null) {
-          const cached = ctx.readState.matches(args.path, mtimeMs, args.offset, args.limit);
+          const cached = ctx.readState.matches(
+            ctx.thread,
+            args.path,
+            mtimeMs,
+            args.offset,
+            args.limit,
+          );
           if (cached !== undefined) {
             return {
               ok: true,
@@ -130,7 +136,7 @@ export function createReadFileTool(): ToolSpec<ReadFileArgs, ReadFileResult> {
         }
         if (range.totalLines === 0) {
           if (ctx.readState !== undefined) {
-            ctx.readState.set(args.path, {
+            ctx.readState.set(ctx.thread, args.path, {
               content: '',
               mtimeMs,
               offset: args.offset,
@@ -168,7 +174,7 @@ export function createReadFileTool(): ToolSpec<ReadFileArgs, ReadFileResult> {
         }
         const numbered = addLineNumbers(range.content, startLine);
         if (ctx.readState !== undefined) {
-          ctx.readState.set(args.path, {
+          ctx.readState.set(ctx.thread, args.path, {
             content: range.content,
             mtimeMs,
             offset: args.offset,

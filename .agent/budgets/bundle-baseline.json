@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "comment": "Bundle baseline. Updated 2026-05-05 after the VectorStore vault-persistence migration. Rebaselined because the previous 2026-05-03 baseline (2,299,691 B) was stale relative to HEAD (2,343,137 B) — multiple feature commits since (wiki-inbox table refactor, ollama-cloud provider, restrictedVaultAdapter, markdownPatch, deferred-tool fetcher, anthropic fetch patch). The migration itself swaps the IndexedDB-backed VectorStore (`idb` dep) for an in-memory + JSON-flush implementation routed through `VaultAdapter`, so embeddings persist at `<vault>/.leo/index/vectors/index.json` instead of in Obsidian's Electron IndexedDB origin store. This makes embeddings encrypted-at-rest when the vault lives on an encrypted volume. Net delta vs HEAD: -3,048 B (idb removal > new VectorStore body). Cap restored to 30 KB for incremental additions on top of this baseline.",
-  "baselineBytes": 2340089,
+  "comment": "Bundle baseline. Updated 2026-05-07 after the compact-widget slice. Net delta vs prior baseline (2,431,024 B): +68,876 B. Adds visible chat block for /compact and autocompact runs: src/agent/compact/{runId,widgetState,widgetController,liveControllerRegistry,terminalSnapshot,phaseSink}.ts + 3 React components (CompactWidget, CompactLiveBlock, CompactTerminalBlock) + Zod schema for terminal snapshot + phase-sink wiring through autocompact.ts and graph.ts. Replaces the post-hoc `banner: { kind: 'compact' }` chat record with a live progress widget that flips to a terminal snapshot on done/error/cancel. Cap reset to 30 KB for incremental tuning on top.",
+  "baselineBytes": 2499900,
   "maxDeltaBytes": 30720,
-  "lastUpdated": "2026-05-05"
+  "lastUpdated": "2026-05-07"
 }

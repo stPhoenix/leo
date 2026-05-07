@@ -1,0 +1,15 @@
+{
+  "edges": [],
+  "nodes": [
+    {
+      "color": "1",
+      "height": 120,
+      "id": "n1",
+      "text": "highlight",
+      "type": "text",
+      "width": 240,
+      "x": 50,
+      "y": 50
+    }
+  ]
+}

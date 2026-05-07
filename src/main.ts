@@ -1,5 +1,6 @@
 import '@/platform/asyncLocalStorageInit';
 import { Notice, Plugin } from 'obsidian';
+import type { App, TFile } from 'obsidian';
 import { Logger } from '@/platform/Logger';
 import { TracerService } from '@/platform/tracer';
 import { RotatingFileSink } from '@/platform/rotatingFileSink';
@@ -73,6 +74,26 @@ import { createDeleteNoteTool } from '@/tools/builtin/deleteNote';
 import { createDeleteFolderTool } from '@/tools/builtin/deleteFolder';
 import { createRevealInNoteTool } from '@/tools/builtin/revealInNote';
 import { createObsidianWorkspaceNavigator } from '@/editor/workspaceNavigator';
+import { createObsidianCanvasNavigator } from '@/editor/canvasNavigator';
+import { createRevealInCanvasTool } from '@/agent/canvas/tools/revealInCanvas';
+import { createDelegateCanvasCreateTool } from '@/agent/canvas/tools/delegateCanvasCreate';
+import { createDelegateCanvasContentEditTool } from '@/agent/canvas/tools/delegateCanvasContentEdit';
+import { createDelegateCanvasLayoutEditTool } from '@/agent/canvas/tools/delegateCanvasLayoutEdit';
+import { CanvasMutex } from '@/agent/canvas/mutex';
+import { CanvasOrchestrator } from '@/agent/canvas/orchestrator';
+import type { CanvasMetadataCacheLike } from '@/agent/canvas/plan';
+import { CanvasPreviewingDispatcher } from '@/agent/canvas/previewingDispatcher';
+import type { CanvasPickerDeps } from '@/agent/canvas/widget/widgetController';
+import {
+  releaseCanvasLiveController,
+  CANVAS_LIVE_KIND,
+} from '@/agent/canvas/liveControllerRegistry';
+import {
+  CANVAS_TERMINAL_KIND,
+  type CanvasTerminalSnapshot,
+} from '@/agent/canvas/widget/terminalSnapshot';
+import '@/ui/chat/blocks/CanvasLiveBlock';
+import '@/ui/chat/blocks/CanvasTerminalBlock';
 import type { ToolSpec } from '@/tools/types';
 import { ConfirmationController, prettifyArgs } from '@/agent/confirmationController';
 import { AcceptRejectController } from '@/agent/acceptRejectController';
@@ -92,6 +113,7 @@ import { recordsToAnalyzerInputs } from '@/chat/contextBridge';
 import { wireIndexerRag, type AppLike, type IndexerRagWiring } from '@/indexer/wireIndexerRag';
 import { bootstrapWiki } from '@/agent/wiki/bootstrap';
 import { collectWikiStatus } from '@/agent/wiki/wikiStatus';
+import { collectCanvasStatus } from '@/agent/canvas/canvasStatus';
 import { WIKI_MUTEX_IDLE } from '@/agent/wiki/mutexTypes';
 import { WikiMutex } from '@/agent/wiki/mutex';
 import { createWikiBusyNotifier } from '@/agent/wiki/searchWarning';
@@ -169,7 +191,19 @@ import { ExternalAgentTerminalBlock } from '@/ui/chat/blocks/ExternalAgentTermin
 import { ExternalAgentLiveBlock } from '@/ui/chat/blocks/ExternalAgentLiveBlock';
 import '@/ui/chat/blocks/WikiLiveBlock';
 import '@/ui/chat/blocks/WikiTerminalBlock';
+import '@/ui/chat/blocks/CompactLiveBlock';
+import '@/ui/chat/blocks/CompactTerminalBlock';
 import { registerWidget } from '@/ui/chat/widgets/registry';
+import {
+  COMPACT_LIVE_KIND,
+  registerCompactLiveController,
+  releaseCompactLiveController,
+} from '@/agent/compact/liveControllerRegistry';
+import { COMPACT_TERMINAL_KIND } from '@/agent/compact/terminalSnapshot';
+import { CompactWidgetController } from '@/agent/compact/widgetController';
+import { generateCompactRunId } from '@/agent/compact/runId';
+import { makePhaseSinkFromController, type CompactPhaseSink } from '@/agent/compact/phaseSink';
+import { isTerminalCompactPhase } from '@/agent/compact/widgetState';
 import { resolveAdapterConfig } from '@/settings/externalAgentResolver';
 import {
   EXTERNAL_AGENT_LIVE_KIND,
@@ -213,6 +247,22 @@ const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', '
 
 function classifyVaultFile(ext: string): 'image' | 'document' {
   return IMAGE_EXTS.has(ext.toLowerCase()) ? 'image' : 'document';
+}
+
+function buildCanvasMetadataCacheAdapter(app: App): CanvasMetadataCacheLike {
+  const cache = app.metadataCache;
+  return {
+    getFileCache: (file) => {
+      const tfile = app.vault.getAbstractFileByPath(file.path);
+      if (tfile === null || !('extension' in tfile)) return null;
+      return cache.getFileCache(tfile as TFile);
+    },
+    getFirstLinkpathDest: (linkpath, sourcePath) => {
+      const dest = cache.getFirstLinkpathDest(linkpath, sourcePath);
+      if (dest === null) return null;
+      return { path: dest.path };
+    },
+  };
 }
 
 function mimeFromExtension(ext: string): string {
@@ -309,6 +359,7 @@ export default class LeoPlugin extends Plugin {
   editLock!: EditLockController;
   highlightController!: HighlightController;
   workspaceNavigator!: ReturnType<typeof createObsidianWorkspaceNavigator>;
+  canvasNavigator!: ReturnType<typeof createObsidianCanvasNavigator>;
   planStore!: PlanStore;
   planApprovalController!: PlanApprovalController;
   clarifyingQuestionController!: ClarifyingQuestionController;
@@ -326,6 +377,9 @@ export default class LeoPlugin extends Plugin {
   adapterRegistry!: AdapterRegistry;
   externalAgentSlots!: SlotManager;
   externalAgentOrchestrator!: ExternalAgentOrchestrator;
+  canvasMutex!: CanvasMutex;
+  canvasPreviewingDispatcher!: CanvasPreviewingDispatcher;
+  canvasOrchestrator!: CanvasOrchestrator;
   private editorBridge!: EditorBridge;
   private indexStatus: {
     hasIndex: () => boolean;
@@ -501,7 +555,6 @@ export default class LeoPlugin extends Plugin {
         ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
         endpoint: resolveInlineEndpoint(providerId, this.store),
         apiKey: this.inlineProviderKeys[providerId] ?? '',
-        disableThinking: this.store.get().provider.disableThinking,
       });
     const tracerRef = this.tracer;
     this.adapterRegistry.register(
@@ -619,8 +672,15 @@ export default class LeoPlugin extends Plugin {
       highlights: this.highlightController,
       logger: this.logger,
     });
+    this.canvasNavigator = createObsidianCanvasNavigator({
+      app: this.app,
+      logger: this.logger,
+    });
+    this.canvasMutex = new CanvasMutex();
+    this.canvasPreviewingDispatcher = new CanvasPreviewingDispatcher();
     this.toolRegistry.register(createOpenNoteTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createRevealInNoteTool() as unknown as ToolSpec<unknown, unknown>);
+    this.toolRegistry.register(createRevealInCanvasTool() as unknown as ToolSpec<unknown, unknown>);
     this.skillsStore = new SkillsStore({
       vault: vaultAdapter,
       logger: this.logger,
@@ -804,6 +864,145 @@ export default class LeoPlugin extends Plugin {
       }) as unknown as ToolSpec<unknown, unknown>,
     );
 
+    const persistCanvasSnapshot = (snapshot: CanvasTerminalSnapshot): void => {
+      try {
+        const id = `canvas-${snapshot.runId}`;
+        const existing = this.chatMessageStore.getSnapshot().find((m) => m.id === id);
+        if (existing !== undefined) {
+          this.chatMessageStore.update(id, (prev) => ({
+            ...prev,
+            widget: { kind: CANVAS_TERMINAL_KIND, props: snapshot },
+          }));
+        } else {
+          this.chatMessageStore.append({
+            id,
+            role: 'widget',
+            content: '',
+            createdAt: new Date().toISOString(),
+            widget: { kind: CANVAS_TERMINAL_KIND, props: snapshot },
+          });
+        }
+        releaseCanvasLiveController(snapshot.runId);
+      } catch (err) {
+        this.logger.warn('canvas.persist.append-failed', {
+          runId: snapshot.runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+    const listModelsForProvider = async (
+      providerId: ProviderKind,
+      signal: AbortSignal,
+    ): Promise<readonly ProviderModel[]> => {
+      const provider = createProviderForKind(providerId, {
+        endpoint: () => resolveInlineEndpoint(providerId, this.store),
+        apiKey: () => this.inlineProviderKeys[providerId] ?? '',
+      });
+      return provider.listModels(signal);
+    };
+    const sharedPickerDeps: CanvasPickerDeps = {
+      listModelsForProvider,
+      requiresApiKey: (providerId) => kindRequiresApiKey(providerId),
+      hasApiKey: (providerId) => (this.inlineProviderKeys[providerId] ?? '').length > 0,
+    };
+    this.canvasOrchestrator = new CanvasOrchestrator({
+      subgraph: {
+        mutex: this.canvasMutex,
+        vault: vaultAdapter,
+        metadataCache: buildCanvasMetadataCacheAdapter(this.app),
+        provider: this.providerManager,
+        model: () => this.store.get().provider.chatModel,
+        maxTokens: () => this.store.get().provider.maxTokens,
+        ...(this.store.get().provider.temperature !== undefined
+          ? { temperature: () => this.store.get().provider.temperature ?? 0 }
+          : {}),
+        previewing: this.canvasPreviewingDispatcher,
+        logger: this.logger,
+      },
+      logger: this.logger,
+      beginTrace: ({ runId, threadId, op }) => {
+        if (!this.tracer.isEnabled()) return null;
+        const handle = this.tracer.beginTurn({
+          sessionId: threadId,
+          metadata: { runId, op: `canvas.${op}` },
+          tags: ['leo', `canvas:${op}`],
+          name: `leo.canvas.${op}.run`,
+        });
+        const ctx = handle.traceContext;
+        return {
+          traceConfig: {
+            ...(ctx.callbacks !== undefined ? { callbacks: ctx.callbacks } : {}),
+            metadata: ctx.metadata,
+            tags: ctx.tags,
+          },
+          end: () => handle.end(),
+        };
+      },
+      picker: {
+        deps: sharedPickerDeps,
+        buildInit: ({ originalAsk, targetPath }) => {
+          const s = this.store.get();
+          return {
+            providers: PROVIDER_KINDS,
+            defaultProviderId: s.provider.kind,
+            defaultModel: s.provider.chatModel,
+            defaultPreset: 'auto' as const,
+            defaultPath: targetPath,
+            originalAsk,
+          };
+        },
+        applyOverride: (sub, override) => ({
+          ...sub,
+          provider: createProviderForKind(override.providerId, {
+            endpoint: () => resolveInlineEndpoint(override.providerId, this.store),
+            apiKey: () => this.inlineProviderKeys[override.providerId] ?? '',
+          }),
+          model: () => override.model,
+        }),
+      },
+      appendWidgetBlock: ({ runId, threadId, op, targetPath, originalAsk }) => {
+        this.chatMessageStore.append({
+          id: `canvas-live-${runId}`,
+          role: 'widget',
+          content: '',
+          createdAt: new Date().toISOString(),
+          widget: {
+            kind: CANVAS_LIVE_KIND,
+            props: { runId, threadId, op, targetPath, originalAsk },
+          },
+        });
+      },
+      resolvePreviewing: (runId, action) => {
+        this.canvasPreviewingDispatcher.resolve(runId, action);
+      },
+      openPreview: (path) => {
+        void this.canvasNavigator.openCanvas(path).catch((err) => {
+          this.logger.warn('canvas.openPreview.failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      },
+      persistSnapshot: persistCanvasSnapshot,
+    });
+    this.toolRegistry.register(
+      createDelegateCanvasCreateTool({
+        orchestrator: this.canvasOrchestrator,
+        confirmation: this.confirmationController,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createDelegateCanvasContentEditTool({
+        orchestrator: this.canvasOrchestrator,
+        confirmation: this.confirmationController,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+    this.toolRegistry.register(
+      createDelegateCanvasLayoutEditTool({
+        orchestrator: this.canvasOrchestrator,
+        confirmation: this.confirmationController,
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+
     const wikiLlmInvoker = createLlmJsonInvoker({
       chatModel: () => {
         const s = this.store.get();
@@ -813,7 +1012,6 @@ export default class LeoPlugin extends Plugin {
           endpoint: resolveInlineEndpoint(s.provider.kind, this.store),
           apiKey: this.inlineProviderKeys[s.provider.kind] ?? '',
           ...(s.provider.temperature !== undefined ? { temperature: s.provider.temperature } : {}),
-          disableThinking: s.provider.disableThinking,
         });
       },
     });
@@ -841,27 +1039,11 @@ export default class LeoPlugin extends Plugin {
             ...(s.provider.temperature !== undefined
               ? { temperature: s.provider.temperature }
               : {}),
-            disableThinking: s.provider.disableThinking,
           });
         },
       });
 
-    const listModelsForProvider = async (
-      providerId: ProviderKind,
-      signal: AbortSignal,
-    ): Promise<readonly ProviderModel[]> => {
-      const provider = createProviderForKind(providerId, {
-        endpoint: () => resolveInlineEndpoint(providerId, this.store),
-        apiKey: () => this.inlineProviderKeys[providerId] ?? '',
-      });
-      return provider.listModels(signal);
-    };
-
-    const wikiPickerDeps: WikiPickerDeps = {
-      listModelsForProvider,
-      requiresApiKey: (providerId) => kindRequiresApiKey(providerId),
-      hasApiKey: (providerId) => (this.inlineProviderKeys[providerId] ?? '').length > 0,
-    };
+    const wikiPickerDeps: WikiPickerDeps = sharedPickerDeps;
 
     const beginWikiPickerFlow = async (args: {
       readonly threadId: string;
@@ -1304,17 +1486,6 @@ export default class LeoPlugin extends Plugin {
       },
     });
 
-    const fmtK = (n: number): string => `${(n / 1000).toFixed(1)}k`;
-    const emitCompactBanner = (result: CompactionResult, source: 'auto' | 'manual'): void => {
-      const now = new Date().toISOString();
-      this.chatMessageStore.append({
-        id: `compact-${Date.now()}`,
-        role: 'banner',
-        content: `Compacted ${fmtK(result.preCompactTokenCount)} → ${fmtK(result.postCompactTokenCount)} tokens (${source})`,
-        createdAt: now,
-        banner: { kind: 'compact', message: source },
-      });
-    };
     const replaceHistoryAfterCompact = (thread: string, result: CompactionResult): void => {
       const history: AgentHistoryMessage[] = result.summaryMessages.map((m) => ({
         role: 'user',
@@ -1322,16 +1493,96 @@ export default class LeoPlugin extends Plugin {
       }));
       agentHistory.set(thread, history);
     };
+    const persistCompactSnapshot = (controller: CompactWidgetController): void => {
+      try {
+        const snapshot = controller.toTerminalSnapshot();
+        const id = `compact-${snapshot.runId}`;
+        const existing = this.chatMessageStore.getSnapshot().find((m) => m.id === id);
+        if (existing !== undefined) {
+          this.chatMessageStore.update(id, (prev) => ({
+            ...prev,
+            widget: { kind: COMPACT_TERMINAL_KIND, props: snapshot },
+          }));
+        } else {
+          this.chatMessageStore.append({
+            id,
+            role: 'widget',
+            content: '',
+            createdAt: new Date().toISOString(),
+            widget: { kind: COMPACT_TERMINAL_KIND, props: snapshot },
+          });
+        }
+        releaseCompactLiveController(snapshot.runId);
+      } catch (err) {
+        this.logger.warn('compact.persist.append-failed', {
+          runId: controller.viewModel().runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+    const beginCompactRun = (input: {
+      runId: string;
+      threadId: string;
+      trigger: 'manual' | 'auto';
+      customInstructions?: string;
+    }): { controller: CompactWidgetController; phaseSink: CompactPhaseSink } => {
+      const controller = new CompactWidgetController({
+        runId: input.runId,
+        threadId: input.threadId,
+        trigger: input.trigger,
+        ...(input.customInstructions !== undefined
+          ? { customInstructions: input.customInstructions }
+          : {}),
+      });
+      registerCompactLiveController(input.runId, controller);
+      try {
+        this.chatMessageStore.append({
+          id: `compact-${input.runId}`,
+          role: 'widget',
+          content: '',
+          createdAt: new Date().toISOString(),
+          widget: {
+            kind: COMPACT_LIVE_KIND,
+            props: { runId: input.runId, threadId: input.threadId, trigger: input.trigger },
+          },
+        });
+      } catch (err) {
+        this.logger.warn('compact.live.append-failed', {
+          runId: input.runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      let persisted = false;
+      controller.subscribe((vm) => {
+        if (persisted) return;
+        if (!isTerminalCompactPhase(vm.phase)) return;
+        persisted = true;
+        persistCompactSnapshot(controller);
+      });
+      return { controller, phaseSink: makePhaseSinkFromController(controller) };
+    };
     const compactRunner = {
       run: async (customInstructions?: string): Promise<void> => {
         const activeThread = this.getActiveThreadId();
+        this.logger.info('compact.runner.run_called', {
+          thread: activeThread,
+          customInstructionsLength: customInstructions?.length ?? 0,
+          historyLength: agentHistory.get(activeThread)?.length ?? 0,
+        });
         const history = agentHistory.get(activeThread) ?? [];
         const messages: ChatMessage[] = history.map((m) => ({
           role: m.role,
           content: m.content,
         }));
+        const runId = generateCompactRunId();
+        const { controller, phaseSink } = beginCompactRun({
+          runId,
+          threadId: activeThread,
+          trigger: 'manual',
+          ...(customInstructions !== undefined ? { customInstructions } : {}),
+        });
         if (messages.length === 0) {
-          new Notice('Compact: no conversation to compact.');
+          controller.recordError('empty_history', 'No conversation to compact');
           return;
         }
         const settings = this.store.get();
@@ -1346,13 +1597,14 @@ export default class LeoPlugin extends Plugin {
             : {}),
           ...(customInstructions !== undefined ? { customInstructions } : {}),
           invokedSkills: this.invokedSkills.toAutocompactList(MAIN_AGENT_ID),
+          phaseSink,
         });
         if (result === null) {
-          new Notice('Compact: nothing changed.');
+          // phaseSink.error() / cancelled() already invoked inside runManualCompaction
+          // for circuit-broken / no-stream / no-summary / aborted; widget reflects state.
           return;
         }
         replaceHistoryAfterCompact(activeThread, result);
-        emitCompactBanner(result, 'manual');
       },
     };
 
@@ -1394,13 +1646,22 @@ export default class LeoPlugin extends Plugin {
         tracking: this.autocompactTracking,
         userOverride: () => this.store.get().contextWindowOverride,
         invokedSkills: () => this.invokedSkills.toAutocompactList(MAIN_AGENT_ID),
-        onResult: (r) => emitCompactBanner(r, 'auto'),
         replaceHistory: (thread, r) => replaceHistoryAfterCompact(thread, r),
+        beginRun: ({ threadId }) => {
+          const runId = generateCompactRunId();
+          const { phaseSink } = beginCompactRun({
+            runId,
+            threadId,
+            trigger: 'auto',
+          });
+          return phaseSink;
+        },
       },
       toolRegistry: this.toolRegistry,
       vault: vaultAdapter,
       editor: editBridge,
       navigator: this.workspaceNavigator,
+      canvasNavigator: this.canvasNavigator,
       planMode: this.planModeController,
       ragEngine: this.indexerRag.ragEngine,
       ragMode: () => this.store.get().ragMode,
@@ -1430,8 +1691,8 @@ export default class LeoPlugin extends Plugin {
       },
       tracer: this.tracer,
       toolSearch: toolSearchSession,
+      maxToolRoundTrips: () => this.store.get().provider.maxToolRoundTrips,
       disableParallelToolCalls: () => this.store.get().provider.disableParallelToolCalls,
-      disableThinking: () => this.store.get().provider.disableThinking,
     });
 
     const confirmationController = this.confirmationController;
@@ -1548,6 +1809,11 @@ export default class LeoPlugin extends Plugin {
               vault: vaultAdapter,
               getMutexState: () => this.wikiMutex?.active() ?? WIKI_MUTEX_IDLE,
             }),
+          collectCanvasStatus: async (_signal: AbortSignal) =>
+            collectCanvasStatus({
+              vault: vaultAdapter,
+              mutex: this.canvasMutex,
+            }),
           compactRunner,
           getContextWindow: () => {
             const s = this.store.get();
@@ -1593,6 +1859,7 @@ export default class LeoPlugin extends Plugin {
             temperature: () => this.store.get().provider.temperature,
             logger: this.logger,
           }),
+          clearThreadReadState: (threadId) => readFileState.clearThread(threadId),
         }),
     );
     this.addRibbonIcon('bot', 'Leo: Open chat', () => {
@@ -2130,11 +2397,10 @@ interface BuildInlineChatModelInput {
   readonly endpoint: string;
   readonly apiKey: string;
   readonly temperature?: number;
-  readonly disableThinking?: boolean;
 }
 
 function buildInlineChatModel(input: BuildInlineChatModelInput): BaseChatModel {
-  const { providerId, model, endpoint, apiKey, temperature, disableThinking } = input;
+  const { providerId, model, endpoint, apiKey, temperature } = input;
   if (providerId === 'anthropic') {
     return new ChatAnthropic({
       model,
@@ -2156,9 +2422,6 @@ function buildInlineChatModel(input: BuildInlineChatModelInput): BaseChatModel {
     ...(temperature !== undefined ? { temperature } : {}),
     streaming: false,
     streamUsage: true,
-    ...(disableThinking === true && providerId === 'lmstudio'
-      ? { modelKwargs: { extra_body: { chat_template_kwargs: { enable_thinking: false } } } }
-      : {}),
     configuration: {
       baseURL,
       dangerouslyAllowBrowser: true,

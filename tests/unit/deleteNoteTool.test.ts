@@ -58,7 +58,7 @@ function autoResolve(controller: AcceptRejectController, decision: AcceptRejectD
 
 function seedRead(readState: ReadFileStateStore, vault: FakeVault, path: string): void {
   const content = vault.files.get(path) ?? '';
-  readState.set(path, {
+  readState.set('t', path, {
     content,
     mtimeMs: vault.mtimes.get(path) ?? 0,
     offset: undefined,
@@ -137,7 +137,7 @@ describe('delete_note tool', () => {
     expect(result.data.bytesDeleted).toBe(5);
     expect(result.data.before).toBe('hello');
     expect(vault.files.has('Foo.md')).toBe(false);
-    expect(readState.get('Foo.md')).toBeUndefined();
+    expect(readState.get('t', 'Foo.md')).toBeUndefined();
   });
 
   it('reject restores the captured content', async () => {
@@ -155,7 +155,7 @@ describe('delete_note tool', () => {
     if (!result.ok) return;
     expect(result.data.decision).toBe('reject');
     expect(vault.files.get('Foo.md')).toBe('body');
-    expect(readState.get('Foo.md')).toBeDefined();
+    expect(readState.get('t', 'Foo.md')).toBeDefined();
   });
 
   it('aborts when signal already aborted', async () => {

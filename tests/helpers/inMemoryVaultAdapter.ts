@@ -37,16 +37,29 @@ export class InMemoryVaultAdapter implements VaultAdapter {
   }
 
   async list(p: string): Promise<VaultListing> {
-    const prefix = p.endsWith('/') ? p : `${p}/`;
+    const root = p === '' || p === '/';
+    const prefix = root ? '' : p.endsWith('/') ? p : `${p}/`;
     const files: string[] = [];
-    const folders: string[] = [];
+    const folderSet = new Set<string>();
     for (const k of this.files.keys()) {
-      if (k.startsWith(prefix) && !k.slice(prefix.length).includes('/')) files.push(k);
+      const rel = root ? k : k.startsWith(prefix) ? k.slice(prefix.length) : null;
+      if (rel === null) continue;
+      const slash = rel.indexOf('/');
+      if (slash < 0) {
+        files.push(k);
+      } else {
+        folderSet.add(`${prefix}${rel.slice(0, slash)}`);
+      }
     }
     for (const k of this.folders) {
-      if (k.startsWith(prefix) && !k.slice(prefix.length).includes('/')) folders.push(k);
+      const rel = root ? k : k.startsWith(prefix) ? k.slice(prefix.length) : null;
+      if (rel === null) continue;
+      const slash = rel.indexOf('/');
+      if (slash < 0) {
+        folderSet.add(k);
+      }
     }
-    return { files, folders };
+    return { files, folders: Array.from(folderSet) };
   }
 
   async stat(p: string): Promise<VaultStat | null> {

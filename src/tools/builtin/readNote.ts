@@ -48,7 +48,13 @@ export function createReadNoteTool(): ToolSpec<ReadNoteArgs, ReadNoteResult> {
         const stat = await ctx.vault.stat(args.path);
         const mtimeMs = Math.floor(stat?.mtimeMs ?? 0);
         if (ctx.readState !== undefined && stat !== null) {
-          const cached = ctx.readState.matches(args.path, mtimeMs, undefined, undefined);
+          const cached = ctx.readState.matches(
+            ctx.thread,
+            args.path,
+            mtimeMs,
+            undefined,
+            undefined,
+          );
           if (cached !== undefined) {
             return {
               ok: true,
@@ -68,7 +74,7 @@ export function createReadNoteTool(): ToolSpec<ReadNoteArgs, ReadNoteResult> {
           return { ok: false, error: `note too large (${bytes} bytes; limit ${MAX_BYTES})` };
         }
         if (ctx.readState !== undefined) {
-          ctx.readState.set(args.path, {
+          ctx.readState.set(ctx.thread, args.path, {
             content,
             mtimeMs,
             offset: undefined,

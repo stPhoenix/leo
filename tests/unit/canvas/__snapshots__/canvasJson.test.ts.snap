@@ -1,0 +1,19 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`serializeCanvasJson — stable key order > emits keys alphabetically 1`] = `
+"{
+  "edges": [],
+  "nodes": [
+    {
+      "color": "1",
+      "height": 50,
+      "id": "n1",
+      "text": "t",
+      "type": "text",
+      "width": 100,
+      "x": 0,
+      "y": 0
+    }
+  ]
+}"
+`;

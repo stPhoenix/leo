@@ -11,7 +11,7 @@ export async function ensureFreshRead(ctx: ToolCtx, path: string): Promise<Write
   const exists = await ctx.vault.exists(path);
   if (!exists) return { ok: false, error: NOT_FOUND_ERROR };
   if (ctx.readState === undefined) return { ok: true };
-  const entry = ctx.readState.get(path);
+  const entry = ctx.readState.get(ctx.thread, path);
   if (entry === undefined || entry.isPartialView) {
     return { ok: false, error: NOT_READ_ERROR };
   }

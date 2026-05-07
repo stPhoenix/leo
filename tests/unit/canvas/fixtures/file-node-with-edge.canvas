@@ -1,0 +1,32 @@
+{
+  "edges": [
+    {
+      "fromNode": "n1",
+      "fromSide": "right",
+      "id": "e1",
+      "label": "links",
+      "toNode": "n2",
+      "toSide": "left"
+    }
+  ],
+  "nodes": [
+    {
+      "file": "Notes/A.md",
+      "height": 80,
+      "id": "n1",
+      "type": "file",
+      "width": 200,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "file": "Notes/B.md",
+      "height": 80,
+      "id": "n2",
+      "type": "file",
+      "width": 200,
+      "x": 400,
+      "y": 0
+    }
+  ]
+}

@@ -9,6 +9,7 @@ leo/
 │   │   └── bundle-baseline.json         # main.js size baseline + maxDeltaBytes for `pnpm check:bundle`
 │   ├── features/
 │   │   ├── arch-alignment_plan_20260424-005915/
+│   │   ├── canvas_slice_20260505-190819/  # Sliced feature planning workspace for canvas slice (refine→plan→fetch→extract→reduce→layout→write + delegate_canvas_* tools, reveal_in_canvas, sidecar, layouts, palette)
 │   │   ├── external-agent_slice_20260427-022536/  # Sliced feature planning workspace for external-agent delegation (F01–F13)
 │   │   ├── leo_slice_20260419-190449/   # Sliced feature planning workspace (per-feature docs)
 │   │   ├── livestatus_plan_20260425-185758/
@@ -16,6 +17,7 @@ leo/
 │   ├── scripts/
 │   │   └── precommit.md                 # Precommit runbook
 │   ├── srs/
+│   │   ├── canvas.md                    # Canvas slice SRS (create / content-edit / layout-edit subgraphs, reveal_in_canvas, sidecar)
 │   │   ├── compact.md
 │   │   ├── context.md
 │   │   ├── external-agent.md            # External-agent delegation SRS (subgraph + adapters + widget)
@@ -33,6 +35,64 @@ leo/
 │       └── tech-stack.md
 ├── src/
 │   ├── agent/                           # Agent loop, compaction, plan mode, todo, context assembly, graph + streaming events
+│   │   ├── canvas/                       # Canvas slice — create / content_edit / layout_edit subgraphs (refine→plan→fetch→extract→reduce→layout→write); mutex-gated; sidecar persistence; preset layouts + palette
+│   │   │   ├── layouts/                  # Pure layout engines (grid/tree/radial/force/timeline/bipartite) + node sizing + palette + buildCanvasNode
+│   │   │   │   ├── bipartite.ts
+│   │   │   │   ├── buildCanvasNode.ts    # Entity → CanvasNode (text or file kind by `entity.filePath`)
+│   │   │   │   ├── colorPalette.ts       # CanvasPaletteId union (`coolVivid|forestSteel|pastelPlate|rainbow|monoOcean|sunset`) + buildEntityType/RelationTypePalette + DEFAULT_CANVAS_PALETTE_ID
+│   │   │   │   ├── force.ts
+│   │   │   │   ├── grid.ts
+│   │   │   │   ├── index.ts              # selectLayout(LayoutHint) dispatcher + LayoutResult typing
+│   │   │   │   ├── nodeSize.ts           # nodeSizeFor(entity) — CANVAS_NODE_SIZING + per-type overrides
+│   │   │   │   ├── radial.ts
+│   │   │   │   ├── timeline.ts
+│   │   │   │   ├── tree.ts               # Tree layout with cycle detection (LayoutTreeResult `ok|cycle`)
+│   │   │   │   └── types.ts              # LayoutBudgets, LayoutHint, LayoutInput, LayoutPreset, LayoutResult, LockedCoords
+│   │   │   ├── tools/                    # Canvas tool wirings — delegate_canvas_create / content_edit / layout_edit + reveal_in_canvas + shared confirm flow
+│   │   │   │   ├── canvasToolFlow.ts     # runCanvasConfirmFlow — shared ConfirmationController + busy/denied result builders
+│   │   │   │   ├── delegateCanvasContentEdit.ts
+│   │   │   │   ├── delegateCanvasCreate.ts
+│   │   │   │   ├── delegateCanvasLayoutEdit.ts
+│   │   │   │   └── revealInCanvas.ts     # reveal_in_canvas tool — open canvas + zoom to nodeIds/bbox via CanvasNavigator
+│   │   │   ├── widget/
+│   │   │   │   ├── terminalSnapshot.ts   # CanvasTerminalSnapshot Zod schema + builder + CANVAS_TERMINAL_KIND
+│   │   │   │   ├── widgetController.ts   # CanvasWidgetController — viewModel(), provider/model/palette/preset selection, EditAction dispatch, terminal snapshot
+│   │   │   │   └── widgetState.ts        # CanvasPhase union (awaiting_config/preparing/planning/fetching/extracting/reducing/writing/previewing/done/cancelled/error) + TERMINAL_CANVAS_PHASES
+│   │   │   ├── budgets.ts                # CANVAS_BUDGETS — chunk sizes, caps, layout/sizing constants, MOVE_DRIFT_PX
+│   │   │   ├── canvasJson.ts             # CanvasJson Zod schema (text/file/group/link nodes + edges) + parseCanvasJson + serializeCanvasJson + validateVaultRelativePath + Result<T> + CANVAS_SIDECAR_PREFIX
+│   │   │   ├── canvasStatus.ts           # CanvasStatus snapshot for /canvas widget (active run + recent sidecars)
+│   │   │   ├── chunker.ts                # chunkCanvasBody — heading-aware token-budget chunker for extractor
+│   │   │   ├── diff.ts                   # diffAgainstSidecar + buildTombstoneSummary + tryParseCurrentCanvas — drift detection vs prior sidecar
+│   │   │   ├── extract.ts                # runExtractors — per-chunk LLM extractor with semaphore-bounded concurrency
+│   │   │   ├── extractMerge.ts           # mergeChunkOutputs — entity/edge dedup + caps (ENTITY_CAP=100, EDGE_CAP=200) per source
+│   │   │   ├── extractPrompt.ts          # getCanvasExtractorSystemPrompt — entity/edge schema-conformant tool-call prompt
+│   │   │   ├── fetch.ts                  # fetchCanvasSources — per-item url/vaultPath/attachment/conversation fetch (delegates to wiki/ingest/fetchSource)
+│   │   │   ├── liveControllerRegistry.ts # Map<runId, CanvasWidgetControllerLike> + CANVAS_LIVE_KIND
+│   │   │   ├── loggingNamespaces.ts      # CANVAS_LOG namespace tree (per-op create/contentEdit/layoutEdit subtrees)
+│   │   │   ├── mutex.ts                  # CanvasMutex — per-vault single-op gate (`create|content_edit|layout_edit`)
+│   │   │   ├── orchestrator.ts           # CanvasOrchestrator.start({op,…}) → {ok,handle,terminal} | {ok:false,busy}; live widget controller wiring; persistSnapshot callback
+│   │   │   ├── plan.ts                   # expandSourceHints — SourceHint → CanvasSourceItem[] (URL/vault/attachment/conversation)
+│   │   │   ├── previewingDispatcher.ts   # CanvasPreviewingDispatcher — Promise-based EditAction (apply|discard|edit) gate during previewing phase
+│   │   │   ├── reduce.ts                 # reduceEntityGraph — LLM-based per-type alias merge → final EntityGraph + Insights (ReducerInvalidError on schema fail)
+│   │   │   ├── refine.ts                 # createCanvasRefine — refine sub-agent (emit_run_plan / ask_clarifying_question tool calls)
+│   │   │   ├── refinePrompt.ts           # getCanvasRefineSystemPrompt — RunPlan schema description + tool-call rules
+│   │   │   ├── resolveFiles.ts           # resolveEntityFiles — bind entity → vault file via per-fetch basename + page-basename map fallback (slug-token overlap, SLUG_FUNCTION_WORDS)
+│   │   │   ├── runIdRegistry.ts          # generateCanvasRunId({now,tail}) → YYYYMMDD-HHmmss-<6-char>
+│   │   │   ├── runPhase.ts               # buildCanvasToolResult / buildBusyToolResult / buildDeniedToolResult — terminal → CanvasToolResult shaped for delegate_canvas_* tools
+│   │   │   ├── schemas.ts                # Zod: EntityTypeDef, RelationTypeDef, RunPlan, ExtractorOutput, EntityGraph, Insights, SidecarV1, SourceHint, PRESET_IDS, LayoutHint
+│   │   │   ├── sidecar.ts                # readSidecar/writeSidecar — `<canvas>.leo-canvas.json` sidecar store; SidecarCorruptError
+│   │   │   ├── slug.ts                   # canvasPathToSidecarSlug + parseSidecarSlug — kebab+sha8 slug for sidecar filename
+│   │   │   ├── slugWords.ts              # SLUG_FUNCTION_WORDS — function-word stoplist shared by reducer alias detection + resolveFiles
+│   │   │   ├── state.ts                  # CanvasState, CanvasPhase, EditAction, PreviewingDecisionAdapter, CanvasFailedSource, CanvasErrorPayload, CanvasTerminalState
+│   │   │   ├── subgraph.ts               # startCanvasRun — hand-rolled FSM driver (refine→plan→fetch→extract→reduce→layout→write→previewing→terminal); abort/timeout race; mutex acquire/release
+│   │   │   └── writer.ts                 # writeCanvas — atomic vault write of CanvasJson + sidecar; PREVIEW_SUFFIX `.preview.canvas`; TargetExistsError
+│   │   ├── compact/                      # Live + terminal widget for /compact (manual + auto compaction); phaseSink wiring; runId
+│   │   │   ├── liveControllerRegistry.ts # Map<runId, CompactWidgetControllerLike> + COMPACT_LIVE_KIND
+│   │   │   ├── phaseSink.ts              # CompactPhaseSink contract — start/summarizing/buildingAttachments/done/error/cancelled hooks driving widget controller
+│   │   │   ├── runId.ts                  # generateCompactRunId → YYYYMMDD-HHmmss-<6-char>
+│   │   │   ├── terminalSnapshot.ts       # CompactTerminalSnapshot Zod schema + builder + COMPACT_TERMINAL_KIND
+│   │   │   ├── widgetController.ts       # CompactWidgetController — phase transitions, error capture, terminal snapshot
+│   │   │   └── widgetState.ts            # CompactTrigger (`manual|auto`), CompactPhase (idle/preparing/summarizing/building_attachments/done/cancelled/error), CompactErrorCode
 │   │   ├── externalAgent/                # External-agent delegation subgraph (F01–F13 slice): adapter contract, refine sub-agent, FSM driver, slot-per-thread, result writer, widget controller, terminal snapshot, logging
 │   │   │   ├── adapters/
 │   │   │   │   ├── base.ts               # ExternalAgentAdapter abstract class + ExternalEvent discriminated union (log/text/file/done/error) + AdapterCapabilities — adapter-only ESLint isolation enforced
@@ -145,8 +205,9 @@ leo/
 │   │   ├── tokenUsage.ts
 │   │   ├── types.ts
 │   │   └── wireAttachments.ts
-│   ├── editor/                          # CM6 edit lock, editor bridge, focused context, highlights, workspace navigation
+│   ├── editor/                          # CM6 edit lock, editor bridge, focused context, highlights, workspace + canvas navigation
 │   │   ├── activeNoteEditBridge.ts
+│   │   ├── canvasNavigator.ts           # CanvasNavigator — open canvas leaf + zoom to nodeIds/bbox; CanvasBbox typing; CanvasNavigatorWarning union (`reveal_unsupported_in_this_obsidian_version`)
 │   │   ├── cm6LockDecoration.ts
 │   │   ├── editLock.ts
 │   │   ├── editorBridge.ts
@@ -293,6 +354,16 @@ leo/
 │   │   │   │   ├── AgentProgressTree.stories.tsx
 │   │   │   │   ├── AgentProgressTree.tsx
 │   │   │   │   ├── AssistantBlocks.tsx
+│   │   │   │   ├── CanvasLiveBlock.tsx              # Renderer for CANVAS_LIVE_KIND — looks up live CanvasWidgetController by runId
+│   │   │   │   ├── CanvasTerminalBlock.stories.tsx
+│   │   │   │   ├── CanvasTerminalBlock.tsx          # Renderer for persisted CanvasTerminalSnapshot post-reload (collapsed summary expandable; palette swatch via CANVAS_PALETTES)
+│   │   │   │   ├── CanvasWidget.stories.tsx
+│   │   │   │   ├── CanvasWidget.tsx                 # Live canvas widget — phase-dispatched (awaiting_config/preparing/.../done/cancelled/error); preset/palette pickers; useSyncExternalStore
+│   │   │   │   ├── CompactLiveBlock.tsx             # Renderer for COMPACT_LIVE_KIND — looks up live CompactWidgetController by runId
+│   │   │   │   ├── CompactTerminalBlock.stories.tsx
+│   │   │   │   ├── CompactTerminalBlock.tsx         # Renderer for persisted CompactTerminalSnapshot post-reload
+│   │   │   │   ├── CompactWidget.stories.tsx
+│   │   │   │   ├── CompactWidget.tsx                # Live compact widget — phase-dispatched (idle/preparing/summarizing/building_attachments/done/cancelled/error); useSyncExternalStore
 │   │   │   │   ├── DiffView.stories.tsx
 │   │   │   │   ├── DiffView.tsx
 │   │   │   │   ├── ExternalAgentLiveBlock.tsx     # Renderer registered under EXTERNAL_AGENT_LIVE_KIND — looks up live ExternalAgentWidgetController by runId from liveControllerRegistry and renders <ExternalAgentWidget controller=…>
@@ -322,6 +393,8 @@ leo/
 │   │   │   ├── hooks/
 │   │   │   │   └── useBlink.ts
 │   │   │   ├── widgets/
+│   │   │   │   ├── CanvasStatusWidget.stories.tsx
+│   │   │   │   ├── CanvasStatusWidget.tsx       # `canvas` widget — read-only canvas status (active run + recent sidecars) rendered from CanvasStatus snapshot
 │   │   │   │   ├── ContextWidget.tsx
 │   │   │   │   ├── RagWidget.stories.tsx        # Storybook fixtures for RagWidget (idle/indexing/paused/errored/unavailable/empty/large-vault)
 │   │   │   │   ├── RagWidget.tsx                # `rag` widget — read-only RAG/index status panel rendered from RagSnapshot
@@ -375,6 +448,7 @@ leo/
 │   │   │   ├── ThreadSwitcher.stories.tsx
 │   │   │   ├── ThreadSwitcher.tsx
 │   │   │   └── turnDispatcher.ts
+│   │   ├── canvasStatusCommand.ts       # Abortable handle for /canvas slash command (mirrors contextCommand/ragCommand); CANVAS_STATUS_WIDGET_KIND
 │   │   ├── chatView.tsx
 │   │   ├── contextCommand.ts
 │   │   ├── contextGrid.ts
@@ -412,7 +486,9 @@ leo/
 │   │   └── release.smoke.test.ts
 │   ├── perf/                            # Perf fixtures + report
 │   │   ├── fixtures/
-│   │   │   └── make10kVault.ts
+│   │   │   ├── make10kVault.ts
+│   │   │   └── makeCanvasGraph.ts       # Synthetic EntityGraph generator for canvas layout bench
+│   │   ├── canvasLayout.bench.test.ts   # Bench: per-preset layout runtime over makeCanvasGraph fixture
 │   │   └── REPORT.md
 │   └── llm/                             # Live LLM tests (vitest.llm.config.ts)
 │       ├── _fakes.ts

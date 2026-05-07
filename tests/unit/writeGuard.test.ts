@@ -70,7 +70,7 @@ describe('ensureFreshRead', () => {
     vault.files.set('a.md', 'x');
     vault.mtimes.set('a.md', 1000);
     const readState = new ReadFileStateStore();
-    readState.set('a.md', {
+    readState.set('t', 'a.md', {
       content: 'x',
       mtimeMs: 1000,
       offset: 1,
@@ -86,7 +86,7 @@ describe('ensureFreshRead', () => {
     vault.files.set('a.md', 'x');
     vault.mtimes.set('a.md', 2500);
     const readState = new ReadFileStateStore();
-    readState.set('a.md', {
+    readState.set('t', 'a.md', {
       content: 'x',
       mtimeMs: 1000,
       offset: undefined,
@@ -102,7 +102,7 @@ describe('ensureFreshRead', () => {
     vault.files.set('a.md', 'x');
     vault.mtimes.set('a.md', 1000.7);
     const readState = new ReadFileStateStore();
-    readState.set('a.md', {
+    readState.set('t', 'a.md', {
       content: 'x',
       mtimeMs: 1000,
       offset: undefined,
@@ -111,5 +111,21 @@ describe('ensureFreshRead', () => {
     });
     const r = await ensureFreshRead(makeToolCtx({ vault, readState }), 'a.md');
     expect(r).toEqual({ ok: true });
+  });
+
+  it('rejects with NOT_READ_ERROR when entry was recorded under a different thread', async () => {
+    const vault = new FakeVault();
+    vault.files.set('a.md', 'x');
+    vault.mtimes.set('a.md', 1000);
+    const readState = new ReadFileStateStore();
+    readState.set('A', 'a.md', {
+      content: 'x',
+      mtimeMs: 1000,
+      offset: undefined,
+      limit: undefined,
+      isPartialView: false,
+    });
+    const r = await ensureFreshRead(makeToolCtx({ thread: 'B', vault, readState }), 'a.md');
+    expect(r).toEqual({ ok: false, error: NOT_READ_ERROR });
   });
 });

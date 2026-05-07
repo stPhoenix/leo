@@ -3,6 +3,7 @@
 // conditional skills have been activated so they survive cache clears.
 
 import type { Logger } from '@/platform/Logger';
+import { BUILTIN_SKILLS } from './builtins';
 import { createConditionalMatcher } from './conditional';
 import { DynamicDiscovery } from './dynamic';
 import { createSignal, type Signal } from './signals';
@@ -36,11 +37,18 @@ export class SkillRegistry {
   }
 
   availableSkills(): readonly Skill[] {
-    return this.store.listAvailable();
+    const fromStore = this.store.listAvailable();
+    if (BUILTIN_SKILLS.length === 0) return fromStore;
+    const seen = new Set<string>(fromStore.map((s) => s.name));
+    const merged: Skill[] = [...fromStore];
+    for (const builtin of BUILTIN_SKILLS) {
+      if (!seen.has(builtin.name)) merged.push(builtin);
+    }
+    return merged;
   }
 
   findSkill(name: string): Skill | undefined {
-    return this.store.find(name);
+    return this.store.find(name) ?? BUILTIN_SKILLS.find((s) => s.name === name);
   }
 
   entry(name: string): SkillEntry | undefined {

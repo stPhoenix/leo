@@ -239,11 +239,11 @@ async function maybeReject(input: MaybeRejectArgs): Promise<boolean> {
 async function syncReadState(ctx: ToolCtx, path: string, afterText: string | null): Promise<void> {
   if (ctx.readState === undefined) return;
   if (afterText === null) {
-    ctx.readState.invalidate(path);
+    ctx.readState.invalidate(ctx.thread, path);
     return;
   }
   const stat = await ctx.vault.stat(path);
-  ctx.readState.set(path, {
+  ctx.readState.set(ctx.thread, path, {
     content: afterText,
     mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
     offset: undefined,

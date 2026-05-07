@@ -4,7 +4,7 @@ export type IngestSourceKind = 'url' | 'vaultPath' | 'attachment' | 'conversatio
 
 /**
  * Per-call provider+model override for wiki workflows. Endpoint, API key,
- * temperature, disableThinking always inherit from current global settings.
+ * temperature always inherit from current global settings.
  */
 export interface ProviderOverride {
   readonly providerId: ProviderKind;
