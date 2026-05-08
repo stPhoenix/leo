@@ -8,7 +8,7 @@ leo/
 │   ├── architecture/                    # Module map, contracts, data flows
 │   ├── budgets/                         # Bundle-size baseline + caps
 │   ├── features/                        # Sliced feature planning workspaces (per-slice)
-│   ├── scripts/                         # Runbooks (precommit, etc.)
+│   ├── scripts/                         # Runbooks + shell scripts (precommit, vault-encryption)
 │   ├── srs/                             # Software requirements specs (per slice)
 │   └── standards/                       # tech-stack, code-style, best-practices, this file
 ├── src/

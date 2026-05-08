@@ -17,6 +17,12 @@
   font-family: var(--font-interface);
 }
 
+.leo-chat-view-host,
+.leo-chat-root {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .leo-header-bar {
   display: flex;
   align-items: center;
@@ -2209,23 +2215,7 @@
 }
 
 .leo-tool-use-toggle {
-  appearance: none;
-  background: transparent;
-  border: 0;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 0 var(--size-4-1);
-  font: inherit;
-  line-height: 1;
   margin-left: auto;
-  border-radius: var(--radius-s);
-  transition:
-    background-color 120ms ease,
-    color 120ms ease;
-}
-.leo-tool-use-toggle:hover {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
 }
 
 .leo-tool-use-permission,
@@ -2344,22 +2334,7 @@
 }
 
 .leo-thinking-toggle {
-  appearance: none;
-  background: transparent;
-  border: 0;
-  color: var(--text-accent);
-  cursor: pointer;
   margin-left: auto;
-  font-size: inherit;
-  padding: 2px var(--size-4-1);
-  border-radius: var(--radius-s);
-  transition:
-    background-color 120ms ease,
-    color 120ms ease;
-}
-
-.leo-thinking-toggle:hover {
-  background: var(--background-modifier-hover);
 }
 
 .leo-thinking-body {
@@ -2370,6 +2345,69 @@
 
 .leo-thinking-redacted {
   font-style: normal;
+}
+
+/* ── Shared toggle button + code-block collapse ──────────────────────── */
+
+.leo-thinking-toggle,
+.leo-tool-use-toggle,
+.leo-code-toggle-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  appearance: none;
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px var(--size-4-2);
+  font: inherit;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.2;
+  border-radius: 999px;
+  min-height: 20px;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.leo-thinking-toggle:hover,
+.leo-tool-use-toggle:hover,
+.leo-code-toggle-button:hover {
+  background: var(--background-modifier-hover);
+  border-color: var(--background-modifier-border-hover);
+  color: var(--text-normal);
+}
+
+.leo-thinking-toggle:focus-visible,
+.leo-tool-use-toggle:focus-visible,
+.leo-code-toggle-button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+/* Code-block collapse — toggle pinned top-right next to copy button */
+
+.leo-code-collapsible {
+  position: relative;
+}
+
+.leo-code-toggle-button {
+  position: absolute;
+  top: var(--size-4-1);
+  right: calc(var(--size-4-1) + 56px);
+  z-index: 1;
+}
+
+.leo-code-collapsible.is-collapsed > code {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-height: 1.6em;
+  white-space: pre;
 }
 
 /* ── Inline permission prompt (F06) ───────────────────────────────────── */
