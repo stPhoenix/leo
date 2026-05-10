@@ -135,34 +135,53 @@ export class OpenfangAdapter extends ExternalAgentAdapter {
     try {
       task = await submitWithRetry(http, input, log);
     } catch (err) {
-      yield* drain();
       if (err instanceof OpenfangHttpError) {
-        yield { type: 'error', error: mapHttpError(err, 'submit') };
+        const mapped = mapHttpError(err, 'submit');
+        log('warn', 'openfang.error', {
+          code: mapped.code,
+          message: mapped.message,
+          phase: 'submit',
+        });
+        yield* drain();
+        yield { type: 'error', error: mapped };
         return;
       }
       if (err instanceof TransientExhausted) {
-        yield {
-          type: 'error',
-          error: {
-            code: 'transient_failure',
-            message: `submit failed with HTTP ${err.lastStatus} after ${SUBMIT_RETRY_BUDGET} attempts`,
-          },
-        };
+        const message = `submit failed with HTTP ${err.lastStatus} after ${SUBMIT_RETRY_BUDGET} attempts`;
+        log('warn', 'openfang.error', {
+          code: 'transient_failure',
+          message,
+          phase: 'submit',
+        });
+        yield* drain();
+        yield { type: 'error', error: { code: 'transient_failure', message } };
         return;
       }
       if (input.signal.aborted) {
+        log('info', 'openfang.error', {
+          code: 'cancelled',
+          message: 'aborted by host',
+          phase: 'submit',
+        });
+        yield* drain();
         yield { type: 'error', error: { code: 'cancelled', message: 'aborted by host' } };
         return;
       }
       const network = mapNetworkError(err, 'submit');
       if (network !== null) {
+        log('warn', 'openfang.error', {
+          code: network.code,
+          message: network.message,
+          phase: 'submit',
+        });
+        yield* drain();
         yield { type: 'error', error: network };
         return;
       }
-      yield {
-        type: 'error',
-        error: { code: 'submit_failed', message: err instanceof Error ? err.message : String(err) },
-      };
+      const message = err instanceof Error ? err.message : String(err);
+      log('warn', 'openfang.error', { code: 'submit_failed', message, phase: 'submit' });
+      yield* drain();
+      yield { type: 'error', error: { code: 'submit_failed', message } };
       return;
     }
 
@@ -181,7 +200,7 @@ export class OpenfangAdapter extends ExternalAgentAdapter {
     let pollResult;
     try {
       pollResult = await pollUntilTerminal(
-        { http, sleep: abortableSleep, now: Date.now },
+        { http, sleep: abortableSleep, now: Date.now, log },
         {
           taskId,
           signal: input.signal,
@@ -191,51 +210,63 @@ export class OpenfangAdapter extends ExternalAgentAdapter {
         },
       );
     } catch (err) {
-      yield* drain();
       if (err instanceof OpenfangHttpError) {
-        yield { type: 'error', error: mapHttpError(err, 'poll') };
+        const mapped = mapHttpError(err, 'poll');
+        log('warn', 'openfang.error', {
+          code: mapped.code,
+          message: mapped.message,
+          phase: 'poll',
+        });
+        yield* drain();
+        yield { type: 'error', error: mapped };
         return;
       }
       const network = mapNetworkError(err, 'poll');
       if (network !== null) {
+        log('warn', 'openfang.error', {
+          code: network.code,
+          message: network.message,
+          phase: 'poll',
+        });
+        yield* drain();
         yield { type: 'error', error: network };
         return;
       }
-      yield {
-        type: 'error',
-        error: { code: 'poll_failed', message: err instanceof Error ? err.message : String(err) },
-      };
+      const message = err instanceof Error ? err.message : String(err);
+      log('warn', 'openfang.error', { code: 'poll_failed', message, phase: 'poll' });
+      yield* drain();
+      yield { type: 'error', error: { code: 'poll_failed', message } };
       return;
     } finally {
       input.signal.removeEventListener('abort', onAbort);
     }
 
-    yield* drain();
-
     if (pollResult.kind === 'timeout') {
-      yield {
-        type: 'error',
-        error: {
-          code: 'poll_timeout',
-          message: `task ${taskId} did not terminate within ${config.pollTimeoutMs}ms`,
-        },
-      };
+      const message = `task ${taskId} did not terminate within ${config.pollTimeoutMs}ms`;
+      log('warn', 'openfang.error', { code: 'poll_timeout', message, phase: 'poll' });
+      yield* drain();
+      yield { type: 'error', error: { code: 'poll_timeout', message } };
       return;
     }
     if (pollResult.kind === 'aborted') {
+      log('info', 'openfang.error', {
+        code: 'cancelled',
+        message: 'aborted by host',
+        phase: 'poll',
+      });
+      yield* drain();
       yield { type: 'error', error: { code: 'cancelled', message: 'aborted by host' } };
       return;
     }
     if (pollResult.kind === 'transient_exhausted') {
-      yield {
-        type: 'error',
-        error: {
-          code: 'transient_failure',
-          message: `poll failed with HTTP ${pollResult.lastStatus} after retries`,
-        },
-      };
+      const message = `poll failed with HTTP ${pollResult.lastStatus} after retries`;
+      log('warn', 'openfang.error', { code: 'transient_failure', message, phase: 'poll' });
+      yield* drain();
+      yield { type: 'error', error: { code: 'transient_failure', message } };
       return;
     }
+
+    yield* drain();
 
     const terminalTask = pollResult.task;
     const lastMsg = lastAgentMessage(terminalTask);
@@ -245,10 +276,23 @@ export class OpenfangAdapter extends ExternalAgentAdapter {
     const status = extractStatusKind(terminalTask.status);
     if (status === 'failed') {
       const decoded = decodeFailureText(rendered.text);
+      log('info', 'openfang.failure.decoded', { code: decoded.code, message: decoded.message });
+      log('warn', 'openfang.error', {
+        code: decoded.code,
+        message: decoded.message,
+        phase: 'task',
+      });
+      yield* drain();
       yield { type: 'error', error: { code: decoded.code, message: decoded.message } };
       return;
     }
     if (status === 'cancelled') {
+      log('info', 'openfang.error', {
+        code: 'cancelled',
+        message: 'task cancelled on daemon',
+        phase: 'task',
+      });
+      yield* drain();
       yield { type: 'error', error: { code: 'cancelled', message: 'task cancelled on daemon' } };
       return;
     }

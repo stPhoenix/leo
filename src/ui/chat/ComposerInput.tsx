@@ -108,14 +108,28 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
 
   const mentionItems = useMemo<readonly MentionPickerItem[]>(() => {
     if (mentionMatch === null || vaultFiles === undefined) return [];
-    const ranked = fuzzyFilter(mentionMatch.query, vaultFiles, (f) => f.name);
+    const ranked = fuzzyFilter(mentionMatch.query, vaultFiles, (f) => f.path);
     const top = ranked.slice(0, MENTION_PICKER_LIMIT);
-    return top.map((r) => ({
-      path: r.item.path,
-      name: r.item.name,
-      kind: r.item.kind,
-      matches: r.matches,
-    }));
+    return top.map((r) => {
+      const slash = r.item.path.lastIndexOf('/');
+      const folderMatches: number[] = [];
+      const nameMatches: number[] = [];
+      if (slash < 0) {
+        for (const i of r.matches) nameMatches.push(i);
+      } else {
+        for (const i of r.matches) {
+          if (i < slash) folderMatches.push(i);
+          else if (i > slash) nameMatches.push(i - slash - 1);
+        }
+      }
+      return {
+        path: r.item.path,
+        name: r.item.name,
+        kind: r.item.kind,
+        nameMatches,
+        folderMatches,
+      };
+    });
   }, [mentionMatch, vaultFiles]);
 
   const mentionOpen = mentionItems.length > 0;

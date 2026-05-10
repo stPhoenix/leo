@@ -4,7 +4,8 @@ export interface MentionPickerItem {
   readonly path: string;
   readonly name: string;
   readonly kind: 'image' | 'document';
-  readonly matches: readonly number[];
+  readonly nameMatches: readonly number[];
+  readonly folderMatches: readonly number[];
 }
 
 export interface MentionPickerProps {
@@ -75,11 +76,11 @@ function MentionRow(props: {
     >
       <span ref={iconRef} className="leo-mention-icon" data-slot="mention-icon" />
       <span className="leo-mention-name" data-slot="mention-name">
-        {highlightMatches(item.name, item.matches)}
+        {highlightMatches(item.name, item.nameMatches)}
       </span>
       {folder.length > 0 ? (
         <span className="leo-mention-folder" data-slot="mention-folder">
-          {folder}
+          {highlightMatches(folder, item.folderMatches)}
         </span>
       ) : null}
     </li>

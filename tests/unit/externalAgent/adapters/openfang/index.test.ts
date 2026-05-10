@@ -361,6 +361,110 @@ describe('OpenfangAdapter.start', () => {
   }, 15_000);
 });
 
+describe('lifecycle log events', () => {
+  function input(extra: Record<string, unknown> = {}) {
+    const ac = new AbortController();
+    return {
+      refinedAsk: 'do',
+      systemPrompt: '',
+      signal: ac.signal,
+      timeoutMs: 60_000,
+      config: baseConfig(extra),
+      __ac: ac,
+    };
+  }
+
+  it('emits failure.decoded log when task fails with prefixed text', async () => {
+    server.use(
+      http.post(`${BASE}/a2a/tasks/send`, () => HttpResponse.json({ id: 't', status: 'working' })),
+      http.get(`${BASE}/a2a/tasks/t`, () =>
+        HttpResponse.json({
+          id: 't',
+          status: 'failed',
+          messages: [
+            { role: 'agent', parts: [{ type: 'text', text: 'INFRA_ERROR: model down' }] },
+          ],
+          artifacts: [],
+        }),
+      ),
+    );
+    const adapter = new OpenfangAdapter();
+    const events = await collect(adapter.start(input()));
+    const decodedLog = events.find(
+      (e) => e.type === 'log' && e.msg.startsWith('openfang.failure.decoded'),
+    );
+    expect(decodedLog).toBeDefined();
+  });
+
+  it('emits artifacts.begin and artifacts.complete on successful download', async () => {
+    server.use(
+      http.post(`${BASE}/a2a/tasks/send`, () => HttpResponse.json({ id: 't', status: 'working' })),
+      http.get(`${BASE}/a2a/tasks/t`, () =>
+        HttpResponse.json({
+          id: 't',
+          status: 'completed',
+          messages: [{ role: 'agent', parts: [{ type: 'text', text: 'ok' }] }],
+          artifacts: [
+            {
+              id: 'a',
+              parts: [{ type: 'fileRef', name: 'r.md', url: '/api/r' }],
+            },
+          ],
+        }),
+      ),
+      http.get(`${BASE}/api/r`, () =>
+        HttpResponse.arrayBuffer(new Uint8Array([1]).buffer, {
+          headers: { 'content-type': 'text/markdown' },
+        }),
+      ),
+    );
+    const adapter = new OpenfangAdapter();
+    const events = await collect(adapter.start(input()));
+    const begin = events.find(
+      (e) => e.type === 'log' && e.msg.startsWith('openfang.artifacts.begin'),
+    );
+    const complete = events.find(
+      (e) => e.type === 'log' && e.msg.startsWith('openfang.artifacts.complete'),
+    );
+    expect(begin).toBeDefined();
+    expect(complete).toBeDefined();
+  });
+
+  it('emits poll.start and poll.terminal on completed run', async () => {
+    server.use(
+      http.post(`${BASE}/a2a/tasks/send`, () => HttpResponse.json({ id: 't', status: 'working' })),
+      http.get(`${BASE}/a2a/tasks/t`, () =>
+        HttpResponse.json({
+          id: 't',
+          status: 'completed',
+          messages: [{ role: 'agent', parts: [{ type: 'text', text: 'ok' }] }],
+          artifacts: [],
+        }),
+      ),
+    );
+    const adapter = new OpenfangAdapter();
+    const events = await collect(adapter.start(input()));
+    const start = events.find((e) => e.type === 'log' && e.msg.startsWith('openfang.poll.start'));
+    const terminal = events.find(
+      (e) => e.type === 'log' && e.msg.startsWith('openfang.poll.terminal'),
+    );
+    expect(start).toBeDefined();
+    expect(terminal).toBeDefined();
+  });
+
+  it('emits openfang.error log on auth failure path', async () => {
+    server.use(
+      http.post(`${BASE}/a2a/tasks/send`, () =>
+        HttpResponse.json({ error: 'no' }, { status: 401 }),
+      ),
+    );
+    const adapter = new OpenfangAdapter();
+    const events = await collect(adapter.start(input()));
+    const errLog = events.find((e) => e.type === 'log' && e.msg.startsWith('openfang.error'));
+    expect(errLog).toBeDefined();
+  });
+});
+
 describe('vault isolation (NFR-OF-02)', () => {
   it.each(['index.ts', 'failureDecoder.ts', 'httpErrorMapping.ts'])(
     '%s imports nothing from @/platform, @/storage, @/chat, @/ui, @/editor',

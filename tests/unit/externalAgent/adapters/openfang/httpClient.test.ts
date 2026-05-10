@@ -274,6 +274,52 @@ describe('redactKey', () => {
   });
 });
 
+describe('http log emission', () => {
+  it('logs openfang.http.response after successful submit', async () => {
+    server.use(
+      http.post(`${BASE}/a2a/tasks/send`, () => HttpResponse.json({ id: 't', status: 'working' })),
+    );
+    const log = makeLog();
+    const http2 = createOpenfangHttp(makeConfig(), log);
+    await http2.submitTask({ text: 'x' }, new AbortController().signal);
+    const resp = log.calls.find((c) => c[1] === 'openfang.http.response');
+    expect(resp).toBeDefined();
+    expect(resp?.[0]).toBe('debug');
+    expect(resp?.[2]).toMatchObject({ method: 'POST', endpoint: '/a2a/tasks/send', status: 200 });
+    expect(typeof (resp?.[2] as Record<string, unknown>).durationMs).toBe('number');
+  });
+
+  it('logs openfang.http.error before throwing on non-2xx', async () => {
+    server.use(
+      http.get(`${BASE}/a2a/tasks/x`, () => HttpResponse.json({ error: 'no' }, { status: 500 })),
+    );
+    const log = makeLog();
+    const http2 = createOpenfangHttp(makeConfig(), log);
+    await expect(http2.pollTask('x', new AbortController().signal)).rejects.toBeInstanceOf(
+      OpenfangHttpError,
+    );
+    const errLog = log.calls.find((c) => c[1] === 'openfang.http.error');
+    expect(errLog).toBeDefined();
+    expect(errLog?.[0]).toBe('warn');
+    expect(errLog?.[2]).toMatchObject({
+      method: 'GET',
+      endpoint: '/a2a/tasks/x',
+      status: 500,
+    });
+  });
+
+  it('logs openfang.http.error for downloadArtifact non-2xx', async () => {
+    server.use(http.get(`${BASE}/raw`, () => HttpResponse.json({}, { status: 404 })));
+    const log = makeLog();
+    const http2 = createOpenfangHttp(makeConfig(), log);
+    await expect(http2.downloadArtifact('/raw', new AbortController().signal)).rejects.toBeInstanceOf(
+      OpenfangHttpError,
+    );
+    const errLog = log.calls.find((c) => c[1] === 'openfang.http.error');
+    expect(errLog?.[2]).toMatchObject({ method: 'GET', endpoint: '/raw', status: 404 });
+  });
+});
+
 describe('vault isolation (NFR-OF-02)', () => {
   it('module source imports nothing from @/platform, @/storage, @/chat, @/ui, @/editor', async () => {
     const fs = await import('node:fs');

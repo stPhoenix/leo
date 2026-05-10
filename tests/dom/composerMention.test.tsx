@@ -71,4 +71,40 @@ describe('ComposerInput @ mention picker', () => {
     expect(onMentionSelect.mock.calls[0]![0].path).toBe('assets/diagram.png');
     expect(onSubmit).not.toHaveBeenCalled();
   });
+
+  it('matches files by folder name', () => {
+    const { ta } = setup();
+    typeIntoTextarea(ta, '@Projects');
+    const option = document.querySelector(
+      '[data-path="Projects/leo/CLAUDE.md"]',
+    ) as HTMLElement | null;
+    expect(option).not.toBeNull();
+  });
+
+  it('matches files by subfolder name', () => {
+    const { ta } = setup();
+    typeIntoTextarea(ta, '@leo');
+    const option = document.querySelector(
+      '[data-path="Projects/leo/CLAUDE.md"]',
+    ) as HTMLElement | null;
+    expect(option).not.toBeNull();
+  });
+
+  it('matches files by folder + partial name', () => {
+    const { ta } = setup();
+    typeIntoTextarea(ta, '@leo/cla');
+    const option = document.querySelector(
+      '[data-path="Projects/leo/CLAUDE.md"]',
+    ) as HTMLElement | null;
+    expect(option).not.toBeNull();
+  });
+
+  it('matches files by folder for image kind', () => {
+    const { ta } = setup();
+    typeIntoTextarea(ta, '@assets');
+    const option = document.querySelector(
+      '[data-path="assets/diagram.png"]',
+    ) as HTMLElement | null;
+    expect(option).not.toBeNull();
+  });
 });

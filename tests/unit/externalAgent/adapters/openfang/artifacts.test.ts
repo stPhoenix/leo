@@ -282,6 +282,56 @@ describe('downloadArtifacts', () => {
   });
 });
 
+describe('artifact log emission', () => {
+  it('emits begin, fetch_start per item, complete with counters', async () => {
+    const log = makeLog();
+    const deps: ArtifactDeps = {
+      http: {
+        downloadArtifact: async () => ({
+          bytes: new Uint8Array([1]),
+          mime: 'text/plain',
+          size: 1,
+        }),
+      },
+      log,
+    };
+    const task = makeTask([
+      { id: 'a1', parts: [{ type: 'fileRef', name: 'a.md', url: '/u/1' }] },
+      { id: 'a2', parts: [{ type: 'fileRef', name: 'b.md', url: '/u/2' }] },
+    ]);
+    await collect(downloadArtifacts(deps, task, new AbortController().signal));
+    const calls = (log as ArtifactDeps['log'] & { calls: Array<[string, string, unknown]> }).calls;
+    const msgs = calls.map((c) => c[1]);
+    expect(msgs).toContain('openfang.artifacts.begin');
+    expect(msgs.filter((m) => m === 'openfang.artifact.fetch_start')).toHaveLength(2);
+    const complete = calls.find((c) => c[1] === 'openfang.artifacts.complete');
+    expect(complete?.[2]).toMatchObject({ downloaded: 2, evicted: 0, total: 2 });
+  });
+
+  it('complete reflects evicted count when 404', async () => {
+    const log = makeLog();
+    let n = 0;
+    const deps: ArtifactDeps = {
+      http: {
+        downloadArtifact: async () => {
+          n += 1;
+          if (n === 1) throw new OpenfangHttpError(404, '/u/1', '{}');
+          return { bytes: new Uint8Array([1]), mime: 'text/plain', size: 1 };
+        },
+      },
+      log,
+    };
+    const task = makeTask([
+      { id: 'a1', parts: [{ type: 'fileRef', name: 'a.md', url: '/u/1' }] },
+      { id: 'a2', parts: [{ type: 'fileRef', name: 'b.md', url: '/u/2' }] },
+    ]);
+    await collect(downloadArtifacts(deps, task, new AbortController().signal));
+    const calls = (log as ArtifactDeps['log'] & { calls: Array<[string, string, unknown]> }).calls;
+    const complete = calls.find((c) => c[1] === 'openfang.artifacts.complete');
+    expect(complete?.[2]).toMatchObject({ downloaded: 1, evicted: 1, total: 2 });
+  });
+});
+
 describe('vault isolation', () => {
   it('artifacts.ts imports only ./httpClient and ../base', async () => {
     const fs = await import('node:fs');

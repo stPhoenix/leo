@@ -100,10 +100,25 @@ export async function* downloadArtifacts(
 
   const selected = selectFileRefs(task);
   const deduped = dedupeRelPaths(selected);
+  deps.log('info', 'openfang.artifacts.begin', {
+    total: selected.length,
+    deduped: deduped.length,
+  });
+
+  let downloaded = 0;
+  let evicted = 0;
+
   for (const item of deduped) {
-    if (signal.aborted) return;
+    if (signal.aborted) {
+      deps.log('info', 'openfang.artifacts.complete', {
+        downloaded,
+        evicted,
+        total: deduped.length,
+      });
+      return;
+    }
     const { url, mimeType, size, artifactId, name } = item.original;
-    deps.log('info', 'openfang.artifact.download', {
+    deps.log('debug', 'openfang.artifact.fetch_start', {
       relPath: item.relPath,
       mimeType,
       size,
@@ -112,13 +127,27 @@ export async function* downloadArtifacts(
     try {
       dl = await deps.http.downloadArtifact(url, signal);
     } catch (err) {
-      if (signal.aborted || isAbortError(err)) return;
+      if (signal.aborted || isAbortError(err)) {
+        deps.log('info', 'openfang.artifacts.complete', {
+          downloaded,
+          evicted,
+          total: deduped.length,
+        });
+        return;
+      }
       if (err instanceof OpenfangHttpError && err.status === 404) {
         deps.log('warn', 'openfang.artifact.evicted', { artifactId, name });
+        evicted += 1;
         continue;
       }
       throw err;
     }
+    deps.log('info', 'openfang.artifact.download', {
+      relPath: item.relPath,
+      mimeType: dl.mime ?? mimeType,
+      size: dl.size,
+    });
+    downloaded += 1;
     yield {
       type: 'file',
       relPath: item.relPath,
@@ -126,4 +155,9 @@ export async function* downloadArtifacts(
       mime: dl.mime,
     };
   }
+  deps.log('info', 'openfang.artifacts.complete', {
+    downloaded,
+    evicted,
+    total: deduped.length,
+  });
 }

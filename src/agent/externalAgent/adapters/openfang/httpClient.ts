@@ -169,6 +169,7 @@ export function createOpenfangHttp(
   ): Promise<Response> {
     const composed = withTimeout(signal, timeoutMs);
     const headers = authHeaders();
+    const startedAt = Date.now();
     log('debug', 'openfang.http.request', {
       method,
       endpoint,
@@ -184,6 +185,12 @@ export function createOpenfangHttp(
         init.body = JSON.stringify(body);
       }
       const res = await fetchImpl(`${baseUrl}${endpoint}`, init);
+      log('debug', 'openfang.http.response', {
+        method,
+        endpoint,
+        status: res.status,
+        durationMs: Date.now() - startedAt,
+      });
       return res;
     } catch (err) {
       if (composed.didTimeout()) {
@@ -206,6 +213,12 @@ export function createOpenfangHttp(
     const res = await authedFetch(method, endpoint, signal, body);
     if (!res.ok) {
       const snippet = await readBodySnippet(res);
+      log('warn', 'openfang.http.error', {
+        method,
+        endpoint,
+        status: res.status,
+        bodySnippet: snippet,
+      });
       throw new OpenfangHttpError(res.status, endpoint, snippet);
     }
     let parsed: unknown;
@@ -259,6 +272,12 @@ export function createOpenfangHttp(
       const res = await authedFetch('GET', relUrl, signal);
       if (!res.ok) {
         const snippet = await readBodySnippet(res);
+        log('warn', 'openfang.http.error', {
+          method: 'GET',
+          endpoint: relUrl,
+          status: res.status,
+          bodySnippet: snippet,
+        });
         throw new OpenfangHttpError(res.status, relUrl, snippet);
       }
       const buf = await res.arrayBuffer();

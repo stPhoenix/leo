@@ -358,7 +358,7 @@ export function makeMentionItem(
   kind: 'image' | 'document' = 'document',
 ): MentionPickerItem {
   const name = path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
-  return { path, name, kind, matches };
+  return { path, name, kind, nameMatches: matches, folderMatches: [] };
 }
 
 export const mockEditDiff = {

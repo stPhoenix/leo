@@ -22,9 +22,11 @@ function task(status: A2aStatus, id = 't1'): A2aTask {
 function makeDeps(scriptedResponses: Array<() => Promise<A2aTask>>): PollDeps & {
   sleeps: number[];
   cursor: () => number;
+  logs: Array<[string, string, Record<string, unknown> | undefined]>;
 } {
   let i = 0;
   const sleeps: number[] = [];
+  const logs: Array<[string, string, Record<string, unknown> | undefined]> = [];
   let clock = 0;
   return {
     http: {
@@ -39,8 +41,12 @@ function makeDeps(scriptedResponses: Array<() => Promise<A2aTask>>): PollDeps & 
       if (signal.aborted) return;
     },
     now: () => clock,
+    log: (level, msg, fields) => {
+      logs.push([level, msg, fields as Record<string, unknown> | undefined]);
+    },
     sleeps,
     cursor: () => i,
+    logs,
   };
 }
 
@@ -126,6 +132,7 @@ describe('pollUntilTerminal', () => {
         if (signal.aborted) return;
       },
       now: () => 0,
+      log: () => undefined,
     };
     const result = await pollUntilTerminal(deps, {
       taskId: 't1',
@@ -150,6 +157,7 @@ describe('pollUntilTerminal', () => {
       },
       sleep: async () => undefined,
       now: () => 0,
+      log: () => undefined,
     };
     const result = await pollUntilTerminal(deps, {
       taskId: 't1',
@@ -169,6 +177,7 @@ describe('pollUntilTerminal', () => {
         clock += ms;
       },
       now: () => clock,
+      log: () => undefined,
     };
     const result = await pollUntilTerminal(deps, {
       taskId: 't1',
@@ -189,6 +198,7 @@ describe('pollUntilTerminal', () => {
       },
       sleep: async () => undefined,
       now: () => 0,
+      log: () => undefined,
     };
     const result = await pollUntilTerminal(deps, {
       taskId: 't1',
@@ -216,6 +226,7 @@ describe('pollUntilTerminal', () => {
       },
       sleep: async () => undefined,
       now: () => 0,
+      log: () => undefined,
     };
     const result = await pollUntilTerminal(deps, {
       taskId: 't1',
@@ -238,6 +249,7 @@ describe('pollUntilTerminal', () => {
       },
       sleep: async () => undefined,
       now: () => 0,
+      log: () => undefined,
     };
     await expect(
       pollUntilTerminal(deps, {
@@ -258,6 +270,7 @@ describe('pollUntilTerminal', () => {
         clock += ms;
       },
       now: () => clock,
+      log: () => undefined,
     };
     const result = await pollUntilTerminal(deps, {
       taskId: 't1',
@@ -323,6 +336,126 @@ describe('abortableSleep', () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(resolved).toBe(true);
+  });
+});
+
+describe('log emission', () => {
+  it('emits start, tick, terminal on happy path', async () => {
+    const deps = makeDeps([async () => task('working'), async () => task('completed')]);
+    await pollUntilTerminal(deps, {
+      taskId: 't1',
+      signal: new AbortController().signal,
+      initialIntervalMs: 2000,
+      maxIntervalMs: 15000,
+      timeoutMs: 60_000,
+    });
+    const msgs = deps.logs.map((c) => c[1]);
+    expect(msgs[0]).toBe('openfang.poll.start');
+    expect(msgs).toContain('openfang.poll.tick');
+    expect(msgs).toContain('openfang.poll.status_change');
+    expect(msgs[msgs.length - 1]).toBe('openfang.poll.terminal');
+  });
+
+  it('emits backoff when interval grows', async () => {
+    const deps = makeDeps([
+      async () => task('working'),
+      async () => task('working'),
+      async () => task('completed'),
+    ]);
+    await pollUntilTerminal(deps, {
+      taskId: 't1',
+      signal: new AbortController().signal,
+      initialIntervalMs: 2000,
+      maxIntervalMs: 15000,
+      timeoutMs: 600_000,
+    });
+    const backoffs = deps.logs.filter((c) => c[1] === 'openfang.poll.backoff');
+    expect(backoffs.length).toBeGreaterThanOrEqual(1);
+    expect(backoffs[0]?.[2]).toMatchObject({ from: 2000, to: 3000 });
+  });
+
+  it('emits transient on 5xx retry then exhausted', async () => {
+    const deps: PollDeps & { logs: Array<[string, string, Record<string, unknown> | undefined]> } =
+      (() => {
+        const logs: Array<[string, string, Record<string, unknown> | undefined]> = [];
+        return {
+          http: {
+            pollTask: async () => {
+              throw new OpenfangHttpError(503, '/a2a/tasks/t1', '{}');
+            },
+          },
+          sleep: async () => undefined,
+          now: () => 0,
+          log: (level, msg, fields) => {
+            logs.push([level, msg, fields as Record<string, unknown> | undefined]);
+          },
+          logs,
+        };
+      })();
+    await pollUntilTerminal(deps, {
+      taskId: 't1',
+      signal: new AbortController().signal,
+      initialIntervalMs: 100,
+      maxIntervalMs: 200,
+      timeoutMs: 60_000,
+      transientRetryBudget: 3,
+      transientRetryBaseMs: 10,
+    });
+    const transients = deps.logs.filter((c) => c[1] === 'openfang.poll.transient');
+    expect(transients.length).toBeGreaterThanOrEqual(2);
+    const exhausted = deps.logs.find((c) => c[1] === 'openfang.poll.exhausted');
+    expect(exhausted).toBeDefined();
+  });
+
+  it('emits timeout on deadline pass', async () => {
+    let clock = 0;
+    const logs: Array<[string, string, Record<string, unknown> | undefined]> = [];
+    const deps: PollDeps = {
+      http: { pollTask: async () => task('working') },
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      now: () => clock,
+      log: (level, msg, fields) => {
+        logs.push([level, msg, fields as Record<string, unknown> | undefined]);
+      },
+    };
+    await pollUntilTerminal(deps, {
+      taskId: 't1',
+      signal: new AbortController().signal,
+      initialIntervalMs: 1_000,
+      maxIntervalMs: 1_000,
+      timeoutMs: 5_000,
+    });
+    const timeout = logs.find((c) => c[1] === 'openfang.poll.timeout');
+    expect(timeout).toBeDefined();
+    expect(timeout?.[0]).toBe('warn');
+  });
+
+  it('emits aborted on signal trip', async () => {
+    const ac = new AbortController();
+    const logs: Array<[string, string, Record<string, unknown> | undefined]> = [];
+    const deps: PollDeps = {
+      http: { pollTask: async () => task('working') },
+      sleep: async (_ms, signal) => {
+        ac.abort();
+        if (signal.aborted) return;
+      },
+      now: () => 0,
+      log: (level, msg, fields) => {
+        logs.push([level, msg, fields as Record<string, unknown> | undefined]);
+      },
+    };
+    await pollUntilTerminal(deps, {
+      taskId: 't1',
+      signal: ac.signal,
+      initialIntervalMs: 100,
+      maxIntervalMs: 200,
+      timeoutMs: 60_000,
+    });
+    const aborted = logs.find((c) => c[1] === 'openfang.poll.aborted');
+    expect(aborted).toBeDefined();
+    expect(aborted?.[0]).toBe('info');
   });
 });
 
