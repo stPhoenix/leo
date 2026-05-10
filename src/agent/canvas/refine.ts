@@ -1,53 +1,16 @@
 import type { Logger } from '@/platform/Logger';
 import type {
   ChatMessage,
-  OpenAITool,
   ProviderChatRequest,
   ProviderTraceContext,
   StreamEvent,
 } from '@/providers/types';
 import { CANVAS_BUDGETS } from './budgets';
 import { CANVAS_LOG } from './loggingNamespaces';
-import { getCanvasRefineSystemPrompt } from './refinePrompt';
+import { getCanvasRefineSystemPrompt } from '@/prompts/agent/canvas/refinePrompt';
+import { CANVAS_REFINE_TOOLS } from '@/prompts/agent/canvas/refineToolDescriptions';
 import { RunPlan } from './schemas';
 import type { RunPlan as RunPlanT } from './schemas';
-
-const REFINE_TOOLS: readonly OpenAITool[] = [
-  {
-    type: 'function',
-    function: {
-      name: 'ask_clarifying_question',
-      description:
-        'Ask the user a single short clarifying question. The driver gives up after a small bounded number of questions.',
-      parameters: {
-        type: 'object',
-        properties: {
-          question: {
-            type: 'string',
-            description: 'The question text. <= 120 chars.',
-          },
-        },
-        required: ['question'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'emit_run_plan',
-      description:
-        'Emit the final schema-conformant RunPlan describing entityTypes, relationTypes, sourceHints, layoutHint, optional scope, and outputPath.',
-      parameters: {
-        type: 'object',
-        // The full structural schema is enforced by Zod after the call;
-        // we keep the JSONSchema permissive here so weaker LLMs don't drop
-        // optional fields silently.
-        properties: { plan: { type: 'object' } },
-        required: ['plan'],
-      },
-    },
-  },
-];
 
 export interface RefineMessage {
   readonly role: 'user' | 'assistant' | 'tool';
@@ -114,7 +77,7 @@ export function createCanvasRefine(opts: CanvasRefineOptions): CanvasRefine {
         messages,
         ...(opts.temperature !== undefined ? { temperature: opts.temperature() } : {}),
         maxTokens: opts.maxTokens !== undefined ? opts.maxTokens() : DEFAULT_MAX_TOKENS,
-        tools: REFINE_TOOLS,
+        tools: CANVAS_REFINE_TOOLS,
         ...(input.traceConfig !== undefined ? { trace: input.traceConfig } : {}),
       };
 

@@ -33,6 +33,9 @@ leo/
 │   ├── indexer/                         # Vault + canvas chunking, dirty queue, reindex
 │   ├── mcp/                             # MCP client, config, reconnect, resource picker, prompt-skill adapter
 │   ├── platform/                        # Logger, sinks, error channel, langfuse tracer, ALS init
+│   ├── prompts/                         # Centralized LLM prompts + tool descriptions, mirrors agent/ + tools/ tree
+│   │   ├── agent/                       # Per-slice agent prompts (leoPreamble, compact, canvas, externalAgent, wiki)
+│   │   └── tools/                       # Tool description strings (builtin, planMode, todoWrite, toolSearch)
 │   ├── providers/                       # LLM + embedding providers, langchain bridge, manager, registry, trace
 │   ├── rag/                             # RAG engine, graph traversal, scoring, exclude/tag matchers, snapshot
 │   ├── settings/                        # Settings tab, wizard, commands, exclude store, external-agents UI

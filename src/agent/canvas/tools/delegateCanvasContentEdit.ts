@@ -9,6 +9,7 @@ import { readSidecar } from '../sidecar';
 import { tryParseCurrentCanvas, buildTombstoneSummary } from '../diff';
 import type { CanvasToolResult } from '../runPhase';
 import { runCanvasConfirmFlow } from './canvasToolFlow';
+import { DELEGATE_CANVAS_CONTENT_EDIT_DESCRIPTION } from '@/prompts/agent/canvas/tools/delegateCanvasContentEditDescription';
 
 export const DELEGATE_CANVAS_CONTENT_EDIT_TOOL_ID = 'delegate_canvas_content_edit';
 
@@ -52,20 +53,12 @@ export interface DelegateCanvasContentEditDeps {
   readonly confirmation: ConfirmationController;
 }
 
-const DESCRIPTION = [
-  'Edit an existing Obsidian `.canvas` file: add, remove, relabel entities/relations, or change types.',
-  '',
-  'Use this tool when the user wants to modify a canvas that already exists. The diff pipeline preserves manual layout (locked positions are kept), records tombstones for deleted nodes, and threads tombstones into refine so re-asking for a deleted item triggers a confirmation prompt.',
-  '',
-  'Every call requires explicit user approval. The tool resolves with the canvas path, insights, and partial state on cancel/error.',
-].join('\n');
-
 export function createDelegateCanvasContentEditTool(
   deps: DelegateCanvasContentEditDeps,
 ): ToolSpec<DelegateCanvasContentEditArgs, CanvasToolResult> {
   return {
     id: DELEGATE_CANVAS_CONTENT_EDIT_TOOL_ID,
-    description: DESCRIPTION,
+    description: DELEGATE_CANVAS_CONTENT_EDIT_DESCRIPTION,
     schema: Schema,
     parameters: jsonSchemaFromZod(Schema),
     requiresConfirmation: true,

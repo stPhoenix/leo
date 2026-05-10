@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createSearchWikiTool } from '@/tools/builtin/searchWiki';
 import { WIKI_INDEX_PATH } from '@/agent/wiki/paths';
-import { LEO_PREAMBLE } from '@/agent/types';
+import { LEO_PREAMBLE } from '@/prompts/agent/leoPreamble';
 import type { ToolCtx } from '@/tools/types';
 import type { VaultAdapter, VaultListing } from '@/storage/vaultAdapter';
 

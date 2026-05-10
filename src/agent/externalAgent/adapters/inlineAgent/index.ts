@@ -8,7 +8,7 @@ import {
   type ExternalEvent,
 } from '../base';
 import { inlineAgentConfigSchema, type InlineAgentConfig } from './configSchema';
-import { getInlineAgentSystemPrompt } from './systemPrompt';
+import { getInlineAgentSystemPrompt } from '@/prompts/agent/externalAgent/adapters/inlineAgent/systemPrompt';
 import { Sandbox } from './sandbox';
 
 export { inlineAgentConfigSchema, getInlineAgentSystemPrompt, Sandbox };

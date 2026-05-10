@@ -2,7 +2,10 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import type { ExternalEvent } from '../base';
 import type { InlineAgentLogger, InvokeTraceConfig, ProviderFactory } from './index';
 import { resolveSystemPrompt } from './index';
-import { getInlineAgentResearchPrompt, getInlineAgentSynthesizePrompt } from './systemPrompt';
+import {
+  getInlineAgentResearchPrompt,
+  getInlineAgentSynthesizePrompt,
+} from '@/prompts/agent/externalAgent/adapters/inlineAgent/systemPrompt';
 import { inlineAgentConfigSchema, type InlineAgentConfig } from './configSchema';
 import { Sandbox } from './sandbox';
 import { createInitialRunState, setPlan, type InlineAgentRunState } from './runState';

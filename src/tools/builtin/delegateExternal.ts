@@ -6,6 +6,7 @@ import type { DelegateExternalToolResult } from '@/agent/externalAgent/runPhase'
 import type { RunHandle } from '@/agent/externalAgent/subgraph';
 import type { ToolResult, ToolSpec } from '../types';
 import { jsonSchemaFromZod } from '../zodAdapter';
+import { DELEGATE_EXTERNAL_DESCRIPTION } from '@/prompts/tools/builtin/delegateExternalDescription';
 
 export const DELEGATE_EXTERNAL_TOOL_ID = 'delegate_external';
 
@@ -56,29 +57,6 @@ export interface DelegateExternalDeps {
    */
   readonly onHandle?: (handle: RunHandle) => void;
 }
-
-const DELEGATE_EXTERNAL_DESCRIPTION = [
-  'Escalate the user request to an external agent (e.g. Claude Code CLI, OpenAI-compatible HTTP, inline LLM).',
-  '',
-  'Use this tool ONLY when:',
-  '- no other registered tool fits the user request, AND',
-  '- the task plausibly benefits from an external system: web research, deep research,',
-  '  long-running computation, or invoking a third-party CLI/HTTP agent.',
-  '',
-  'The external agent is OPAQUE to you: it does not share your tools, the vault, the',
-  'conversation, or the local filesystem. Its capabilities (shell, network, git, file IO)',
-  'are unknown. Phrase the ask as an OUTCOME — what result you want and in what shape —',
-  'not as a procedure or a sequence of commands.',
-  '',
-  'Every call requires explicit user approval — there is no per-thread allowlist for this tool.',
-  'If the user has not yet approved escalation, prefer asking them in chat first to avoid a',
-  'wasted confirmation prompt.',
-  '',
-  'On approval, a refine sub-agent will turn the ask into a self-contained prompt (possibly',
-  'asking the user clarifying questions in a widget) and stream the result through an',
-  'inline widget. The tool resolves with a final structured payload (text summary plus any',
-  'files the adapter emitted, written under the external-agent results folder).',
-].join('\n');
 
 export function createDelegateExternalTool(
   deps: DelegateExternalDeps,

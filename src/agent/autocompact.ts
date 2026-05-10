@@ -12,7 +12,7 @@ import {
   autoCompactThresholdFor,
   resolveContextWindow,
 } from './compactConstants';
-import { COMPACT_SYSTEM_PROMPT, getCompactPrompt } from './compactPrompts';
+import { COMPACT_SYSTEM_PROMPT, getCompactPrompt } from '@/prompts/agent/compactPrompts';
 import {
   ERROR_MESSAGE_PROMPT_TOO_LONG,
   MAX_PTL_RETRIES,

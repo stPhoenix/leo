@@ -10,6 +10,7 @@ import { readSidecar } from '../sidecar';
 import { tryParseCurrentCanvas } from '../diff';
 import type { CanvasToolResult } from '../runPhase';
 import { runCanvasConfirmFlow } from './canvasToolFlow';
+import { DELEGATE_CANVAS_LAYOUT_EDIT_DESCRIPTION } from '@/prompts/agent/canvas/tools/delegateCanvasLayoutEditDescription';
 
 export const DELEGATE_CANVAS_LAYOUT_EDIT_TOOL_ID = 'delegate_canvas_layout_edit';
 
@@ -53,20 +54,12 @@ export interface DelegateCanvasLayoutEditDeps {
   readonly confirmation: ConfirmationController;
 }
 
-const DESCRIPTION = [
-  'Relayout an existing Obsidian `.canvas` file with a new preset (or auto-pick), preserving entities/edges and any nodes the user has manually moved.',
-  '',
-  'Use this tool when the user wants to change the visual arrangement only — no schema changes, no new entities. The pipeline skips planning/fetching/extraction/reduction/diffing and runs only LAYING_OUT → PREVIEWING → WRITING.',
-  '',
-  'Every call requires explicit user approval. Resolves with the canvas path on DONE; busy/cancel/error variants per the canvas tool result shape.',
-].join('\n');
-
 export function createDelegateCanvasLayoutEditTool(
   deps: DelegateCanvasLayoutEditDeps,
 ): ToolSpec<DelegateCanvasLayoutEditArgs, CanvasToolResult> {
   return {
     id: DELEGATE_CANVAS_LAYOUT_EDIT_TOOL_ID,
-    description: DESCRIPTION,
+    description: DELEGATE_CANVAS_LAYOUT_EDIT_DESCRIPTION,
     schema: Schema,
     parameters: jsonSchemaFromZod(Schema),
     requiresConfirmation: true,

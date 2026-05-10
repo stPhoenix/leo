@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Logger } from '@/platform/Logger';
 import type { ChatMessage, OpenAITool, ProviderChatRequest, StreamEvent } from '@/providers/types';
 import { EXTERNAL_AGENT_LOG } from './loggingNamespaces';
-import { getPiiDetectSystemPrompt } from './piiDetectPrompt';
+import { getPiiDetectSystemPrompt } from '@/prompts/agent/externalAgent/piiDetectPrompt';
 
 export type PiiKind =
   | 'email'

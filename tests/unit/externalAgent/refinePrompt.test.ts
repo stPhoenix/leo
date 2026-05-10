@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getRefineSystemPrompt } from '@/agent/externalAgent/refinePrompt';
+import { getRefineSystemPrompt } from '@/prompts/agent/externalAgent/refinePrompt';
 
 describe('getRefineSystemPrompt', () => {
   it('is pure (same output across calls)', () => {

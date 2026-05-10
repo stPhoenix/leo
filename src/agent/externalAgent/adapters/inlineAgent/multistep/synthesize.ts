@@ -1,12 +1,11 @@
 import type { Sandbox } from '../sandbox';
 import type { InlineAgentLogger, ProviderFactory } from '../index';
 import type { InlineAgentConfig } from '../configSchema';
+import { addTokens, incrementIterations, type InlineAgentRunState } from '../runState';
 import {
-  addTokens,
-  incrementIterations,
-  type InlineAgentRunState,
-  type NoteRecord,
-} from '../runState';
+  INLINE_AGENT_SYNTHESIZER_SYSTEM_PROMPT,
+  buildSynthesizePrompt,
+} from '@/prompts/agent/externalAgent/adapters/inlineAgent/multistep/synthesizePrompts';
 import { bridgeStream, type BridgeChunk } from '../eventBridge';
 import { tokenTick, SYNTHESIZE_RESERVE_DEFAULT } from '../budgets';
 import type { ExternalEvent } from '../../base';
@@ -57,42 +56,7 @@ export function buildSynthesizeTools(input: {
   ];
 }
 
-export function buildSynthesizePrompt(input: {
-  readonly refinedAsk: string;
-  readonly plan: readonly string[];
-  readonly notes: readonly NoteRecord[];
-  readonly scratchpad: string;
-}): string {
-  const { refinedAsk, plan, notes, scratchpad } = input;
-  const planLines =
-    plan.length > 0 ? plan.map((step, i) => `${i + 1}. ${step}`).join('\n') : '(no plan recorded)';
-  const noteLines =
-    notes.length > 0
-      ? notes
-          .map(
-            (n) =>
-              `(${n.id}) [${n.title}] — ${n.summary}${
-                n.sourceUrl !== undefined ? ` (source: ${n.sourceUrl})` : ''
-              } (relevance: ${n.relevance.toFixed(2)})`,
-          )
-          .join('\n')
-      : '(no notes recorded)';
-  return [
-    'Refined ask:',
-    refinedAsk,
-    '',
-    'Plan:',
-    planLines,
-    '',
-    'Notes (only state surviving across steps):',
-    noteLines,
-    '',
-    'Scratchpad:',
-    scratchpad.length > 0 ? scratchpad : '(empty)',
-    '',
-    'Synthesize the final answer for the user. You may call publish_artifact to nominate sandbox files for publication. Terminate by emitting a final assistant message with no tool calls.',
-  ].join('\n');
-}
+export { buildSynthesizePrompt };
 
 export function selectSynthesizeIterations(remainingIterations: number): number {
   return Math.max(SYNTHESIZE_RESERVE_DEFAULT, remainingIterations);
@@ -237,8 +201,7 @@ export async function* runSynthesize(ctx: SynthesizeCtx): AsyncIterable<External
   const messages: readonly RewriteMessage[] = [
     {
       role: 'system',
-      content:
-        'You are the inline-agent synthesizer. Use only the notes; do not call any tool other than publish_artifact.',
+      content: INLINE_AGENT_SYNTHESIZER_SYSTEM_PROMPT,
     },
     { role: 'user', content: prompt },
   ];

@@ -1,4 +1,4 @@
-import type { EntityTypeDef, RelationTypeDef } from './schemas';
+import type { EntityTypeDef, RelationTypeDef } from '@/agent/canvas/schemas';
 
 const HEADER = `You are the canvas extractor sub-agent for Leo's Obsidian plugin.
 

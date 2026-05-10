@@ -21,7 +21,7 @@ import {
   NO_TOOLS_PREAMBLE,
   NO_TOOLS_TRAILER,
   getCompactPrompt,
-} from '@/agent/compactPrompts';
+} from '@/prompts/agent/compactPrompts';
 import {
   COMPACT_BOUNDARY_MARKER,
   SUMMARY_PREFIX,

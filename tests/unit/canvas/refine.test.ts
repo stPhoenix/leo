@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createCanvasRefine, getCanvasRefineSystemPromptViaImport } from './_refineHelpers';
 import { coerceRunPlan } from '@/agent/canvas/refine';
 import type { CanvasRefineProvider } from '@/agent/canvas/refine';
-import { getCanvasRefineSystemPrompt } from '@/agent/canvas/refinePrompt';
+import { getCanvasRefineSystemPrompt } from '@/prompts/agent/canvas/refinePrompt';
 import { RunPlan } from '@/agent/canvas/schemas';
 import type { ProviderChatRequest, StreamEvent } from '@/providers/types';
 

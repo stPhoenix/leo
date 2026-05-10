@@ -1,13 +1,12 @@
 import type { FocusedContext } from '@/editor/types';
 import {
-  LEO_PREAMBLE,
-  PLAN_MODE_RULE,
   type AgentHistoryMessage,
   type AssembledPrompt,
   type AssembledPromptSegments,
   type RagHit,
   type SkillListingSegment,
 } from './types';
+import { LEO_PREAMBLE, PLAN_MODE_RULE } from '@/prompts/agent/leoPreamble';
 import type { ChatMessage } from '@/providers/types';
 
 export interface AssembleInput {

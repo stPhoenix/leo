@@ -6,7 +6,7 @@ import {
 import {
   getInlineAgentResearchPrompt,
   getInlineAgentSynthesizePrompt,
-} from '@/agent/externalAgent/adapters/inlineAgent/systemPrompt';
+} from '@/prompts/agent/externalAgent/adapters/inlineAgent/systemPrompt';
 
 describe('inline-agent system prompt (F02)', () => {
   it('returns a non-empty deterministic prompt', () => {

@@ -50,7 +50,7 @@ import type { TokenMessage } from '@/agent/tokenEstimator';
 import { breakdownMessages } from '@/agent/messageBreakdown';
 import { countToolDescriptorTokens, type ToolDescriptor } from '@/agent/toolTokenCount';
 import { countSkillFrontmatterTokens } from '@/agent/skillTokenCount';
-import { LEO_PREAMBLE, PLAN_MODE_RULE } from '@/agent/types';
+import { LEO_PREAMBLE, PLAN_MODE_RULE } from '@/prompts/agent/leoPreamble';
 import type { ChatMessage } from '@/providers/types';
 import { ToolRegistry } from '@/tools/toolRegistry';
 import { createReadNoteTool } from '@/tools/builtin/readNote';
@@ -180,7 +180,7 @@ import {
 import { ExternalAgentOrchestrator } from '@/agent/externalAgent/orchestrator';
 import { createRefineSubAgent } from '@/agent/externalAgent/refineSubAgent';
 import { createPiiDetectAgent } from '@/agent/externalAgent/piiDetectAgent';
-import { getRefineSystemPrompt } from '@/agent/externalAgent/refinePrompt';
+import { getRefineSystemPrompt } from '@/prompts/agent/externalAgent/refinePrompt';
 import { createDelegateExternalTool } from '@/tools/builtin/delegateExternal';
 import {
   EXTERNAL_AGENT_WIDGET_KIND,

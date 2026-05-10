@@ -20,7 +20,7 @@ import {
 } from '@/agent/externalAgent/runPhase';
 import { ResultWriter } from '@/agent/externalAgent/resultWriter';
 import { createRefineSubAgent } from '@/agent/externalAgent/refineSubAgent';
-import { getRefineSystemPrompt } from '@/agent/externalAgent/refinePrompt';
+import { getRefineSystemPrompt } from '@/prompts/agent/externalAgent/refinePrompt';
 import {
   InlineAgentAdapter,
   type InlineAgentLogger,

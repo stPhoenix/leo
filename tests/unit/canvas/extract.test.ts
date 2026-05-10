@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runExtractors } from '@/agent/canvas/extract';
 import type { CanvasExtractorProvider } from '@/agent/canvas/extract';
-import { getCanvasExtractorSystemPrompt } from '@/agent/canvas/extractPrompt';
+import { getCanvasExtractorSystemPrompt } from '@/prompts/agent/canvas/extractPrompt';
 import type { FetchedCanvasItem } from '@/agent/canvas/fetch';
 import type { ProviderChatRequest, StreamEvent } from '@/providers/types';
 import { createSemaphore } from '@/agent/wiki/ingest/semaphore';

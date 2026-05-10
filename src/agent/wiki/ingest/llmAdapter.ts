@@ -6,6 +6,10 @@ import type { Runnable } from '@langchain/core/runnables';
 import { tool } from '@langchain/core/tools';
 import type { ZodType } from 'zod';
 import type { LlmJsonInvoker } from './subagents';
+import {
+  buildEmitToolDescription,
+  composeStructuredInvocation,
+} from '@/prompts/agent/wiki/ingest/llmAdapterPrompts';
 
 export interface LlmAdapterDeps {
   readonly chatModel: () => BaseChatModel;
@@ -30,7 +34,7 @@ export function createLlmJsonInvoker(deps: LlmAdapterDeps): LlmJsonInvoker {
       const toolName = `emit_${name}`;
       const emitTool = tool(async () => '', {
         name: toolName,
-        description: `Return the structured ${name} result. Call this tool exactly once.`,
+        description: buildEmitToolDescription(name),
         schema: schema as ZodType<Record<string, unknown>>,
       });
 
@@ -53,9 +57,11 @@ export function createLlmJsonInvoker(deps: LlmAdapterDeps): LlmJsonInvoker {
 
       const chain = bound.pipe(extractAndParse).withRetry({ stopAfterAttempt: 4 });
 
-      const directive = `You MUST respond by calling the \`${toolName}\` tool exactly once. Do NOT reply with prose, JSON in text, markdown, code blocks, or any other format — tool call only.`;
-      const directedSystem = `${input.system}\n\n${directive}`;
-      const directedUser = `${input.user}\n\n---\nRESPONSE FORMAT (MANDATORY): ${directive}`;
+      const { system: directedSystem, user: directedUser } = composeStructuredInvocation(
+        input.system,
+        input.user,
+        toolName,
+      );
 
       const invokeOpts: Record<string, unknown> = { signal, ...(deps.getInvokeOptions?.() ?? {}) };
       return chain.invoke(

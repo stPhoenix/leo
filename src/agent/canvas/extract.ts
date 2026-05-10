@@ -10,7 +10,7 @@ import { createSemaphore, type Semaphore } from '@/agent/wiki/ingest/semaphore';
 import { runBatched } from '@/agent/wiki/ingest/runBatched';
 import { CANVAS_BUDGETS } from './budgets';
 import { CANVAS_LOG } from './loggingNamespaces';
-import { getCanvasExtractorSystemPrompt } from './extractPrompt';
+import { getCanvasExtractorSystemPrompt } from '@/prompts/agent/canvas/extractPrompt';
 import { ExtractorOutput, type EntityTypeDef, type RelationTypeDef } from './schemas';
 import type { ExtractorOutput as ExtractorOutputT } from './schemas';
 import type { FetchedCanvasItem } from './fetch';

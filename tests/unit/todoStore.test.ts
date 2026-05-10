@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { makeToolCtx } from './_toolCtx';
 import { TodoStore, validateTodo } from '@/agent/todoStore';
-import { createTodoWriteTool, TODO_WRITE_DESCRIPTION } from '@/tools/todoWriteTool';
+import { createTodoWriteTool } from '@/tools/todoWriteTool';
+import { TODO_WRITE_DESCRIPTION } from '@/prompts/tools/todoWriteDescription';
 
 describe('TodoStore', () => {
   it('write replaces the prior list', () => {

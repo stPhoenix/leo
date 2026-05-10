@@ -11,16 +11,16 @@ import { runInboxBatch, type InboxBatchResult } from '@/agent/wiki/ingest/inboxB
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import type { Logger } from '@/platform/Logger';
 import type { WikiWidgetController } from '@/agent/wiki/widgetController';
+import {
+  DELEGATE_WIKI_INGEST_DESCRIPTION,
+  DELEGATE_WIKI_INGEST_KIND_DESCRIPTION as KIND_DESCRIPTION,
+} from '@/prompts/tools/builtin/delegateWikiIngestDescription';
 
 export const DELEGATE_WIKI_INGEST_TOOL_ID = 'delegate_wiki_ingest';
 
 const NOTE_MAX = 2_000;
 
 const VALID_KINDS = ['url', 'vaultPath', 'attachment', 'conversation', 'inbox'] as const;
-const KIND_DESCRIPTION =
-  'Source kind. Must be exactly one of: "url" (remote http(s) page), ' +
-  '"vaultPath" (file already in the vault), "attachment" (chat attachment id), ' +
-  '"conversation" (current-conversation answer body), "inbox" (drain wiki-inbox.md).';
 
 const UrlInput = z.object({
   kind: z.literal('url').describe(KIND_DESCRIPTION),
@@ -107,20 +107,6 @@ export interface DelegateWikiIngestDeps {
 
 export const VAULT_FOLDER_FANOUT_MAX = 50;
 
-const DESCRIPTION = [
-  'File a knowledge source into the local wiki at `wiki/`. Use for: URL, vault path (file or folder), chat attachment, or a current-conversation answer/analysis.',
-  '',
-  'When to call:',
-  '- The user asks to ingest a page, doc, or knowledge source into the wiki.',
-  '- The conversation has produced factual content worth saving as a wiki page; use `kind:"conversation"` with the answer body and a short title to file the result back into the wiki without asking the user to re-paste.',
-  '',
-  `For \`kind:"vaultPath"\`, the path may be a single file or a folder. Folders fan out to every \`.md\` file inside them recursively, capped at ${VAULT_FOLDER_FANOUT_MAX} files per run.`,
-  '',
-  'Every call opens a per-run picker widget where the user confirms provider+model and explicitly starts the run. The override applies to this run only and never mutates global settings. Vault-path sources outside `wiki/` are rejected.',
-  '',
-  'On confirm, an ingest subgraph runs (refine → fetch → persist → plan → extract → reduce → write). For the conversation kind, fetching is skipped — the supplied body is persisted directly. Live progress streams into the same widget; the tool resolves with the final structured payload.',
-].join('\n');
-
 // Flat JSON Schema is hand-rolled because `z.discriminatedUnion('kind', …)` (above)
 // generates `oneOf`, which several LM Studio GGUF models (qwen3-coder, gpt-oss) reject
 // or mis-route into reasoning_content. Keep in sync with `DelegateWikiIngestSchema`.
@@ -180,7 +166,7 @@ export function createDelegateWikiIngestTool(
 ): ToolSpec<DelegateWikiIngestArgs, DelegateWikiIngestData> {
   return {
     id: DELEGATE_WIKI_INGEST_TOOL_ID,
-    description: DESCRIPTION,
+    description: DELEGATE_WIKI_INGEST_DESCRIPTION,
     schema: DelegateWikiIngestSchema as unknown as z.ZodType<DelegateWikiIngestArgs>,
     parameters: DELEGATE_WIKI_INGEST_PARAMETERS,
     requiresConfirmation: false,
