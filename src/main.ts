@@ -213,6 +213,8 @@ import {
 import { ExternalAgentWidgetController } from '@/agent/externalAgent/widgetController';
 import { createOrchestratorUrlFetcher } from '@/agent/wiki/ingest/orchestratorUrlFetcher';
 import type { RunHandle as ExternalAgentRunHandle } from '@/agent/externalAgent/subgraph';
+import { OpenfangAdapter } from '@/agent/externalAgent/adapters/openfang';
+import { createObsidianFetch } from '@/agent/externalAgent/adapters/openfang/obsidianHttpDriver';
 import {
   InlineAgentAdapter,
   inlineAgentConfigSchema,
@@ -646,6 +648,7 @@ export default class LeoPlugin extends Plugin {
         },
       }),
     );
+    this.adapterRegistry.register(new OpenfangAdapter({ fetchImpl: createObsidianFetch() }));
     this.toolRegistry.register(createReadNoteTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createListNotesTool() as unknown as ToolSpec<unknown, unknown>);
     this.toolRegistry.register(createReadFileTool() as unknown as ToolSpec<unknown, unknown>);

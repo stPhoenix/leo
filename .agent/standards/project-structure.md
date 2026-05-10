@@ -19,7 +19,8 @@ leo/
 │   │   │   └── widget/                  # Live widget controller, terminal snapshot, phase state
 │   │   ├── compact/                     # /compact live + terminal widget, phaseSink
 │   │   ├── externalAgent/               # External-agent delegation — adapter contract, refine, FSM, slot, writer, widget
-│   │   │   └── adapters/                # Adapter base + inline-agent network/sanitize helpers
+│   │   │   └── adapters/                # Adapter base + concrete adapters (inline-agent, openfang)
+│   │   │       └── openfang/            # OpenFang/Demiurg A2A adapter — config schema, http transport, polling, artifacts, failure decoder, http-error mapper, requestUrl driver
 │   │   ├── toolSearch/                  # Deferred-tool fetcher — request assembly, gating, mapping, session
 │   │   └── wiki/                        # Wiki slice — ingest, lint, search, inbox; mutex-gated
 │   │       ├── inbox/                   # wiki-inbox.md pipe-table parser/serializer

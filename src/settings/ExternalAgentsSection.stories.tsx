@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { userEvent, within } from 'storybook/test';
 import { z } from 'zod';
 import { useState } from 'react';
 import { AdapterRegistry } from '@/agent/externalAgent/adapterRegistry';
@@ -7,6 +8,7 @@ import {
   type ExternalAgentInput,
   type ExternalEvent,
 } from '@/agent/externalAgent/adapters/base';
+import { OpenfangAdapter } from '@/agent/externalAgent/adapters/openfang';
 import { ExternalAgentsSection } from './ExternalAgentsSection';
 import type { ExternalAgentsSettings } from './settingsStore';
 
@@ -132,6 +134,73 @@ export const NoAdaptersRegistered: Story = {
     initialSettings: {
       defaultAdapterId: null,
       adapters: {},
+    },
+  },
+};
+
+const OPENFANG_CONFIG = {
+  baseUrl: 'https://openfang.example.com:4200',
+  apiKey: 'demo-key-redacted',
+  sessionId: 'leo-thread-001',
+  pollTimeoutMs: 1_800_000,
+  pollInitialIntervalMs: 2_000,
+  pollMaxIntervalMs: 15_000,
+  httpTimeoutMs: 30_000,
+  allowInsecureHttp: false,
+};
+
+export const OpenfangConfigured: Story = {
+  args: {
+    registry: makeRegistry([new OpenfangAdapter()]),
+    initialSettings: {
+      defaultAdapterId: 'openfang',
+      adapters: {
+        openfang: { enabled: true, config: OPENFANG_CONFIG },
+      },
+    },
+  },
+};
+
+export const OpenfangSecretRevealed: Story = {
+  args: {
+    registry: makeRegistry([new OpenfangAdapter()]),
+    initialSettings: {
+      defaultAdapterId: 'openfang',
+      adapters: {
+        openfang: { enabled: true, config: OPENFANG_CONFIG },
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const c = within(canvasElement);
+    const reveal = await c.findByRole('button', { name: /toggle reveal for apikey/i });
+    await userEvent.click(reveal);
+  },
+};
+
+export const OpenfangDisabled: Story = {
+  args: {
+    registry: makeRegistry([new OpenfangAdapter()]),
+    initialSettings: {
+      defaultAdapterId: 'openfang',
+      adapters: {
+        openfang: { enabled: false, config: OPENFANG_CONFIG },
+      },
+    },
+  },
+};
+
+export const OpenfangInvalidBaseUrl: Story = {
+  args: {
+    registry: makeRegistry([new OpenfangAdapter()]),
+    initialSettings: {
+      defaultAdapterId: 'openfang',
+      adapters: {
+        openfang: {
+          enabled: true,
+          config: { ...OPENFANG_CONFIG, baseUrl: 'not-a-url' },
+        },
+      },
     },
   },
 };
