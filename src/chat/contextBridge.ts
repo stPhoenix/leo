@@ -63,11 +63,12 @@ function toTokenBlock(b: ContentBlock): TokenBlock {
       }
       return {
         type: 'tool_result',
-        content: b.content.map((inner) =>
-          inner.type === 'text'
-            ? ({ type: 'text', text: inner.text } as const)
-            : ({ type: 'text', text: inner.tool_name } as const),
-        ),
+        content: b.content.map((inner) => {
+          if (inner.type === 'text') return { type: 'text', text: inner.text } as const;
+          if (inner.type === 'tool_reference')
+            return { type: 'text', text: inner.tool_name } as const;
+          return { type: 'text', text: `[MCP UI: ${inner.uri}]` } as const;
+        }),
       };
     case 'tool_reference':
       return { type: 'text', text: b.tool_name };
@@ -75,6 +76,8 @@ function toTokenBlock(b: ContentBlock): TokenBlock {
       return { type: 'redacted_thinking', data: b.data };
     case 'slash_expanded':
       return { type: 'text', text: b.expandedBody };
+    case 'mcp_ui':
+      return { type: 'text', text: `[MCP UI: ${b.uri}]` };
   }
 }
 

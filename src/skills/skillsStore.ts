@@ -21,6 +21,8 @@ import type {
 
 const DEFAULT_DIR = '.leo/skills';
 const SKILL_FILE = 'SKILL.md';
+const MAX_NAME_SEGMENTS = 2;
+const NAME_SEPARATOR = ':';
 
 export interface SkillsStoreOptions {
   readonly vault: VaultAdapter;
@@ -92,19 +94,52 @@ export class SkillsStore {
       return;
     }
     const seenPaths = new Set<string>();
-    for (const folder of listing.folders) {
-      const normalizedFolder = this.stripDirPrefix(folder);
-      if (normalizedFolder.length === 0) continue;
-      const canonicalName = normalizedFolder;
-      const skillFilePath = `${this.dir}/${canonicalName}/${SKILL_FILE}`;
-      if (seenPaths.has(skillFilePath)) continue;
-      seenPaths.add(skillFilePath);
-      const exists = await this.vault.exists(skillFilePath);
-      if (!exists) continue;
-      await this.loadOne(skillFilePath, canonicalName);
-    }
+    await this.walk(this.dir, [], listing, seenPaths);
     this.loaded = true;
     this.changed.emit();
+  }
+
+  private async walk(
+    dir: string,
+    segments: readonly string[],
+    listing: { readonly files: readonly string[]; readonly folders: readonly string[] },
+    seenPaths: Set<string>,
+  ): Promise<void> {
+    if (segments.length > 0) {
+      const skillFilePath = `${dir}/${SKILL_FILE}`;
+      if (!seenPaths.has(skillFilePath) && (await this.vault.exists(skillFilePath))) {
+        seenPaths.add(skillFilePath);
+        await this.loadOne(skillFilePath, segments.join(NAME_SEPARATOR));
+      }
+    }
+    if (segments.length >= MAX_NAME_SEGMENTS) {
+      if (listing.folders.length > 0) {
+        this.logger?.warn('skills.load.depth-exceeded', {
+          dir,
+          maxSegments: MAX_NAME_SEGMENTS,
+        });
+      }
+      return;
+    }
+    for (const folder of listing.folders) {
+      const seg = stripPrefix(folder, `${dir}/`);
+      if (seg.length === 0) continue;
+      if (seg.includes(NAME_SEPARATOR)) {
+        this.logger?.warn('skills.load.invalid-segment', { dir: folder, segment: seg });
+        continue;
+      }
+      let childListing: { readonly files: readonly string[]; readonly folders: readonly string[] };
+      try {
+        childListing = await this.vault.list(folder);
+      } catch (err) {
+        this.logger?.warn('skills.load.list-failed', {
+          dir: folder,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+      await this.walk(folder, [...segments, seg], childListing, seenPaths);
+    }
   }
 
   private async loadOne(path: string, canonicalName: string): Promise<void> {
@@ -125,7 +160,9 @@ export class SkillsStore {
       this.logger?.warn('skills.load.duplicate', { path, name: blueprint.name });
       return;
     }
-    const skillRoot = `${this.dir}/${canonicalName}`;
+    const skillRoot = path.endsWith(`/${SKILL_FILE}`)
+      ? path.slice(0, -SKILL_FILE.length - 1)
+      : `${this.dir}/${canonicalName.split(NAME_SEPARATOR).join('/')}`;
     const skill = buildSkill({
       blueprint,
       skillRoot,
@@ -193,9 +230,14 @@ export class SkillsStore {
 
   async writeSkill(blueprint: SkillBlueprint, raw: string): Promise<SkillEntry> {
     const canonicalName = blueprint.name;
-    const folder = `${this.dir}/${canonicalName}`;
+    const segments = canonicalName.split(NAME_SEPARATOR);
+    let acc = this.dir;
+    for (const seg of segments) {
+      acc = `${acc}/${seg}`;
+      await this.vault.mkdir(acc);
+    }
+    const folder = acc;
     const path = `${folder}/${SKILL_FILE}`;
-    await this.vault.mkdir(folder);
     await this.vault.write(path, raw);
     const skill = buildSkill({ blueprint, skillRoot: folder, path, vault: this.vault });
     const entry: SkillEntry = { skill, path, blueprint };
@@ -213,10 +255,22 @@ export class SkillsStore {
   async deleteSkill(name: string): Promise<void> {
     const entry = this.unconditional.get(name) ?? this.conditional.get(name);
     if (entry === undefined) return;
-    const folder = `${this.dir}/${name}`;
+    const segments = name.split(NAME_SEPARATOR);
+    const folder = `${this.dir}/${segments.join('/')}`;
     const skillFile = `${folder}/${SKILL_FILE}`;
     if (await this.vault.exists(skillFile)) {
       await this.vault.remove(skillFile);
+    }
+    // Best-effort: clean up now-empty parent dirs up to (but not including) this.dir.
+    for (let depth = segments.length; depth >= 1; depth -= 1) {
+      const candidate = `${this.dir}/${segments.slice(0, depth).join('/')}`;
+      try {
+        const childListing = await this.vault.list(candidate);
+        if (childListing.files.length > 0 || childListing.folders.length > 0) break;
+        await this.vault.rmdir?.(candidate);
+      } catch {
+        break;
+      }
     }
     this.unconditional.delete(name);
     this.conditional.delete(name);
@@ -231,13 +285,11 @@ export class SkillsStore {
       this.noticeFiredThisLoad = true;
     }
   }
+}
 
-  private stripDirPrefix(full: string): string {
-    const prefix = `${this.dir}/`;
-    if (full.startsWith(prefix)) return full.slice(prefix.length);
-    if (full === this.dir) return '';
-    return full;
-  }
+function stripPrefix(full: string, prefix: string): string {
+  if (full.startsWith(prefix)) return full.slice(prefix.length);
+  return full;
 }
 
 function buildSkill(args: {

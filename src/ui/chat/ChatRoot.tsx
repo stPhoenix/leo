@@ -27,6 +27,12 @@ import type { CodeBlockClipboard } from './codeBlockEnhancer';
 import type { ToolUseBlockSlots } from './blocks';
 import type { RunStateSource } from './blocks/toolUseStatus';
 import { BottomLiveIndicator } from './BottomLiveIndicator';
+import { McpUiContext, type McpUiContextValue } from './mcpUiContext';
+import {
+  useObsidianThemeVars,
+  type UseObsidianThemeVarsOptions,
+} from './hooks/useObsidianThemeVars';
+import type { McpUiAction, McpUiActionResponse } from '@/mcp/mcpUiActions';
 
 export type ComposerHooks = Partial<Omit<ComposerInputProps, 'collapsed' | 'setIcon'>>;
 
@@ -71,6 +77,12 @@ export interface ChatRootProps {
   readonly lastEventAtSource?: () => number | null;
   readonly onCancelLive?: () => void;
   readonly resolveToolName?: (id: string) => string;
+  readonly mcpUiDispatchAction?: (
+    action: McpUiAction,
+    serverId: string,
+  ) => Promise<McpUiActionResponse>;
+  readonly mcpUiThemeOptions?: UseObsidianThemeVarsOptions;
+  readonly mcpUiOnError?: (err: Error) => void;
 }
 
 const STATIC_IDLE_PHASE: StreamingPhase = 'idle';
@@ -112,6 +124,16 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
   const planModeActive = planMode === 'plan';
   const isSubmitting = phase === 'streaming' || phase === 'cancelling';
 
+  const themeSnapshot = useObsidianThemeVars(props.mcpUiThemeOptions ?? {});
+  const mcpUiContextValue: McpUiContextValue | null =
+    props.mcpUiDispatchAction !== undefined
+      ? {
+          theme: themeSnapshot,
+          dispatchAction: props.mcpUiDispatchAction,
+          ...(props.mcpUiOnError !== undefined ? { onError: props.mcpUiOnError } : {}),
+        }
+      : null;
+
   useEffect(() => {
     const observe = props.observeWidth;
     if (observe === undefined) return;
@@ -119,7 +141,7 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
     return () => unsubscribe();
   }, [props.observeWidth]);
 
-  return (
+  const tree = (
     <div
       ref={rootRef}
       className={`leo-chat-root${collapsed ? ' is-collapsed' : ''}${planModeActive ? ' is-plan-mode' : ''}`}
@@ -200,4 +222,6 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
       />
     </div>
   );
+  if (mcpUiContextValue === null) return tree;
+  return <McpUiContext.Provider value={mcpUiContextValue}>{tree}</McpUiContext.Provider>;
 }

@@ -60,6 +60,8 @@ import {
 } from './types';
 import type { StreamEvent } from './streamEvents';
 import { isSkillInvocationEnvelope } from '@/tools/builtin/skillTool';
+import { extractMcpUiResources, type McpUiResource } from '@/mcp/mcpUiTypes';
+import type { McpUiContent, TextBlock as ChatTextBlock, ToolResultContent } from '@/chat/types';
 
 // Push/pull async-iterable bridge. `node:stream` (`PassThrough`) is unavailable in the
 // Obsidian renderer (no Node built-ins). LangGraph `.streamEvents()` covers most pipes,
@@ -925,6 +927,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     content: ChatMessage['content'];
     skillEnvelope: SkillEnvelopeShape | null;
     toolSearchWire: ReturnType<typeof buildToolSearchToolMessageContent> | null;
+    mcpUi: { resources: readonly McpUiResource[]; uiContent: ToolResultContent } | null;
   } => {
     const skillEnvelope =
       result.ok && isSkillInvocationEnvelope(result.data)
@@ -937,6 +940,12 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
             deps.toolSearch.snapshotFor(thread).nativeDeferral,
           )
         : null;
+    const mcpExtract = result.ok ? extractMcpUiResources(result.data) : null;
+    const serverId = parseMcpServerId(call.name);
+    const mcpUi =
+      mcpExtract !== null && mcpExtract.uiResources.length > 0
+        ? buildMcpUiPayload(mcpExtract.textParts, mcpExtract.uiResources, serverId)
+        : null;
     let content: ChatMessage['content'];
     if (toolSearchWire !== null) {
       content = toolSearchWire.content;
@@ -945,10 +954,44 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
         ok: true,
         data: { skill: skillEnvelope.skillName, status: 'injected' },
       });
+    } else if (mcpUi !== null) {
+      content = JSON.stringify({
+        ok: result.ok,
+        ui: mcpUi.resources.map((r) => ({ uri: r.uri, mimeType: r.mimeType })),
+        text: mcpExtract?.textParts.join('\n') ?? '',
+      });
     } else {
       content = JSON.stringify(result);
     }
-    return { content, skillEnvelope, toolSearchWire };
+    return { content, skillEnvelope, toolSearchWire, mcpUi };
+  };
+
+  const buildMcpUiPayload = (
+    textParts: readonly string[],
+    resources: readonly McpUiResource[],
+    serverId: string | undefined,
+  ): { resources: readonly McpUiResource[]; uiContent: ToolResultContent } => {
+    const items: (ChatTextBlock | McpUiContent)[] = [];
+    const text = textParts.join('\n').trim();
+    if (text.length > 0) items.push({ type: 'text', text });
+    for (const r of resources) {
+      items.push({
+        type: 'mcp_ui',
+        uri: r.uri,
+        mimeType: r.mimeType,
+        html: r.html,
+        ...(serverId !== undefined ? { serverId } : {}),
+      });
+    }
+    return { resources, uiContent: items };
+  };
+
+  const parseMcpServerId = (toolName: string): string | undefined => {
+    if (!toolName.startsWith('mcp.')) return undefined;
+    const rest = toolName.slice('mcp.'.length);
+    const dot = rest.indexOf('.');
+    if (dot <= 0) return undefined;
+    return rest.slice(0, dot);
   };
 
   const applySkillEnvelope = (
@@ -996,6 +1039,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     });
     workingTimestamps.push(deps.clock().getTime());
 
+    let mcpUiBlockCount = 0;
     for (let i = 0; i < state.pendingToolCalls.length; i += 1) {
       const call = state.pendingToolCalls[i]!;
       const outcome = outcomes[i]!;
@@ -1004,7 +1048,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
         break;
       }
       const result = await executeOutcome(call, outcome, thread, agentId);
-      const { content, skillEnvelope, toolSearchWire } = buildToolResultContent(
+      const { content, skillEnvelope, toolSearchWire, mcpUi } = buildToolResultContent(
         result,
         call,
         thread,
@@ -1015,6 +1059,27 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
         deps.toolSearch?.recordDiscovery(thread, toolSearchWire.discoveredAdded);
       }
       turn.events.push({ type: 'tool_result', id: call.id, result });
+      if (mcpUi !== null) {
+        const blockIndex = state.blockIndexOffset + mcpUiBlockCount;
+        turn.events.push({
+          type: 'block_start',
+          index: blockIndex,
+          block: {
+            type: 'tool_result',
+            tool_use_id: call.id,
+            content: mcpUi.uiContent,
+            ...(result.ok ? {} : { is_error: true }),
+          },
+        });
+        turn.events.push({ type: 'block_stop', index: blockIndex });
+        mcpUiBlockCount += 1;
+        deps.logger.info('mcp.ui.render', {
+          thread,
+          toolId: call.name,
+          callId: call.id,
+          uiCount: mcpUi.resources.length,
+        });
+      }
       if (skillEnvelope !== null) {
         applySkillEnvelope(skillEnvelope, workingMessages, workingTimestamps, ctx);
       }
@@ -1029,6 +1094,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       pendingToolCalls: [],
       iterationAssistantText: '',
       roundTrip: state.roundTrip + 1,
+      blockIndexOffset: state.blockIndexOffset + mcpUiBlockCount,
     };
   };
 

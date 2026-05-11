@@ -1953,6 +1953,13 @@ export default class LeoPlugin extends Plugin {
             logger: this.logger,
           }),
           clearThreadReadState: (threadId) => readFileState.clearThread(threadId),
+          ...(this.mcp !== null ? { mcpClient: this.mcp.client } : {}),
+          vault: vaultAdapter,
+          editorBridge: editBridge,
+          subscribeThemeChange: (cb) => {
+            const ref = this.app.workspace.on('css-change', cb);
+            return () => this.app.workspace.offref(ref);
+          },
         }),
     );
     this.addRibbonIcon('bot', 'Leo: Open chat', () => {

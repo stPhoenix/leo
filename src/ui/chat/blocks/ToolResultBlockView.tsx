@@ -1,6 +1,14 @@
 import { memo, useState, type ReactNode } from 'react';
-import { toolResultContentToText, type ToolResultBlock, type ToolUseBlock } from '@/chat/types';
+import {
+  toolResultContentToText,
+  type McpUiContent,
+  type ToolResultBlock,
+  type ToolResultContent,
+  type ToolUseBlock,
+} from '@/chat/types';
 import { resolveStatus, useToolUseStatus, type RunStateSource } from './toolUseStatus';
+import { useMcpUiContext } from '../mcpUiContext';
+import { MCPUIBlockView } from './MCPUIBlockView';
 
 export interface ToolResultBlockViewProps {
   readonly block: ToolResultBlock;
@@ -19,6 +27,8 @@ function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
   const long = contentText.length > (props.defaultCollapseAtChars ?? DEFAULT_COLLAPSE);
   const [expanded, setExpanded] = useState<boolean>(!long || isError);
   const fromStore = useToolUseStatus(props.runState, block.tool_use_id);
+  const mcpUiCtx = useMcpUiContext();
+  const mcpUiResources = collectMcpUi(block.content);
 
   if (associatedToolUse === undefined) {
     return (
@@ -43,7 +53,8 @@ function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
   else if (derived === 'canceled') status = 'canceled';
   else status = 'success';
 
-  const collapsible = status === 'success' && long && props.renderBody === undefined;
+  const hasMcpUi = mcpUiResources.length > 0 && mcpUiCtx !== null;
+  const collapsible = status === 'success' && long && props.renderBody === undefined && !hasMcpUi;
   const isCollapsed = collapsible && !expanded;
   return (
     <section
@@ -68,8 +79,28 @@ function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
         ) : null}
       </header>
       {renderBody(props, status, isCollapsed, associatedToolUse, contentText)}
+      {hasMcpUi
+        ? mcpUiResources.map((resource, idx) => (
+            <MCPUIBlockView
+              key={`${resource.uri}:${idx}`}
+              resource={resource}
+              theme={mcpUiCtx.theme}
+              onAction={(action) => mcpUiCtx.dispatchAction(action, resource.serverId ?? 'unknown')}
+              {...(mcpUiCtx.onError !== undefined ? { onError: mcpUiCtx.onError } : {})}
+            />
+          ))
+        : null}
     </section>
   );
+}
+
+function collectMcpUi(content: ToolResultContent): readonly McpUiContent[] {
+  if (typeof content === 'string') return [];
+  const out: McpUiContent[] = [];
+  for (const c of content) {
+    if (c.type === 'mcp_ui') out.push(c);
+  }
+  return out;
 }
 
 function renderHeader(

@@ -102,9 +102,7 @@ describe('ComposerInput @ mention picker', () => {
   it('matches files by folder for image kind', () => {
     const { ta } = setup();
     typeIntoTextarea(ta, '@assets');
-    const option = document.querySelector(
-      '[data-path="assets/diagram.png"]',
-    ) as HTMLElement | null;
+    const option = document.querySelector('[data-path="assets/diagram.png"]') as HTMLElement | null;
     expect(option).not.toBeNull();
   });
 });

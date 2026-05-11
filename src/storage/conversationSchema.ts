@@ -1,5 +1,11 @@
 import type { Logger } from '@/platform/Logger';
-import type { ContentBlock, TextBlock, ToolReferenceBlock, ToolResultContent } from '@/chat/types';
+import type {
+  ContentBlock,
+  McpUiContent,
+  TextBlock,
+  ToolReferenceBlock,
+  ToolResultContent,
+} from '@/chat/types';
 
 export const CONVERSATION_SCHEMA_VERSION = 2;
 
@@ -249,7 +255,7 @@ function parseToolUseBlock(obj: Record<string, unknown>): ContentBlock {
 function parseToolResultContent(raw: unknown): ToolResultContent {
   if (typeof raw === 'string') return raw;
   if (!Array.isArray(raw)) return '';
-  type Inner = TextBlock | ToolReferenceBlock;
+  type Inner = TextBlock | ToolReferenceBlock | McpUiContent;
   const inner: Inner[] = [];
   for (const entry of raw) {
     if (entry === null || typeof entry !== 'object') continue;
@@ -258,6 +264,19 @@ function parseToolResultContent(raw: unknown): ToolResultContent {
       inner.push({ type: 'text', text: o.text });
     } else if (o.type === 'tool_reference' && typeof o.tool_name === 'string') {
       inner.push({ type: 'tool_reference', tool_name: o.tool_name });
+    } else if (
+      o.type === 'mcp_ui' &&
+      typeof o.uri === 'string' &&
+      typeof o.mimeType === 'string' &&
+      typeof o.html === 'string'
+    ) {
+      inner.push({
+        type: 'mcp_ui',
+        uri: o.uri,
+        mimeType: o.mimeType,
+        html: o.html,
+        ...(typeof o.serverId === 'string' ? { serverId: o.serverId } : {}),
+      });
     }
   }
   return inner;

@@ -53,6 +53,22 @@ describe('parseSlashInput', () => {
   it('rejects command names starting with digits', () => {
     expect(parseSlashInput('/2fast')).toBeNull();
   });
+
+  it('accepts namespaced names with a single colon', () => {
+    expect(parseSlashInput('/parent:child')?.name).toBe('parent:child');
+    expect(parseSlashInput('/parent:child arg one')).toEqual({
+      raw: '/parent:child arg one',
+      name: 'parent:child',
+      args: 'arg one',
+    });
+  });
+
+  it('rejects names with leading/trailing/double colons', () => {
+    expect(parseSlashInput('/:child')).toBeNull();
+    expect(parseSlashInput('/parent:')).toBeNull();
+    expect(parseSlashInput('/parent::child')).toBeNull();
+    expect(parseSlashInput('/a:b:c')).toBeNull();
+  });
 });
 
 describe('createSlashRegistry', () => {

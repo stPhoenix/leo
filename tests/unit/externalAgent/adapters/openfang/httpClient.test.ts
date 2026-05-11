@@ -312,9 +312,9 @@ describe('http log emission', () => {
     server.use(http.get(`${BASE}/raw`, () => HttpResponse.json({}, { status: 404 })));
     const log = makeLog();
     const http2 = createOpenfangHttp(makeConfig(), log);
-    await expect(http2.downloadArtifact('/raw', new AbortController().signal)).rejects.toBeInstanceOf(
-      OpenfangHttpError,
-    );
+    await expect(
+      http2.downloadArtifact('/raw', new AbortController().signal),
+    ).rejects.toBeInstanceOf(OpenfangHttpError);
     const errLog = log.calls.find((c) => c[1] === 'openfang.http.error');
     expect(errLog?.[2]).toMatchObject({ method: 'GET', endpoint: '/raw', status: 404 });
   });

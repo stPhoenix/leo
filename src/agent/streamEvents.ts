@@ -7,6 +7,7 @@ import type {
   RedactedThinkingBlock,
   ToolUseBlock,
   ToolResultBlock,
+  ToolResultContent,
 } from '@/chat/types';
 import type { ProgressEvent } from '@/chat/runStateStore';
 
@@ -15,7 +16,12 @@ export type ContentBlockStart =
   | { readonly type: 'thinking'; readonly thinking?: string; readonly signature?: string }
   | { readonly type: 'redacted_thinking'; readonly data: string }
   | { readonly type: 'tool_use'; readonly id: string; readonly name: string }
-  | { readonly type: 'tool_result'; readonly tool_use_id: string; readonly is_error?: boolean };
+  | {
+      readonly type: 'tool_result';
+      readonly tool_use_id: string;
+      readonly is_error?: boolean;
+      readonly content?: ToolResultContent;
+    };
 
 export type ContentBlockDelta =
   | { readonly type: 'text_delta'; readonly text: string }

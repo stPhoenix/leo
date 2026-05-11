@@ -45,7 +45,8 @@ export interface SkillEditorOptions {
   readonly notice?: NoticeLike;
 }
 
-const KEBAB_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+const KEBAB_SEG = '[a-z][a-z0-9]*(?:-[a-z0-9]+)*';
+const NAME_RE = new RegExp(`^${KEBAB_SEG}(?::${KEBAB_SEG})?$`); // NOSONAR(typescript:S5852): bounded segments, anchored, max one colon — linear.
 
 export class SkillEditorController {
   private readonly store: SkillEditorStoreLike;
@@ -113,8 +114,11 @@ export class SkillEditorController {
     const out: SkillValidationError[] = [];
     if (draft.name.length === 0) {
       out.push({ field: 'name', message: 'name is required' });
-    } else if (!KEBAB_RE.test(draft.name)) {
-      out.push({ field: 'name', message: 'name must be lowercase-kebab' });
+    } else if (!NAME_RE.test(draft.name)) {
+      out.push({
+        field: 'name',
+        message: 'name must be lowercase-kebab, optionally namespaced as parent:child',
+      });
     }
     if (draft.displayName.trim().length === 0) {
       out.push({ field: 'displayName', message: 'displayName is required' });

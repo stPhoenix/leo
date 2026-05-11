@@ -109,6 +109,23 @@ describe('SkillEditorController', () => {
     expect(errors.some((e) => e.field === 'name')).toBe(true);
   });
 
+  it('accepts namespaced parent:child names', () => {
+    const ctl = new SkillEditorController({ store: mkStore() });
+    const errors = ctl.validate(draftOf({ name: 'parent:child-skill' }), 'create');
+    expect(errors.some((e) => e.field === 'name')).toBe(false);
+  });
+
+  it('rejects names with leading/trailing/double colons', () => {
+    const ctl = new SkillEditorController({ store: mkStore() });
+    for (const bad of [':child', 'parent:', 'parent::child', 'a:b:c']) {
+      const errors = ctl.validate(draftOf({ name: bad }), 'create');
+      expect(
+        errors.some((e) => e.field === 'name'),
+        `should reject "${bad}"`,
+      ).toBe(true);
+    }
+  });
+
   it('validate flags duplicate names on create (but not on edit)', () => {
     const store = mkStore([stubSkill('writer')]);
     const ctl = new SkillEditorController({ store });

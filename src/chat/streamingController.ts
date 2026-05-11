@@ -339,7 +339,7 @@ export class StreamingTurnController {
       const initial: ToolResultBlock = {
         type: 'tool_result',
         tool_use_id: block.tool_use_id,
-        content: '',
+        content: block.content ?? '',
         ...(block.is_error !== undefined ? { is_error: block.is_error } : {}),
       };
       this.deps.messageStore.updateBlock(turn.assistantId, index, initial);

@@ -53,7 +53,7 @@ export interface ComposerInputProps {
   readonly onMentionSelect?: (entry: VaultFileEntry) => void;
 }
 
-const SLASH_PICKER_REGEX = /^\s*\/([A-Za-z][A-Za-z0-9_-]*)?$/;
+const SLASH_PICKER_REGEX = /^\s*\/([A-Za-z][A-Za-z0-9_-]*(?::[A-Za-z]?[A-Za-z0-9_-]*)?)?$/;
 
 const MENTION_PICKER_REGEX = /(?:^|\s)@([^\s@]*)$/;
 

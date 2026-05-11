@@ -43,7 +43,15 @@ export interface ToolReferenceBlock {
   readonly tool_name: string;
 }
 
-export type ToolResultContent = string | readonly (TextBlock | ToolReferenceBlock)[];
+export interface McpUiContent {
+  readonly type: 'mcp_ui';
+  readonly uri: string;
+  readonly mimeType: string;
+  readonly html: string;
+  readonly serverId?: string;
+}
+
+export type ToolResultContent = string | readonly (TextBlock | ToolReferenceBlock | McpUiContent)[];
 
 export interface ToolResultBlock {
   readonly type: 'tool_result';
@@ -90,7 +98,8 @@ export type ContentBlock =
   | ToolReferenceBlock
   | ImageBlock
   | DocumentBlock
-  | SlashExpandedBlock;
+  | SlashExpandedBlock
+  | McpUiContent;
 
 export interface ChatMessageRecord {
   readonly id: string;
@@ -113,7 +122,8 @@ export function toolResultContentToText(content: ToolResultContent): string {
   const parts: string[] = [];
   for (const b of content) {
     if (b.type === 'text') parts.push(b.text);
-    else parts.push(b.tool_name);
+    else if (b.type === 'tool_reference') parts.push(b.tool_name);
+    else parts.push(`[MCP UI: ${b.uri}]`);
   }
   return parts.join('');
 }

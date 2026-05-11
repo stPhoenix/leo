@@ -31,7 +31,7 @@ leo/
 │   ├── editor/                          # CM6 edit lock, editor bridge, focused context, highlights, navigators
 │   ├── graph/                           # Link graph cache
 │   ├── indexer/                         # Vault + canvas chunking, dirty queue, reindex
-│   ├── mcp/                             # MCP client, config, reconnect, resource picker, prompt-skill adapter
+│   ├── mcp/                             # MCP client, config, reconnect, resource picker, prompt-skill adapter, MCP-UI actions/types
 │   ├── platform/                        # Logger, sinks, error channel, langfuse tracer, ALS init
 │   ├── prompts/                         # Centralized LLM prompts + tool descriptions, mirrors agent/ + tools/ tree
 │   │   ├── agent/                       # Per-slice agent prompts (leoPreamble, compact, canvas, externalAgent, wiki)

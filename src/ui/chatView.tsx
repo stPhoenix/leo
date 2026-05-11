@@ -45,6 +45,10 @@ import { makeClarifyingQuestionSource } from './chat/ClarifyingQuestionDialog';
 import type { PlanModeSource } from './chat/planModeSource';
 import type { ThreadsSnapshot } from '@/storage/threadsStore';
 import { ChatRoot } from './chat/ChatRoot';
+import type { MCPClient } from '@/mcp/mcpClient';
+import { routeMcpUiAction, type McpUiAction } from '@/mcp/mcpUiActions';
+import type { ToolCtx, EditNoteBridge } from '@/tools/types';
+import type { VaultAdapter } from '@/storage/vaultAdapter';
 import { PiiDetectorContext } from './chat/blocks/piiDetectorContext';
 import type { PiiDetectAgent } from '@/agent/externalAgent/piiDetectAgent';
 import type { CodeBlockClipboard } from './chat/codeBlockEnhancer';
@@ -137,6 +141,10 @@ export interface ChatViewDeps {
   readonly readVaultFile?: (path: string) => Promise<CaptureFileInput | null>;
   readonly piiDetector?: PiiDetectAgent;
   readonly clearThreadReadState?: (threadId: string) => void;
+  readonly mcpClient?: MCPClient;
+  readonly vault?: VaultAdapter;
+  readonly editorBridge?: EditNoteBridge;
+  readonly subscribeThemeChange?: (cb: () => void) => () => void;
 }
 
 export interface CompactRunnerAdapter {
@@ -318,6 +326,11 @@ export class ChatView extends ItemView {
       this.attachmentsUnsubscribe = unsubscribe;
     }
 
+    const mcpUiDispatchAction = this.buildMcpUiDispatcher();
+    const mcpUiThemeOptions =
+      this.deps.subscribeThemeChange !== undefined
+        ? { subscribeThemeChange: this.deps.subscribeThemeChange }
+        : {};
     const buildProps = (): Parameters<typeof ChatRoot>[0] => ({
       initialWidth: host.clientWidth,
       observeWidth,
@@ -334,6 +347,7 @@ export class ChatView extends ItemView {
       },
       resolveToolName: (id: string) => this.resolveToolName(id),
       setIcon: (el, name) => setIcon(el, name),
+      ...(mcpUiDispatchAction !== null ? { mcpUiDispatchAction, mcpUiThemeOptions } : {}),
       ...(focusedContextSource !== null
         ? {
             contextIndicatorSource: focusedContextSource,
@@ -860,6 +874,50 @@ export class ChatView extends ItemView {
       }
     }
     return id;
+  }
+
+  private getActiveThreadIdSafe(): string {
+    const ts = this.deps.threadsSource;
+    if (ts === undefined) return 'default';
+    return ts.getSnapshot().activeId ?? 'default';
+  }
+
+  private buildMcpUiDispatcher():
+    | ((
+        action: McpUiAction,
+        serverId: string,
+      ) => Promise<{ ok: boolean; error?: string; data?: unknown }>)
+    | null {
+    const mcpClient = this.deps.mcpClient;
+    const confirmation = this.deps.confirmationController;
+    const vault = this.deps.vault;
+    const editor = this.deps.editorBridge;
+    if (mcpClient === undefined || confirmation === undefined) return null;
+    if (vault === undefined || editor === undefined) return null;
+    const logger = this.deps.logger;
+    if (logger === undefined) return null;
+    return (action, serverId) => {
+      const thread = this.getActiveThreadIdSafe();
+      const ctx: ToolCtx = {
+        thread,
+        signal: this.streamingController?.signal ?? new AbortController().signal,
+        vault,
+        editor,
+        ...(logger !== undefined ? { logger } : {}),
+      };
+      return routeMcpUiAction(action, {
+        serverId,
+        thread,
+        mcpClient,
+        confirmation,
+        logger,
+        signal: ctx.signal,
+        submitPrompt: (text) => this.beginTurn(text),
+        openLink: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
+        notify: (message) => new Notice(`Leo MCP UI: ${message}`),
+        buildToolCtx: () => ctx,
+      });
+    };
   }
 
   private buildHeaderStats(): JSX.Element | null {

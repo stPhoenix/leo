@@ -381,9 +381,7 @@ describe('lifecycle log events', () => {
         HttpResponse.json({
           id: 't',
           status: 'failed',
-          messages: [
-            { role: 'agent', parts: [{ type: 'text', text: 'INFRA_ERROR: model down' }] },
-          ],
+          messages: [{ role: 'agent', parts: [{ type: 'text', text: 'INFRA_ERROR: model down' }] }],
           artifacts: [],
         }),
       ),

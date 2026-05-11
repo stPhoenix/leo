@@ -33,6 +33,9 @@ class FakeVault implements VaultAdapter {
     this.files.delete(p);
     this.folders.delete(p);
   }
+  async rmdir(p: string): Promise<void> {
+    this.folders.delete(p);
+  }
   async list(dir: string): Promise<VaultListing> {
     const prefix = dir.endsWith('/') ? dir : `${dir}/`;
     const allKeys = [...this.files.keys(), ...this.folders.keys()];
@@ -109,6 +112,141 @@ describe('SkillsStore', () => {
     expect(vault.files.has('.leo/skills/legacy/SKILL.md')).toBe(true);
     const skill = store.find('legacy');
     expect(skill?.description).toBe('Was flat');
+  });
+
+  it('loads nested skill folders as parent:child names', async () => {
+    const vault = new FakeVault();
+    await vault.mkdir('.leo/skills/parent');
+    await vault.mkdir('.leo/skills/parent/child');
+    vault.files.set(
+      '.leo/skills/parent/child/SKILL.md',
+      `---\nname: nested\ndescription: Nested skill\n---\nBody.\n`,
+    );
+    const store = new SkillsStore({ vault });
+    await store.loadAll();
+    const nested = store.find('parent:child');
+    expect(nested?.description).toBe('Nested skill');
+    expect(nested?.skillRoot).toBe('.leo/skills/parent/child');
+  });
+
+  it('registers both parent and parent:child when both have SKILL.md', async () => {
+    const vault = new FakeVault();
+    await vault.mkdir('.leo/skills/foo');
+    await vault.mkdir('.leo/skills/foo/bar');
+    vault.files.set(
+      '.leo/skills/foo/SKILL.md',
+      `---\nname: foo-flat\ndescription: Flat parent\n---\nFlat body.\n`,
+    );
+    vault.files.set(
+      '.leo/skills/foo/bar/SKILL.md',
+      `---\nname: foo-nested\ndescription: Nested child\n---\nNested body.\n`,
+    );
+    const store = new SkillsStore({ vault });
+    await store.loadAll();
+    expect(store.find('foo')?.description).toBe('Flat parent');
+    expect(store.find('foo:bar')?.description).toBe('Nested child');
+  });
+
+  it('warns and skips folder segments containing colon', async () => {
+    const vault = new FakeVault();
+    await vault.mkdir('.leo/skills/with:colon');
+    vault.files.set(
+      '.leo/skills/with:colon/SKILL.md',
+      `---\nname: x\ndescription: should be skipped\n---\nBody.\n`,
+    );
+    const warns: Array<{ event: string }> = [];
+    const logger = {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (event: string) => warns.push({ event }),
+      error: () => undefined,
+    } as unknown as ConstructorParameters<typeof SkillsStore>[0]['logger'];
+    const store = new SkillsStore({ vault, logger });
+    await store.loadAll();
+    expect(store.listAll()).toHaveLength(0);
+    expect(warns.some((w) => w.event === 'skills.load.invalid-segment')).toBe(true);
+  });
+
+  it('warns and skips skills nested deeper than two segments', async () => {
+    const vault = new FakeVault();
+    await vault.mkdir('.leo/skills/a');
+    await vault.mkdir('.leo/skills/a/b');
+    await vault.mkdir('.leo/skills/a/b/c');
+    vault.files.set(
+      '.leo/skills/a/b/c/SKILL.md',
+      `---\nname: too-deep\ndescription: should be skipped\n---\nBody.\n`,
+    );
+    const warns: string[] = [];
+    const logger = {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (event: string) => warns.push(event),
+      error: () => undefined,
+    } as unknown as ConstructorParameters<typeof SkillsStore>[0]['logger'];
+    const store = new SkillsStore({ vault, logger });
+    await store.loadAll();
+    expect(store.listAll()).toHaveLength(0);
+    expect(warns).toContain('skills.load.depth-exceeded');
+  });
+
+  it('writeSkill with a nested name creates parent + child folders', async () => {
+    const vault = new FakeVault();
+    const store = new SkillsStore({ vault });
+    await store.loadAll();
+    await store.writeSkill(
+      {
+        name: 'parent:child',
+        displayName: 'Nested',
+        description: 'desc',
+        allowedTools: [],
+        disableModelInvocation: false,
+        userInvocable: true,
+        body: 'Body.',
+      },
+      `---\nname: Nested\ndescription: desc\n---\nBody.\n`,
+    );
+    expect(vault.mkdirs.has('.leo/skills/parent')).toBe(true);
+    expect(vault.mkdirs.has('.leo/skills/parent/child')).toBe(true);
+    expect(vault.files.has('.leo/skills/parent/child/SKILL.md')).toBe(true);
+    expect(store.find('parent:child')?.skillRoot).toBe('.leo/skills/parent/child');
+  });
+
+  it('deleteSkill on nested name removes leaf and empty parent', async () => {
+    const vault = new FakeVault();
+    await vault.mkdir('.leo/skills/parent');
+    await vault.mkdir('.leo/skills/parent/child');
+    vault.files.set(
+      '.leo/skills/parent/child/SKILL.md',
+      `---\nname: nested\ndescription: Nested\n---\nBody.\n`,
+    );
+    const store = new SkillsStore({ vault });
+    await store.loadAll();
+    await store.deleteSkill('parent:child');
+    expect(vault.files.has('.leo/skills/parent/child/SKILL.md')).toBe(false);
+    expect(vault.folders.has('.leo/skills/parent/child')).toBe(false);
+    expect(vault.folders.has('.leo/skills/parent')).toBe(false);
+    expect(vault.folders.has('.leo/skills')).toBe(true);
+  });
+
+  it('deleteSkill on nested name preserves parent that still has its own SKILL.md', async () => {
+    const vault = new FakeVault();
+    await vault.mkdir('.leo/skills/parent');
+    await vault.mkdir('.leo/skills/parent/child');
+    vault.files.set(
+      '.leo/skills/parent/SKILL.md',
+      `---\nname: parent\ndescription: Flat parent\n---\nP.\n`,
+    );
+    vault.files.set(
+      '.leo/skills/parent/child/SKILL.md',
+      `---\nname: nested\ndescription: Nested child\n---\nN.\n`,
+    );
+    const store = new SkillsStore({ vault });
+    await store.loadAll();
+    await store.deleteSkill('parent:child');
+    expect(vault.files.has('.leo/skills/parent/child/SKILL.md')).toBe(false);
+    expect(vault.folders.has('.leo/skills/parent/child')).toBe(false);
+    expect(vault.folders.has('.leo/skills/parent')).toBe(true);
+    expect(vault.files.has('.leo/skills/parent/SKILL.md')).toBe(true);
   });
 
   it('routes paths: skills into the conditional pool', async () => {
