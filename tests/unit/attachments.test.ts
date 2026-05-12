@@ -107,7 +107,7 @@ describe('detectVaultDrop — AC3', () => {
 });
 
 describe('buildUserContent — AC4', () => {
-  it('produces text block first, then image and document blocks in capture order', () => {
+  it('prepends a text-note block before image and binary-document blocks; preserves base64 content', () => {
     const atts: Attachment[] = [
       {
         id: 'a1',
@@ -116,6 +116,7 @@ describe('buildUserContent — AC4', () => {
         mimeType: 'image/png',
         bytes: new Uint8Array([1, 2, 3]),
         size: 3,
+        path: '.leo/attachments/2026-05-12-abc-p.png',
       },
       {
         id: 'a2',
@@ -124,35 +125,60 @@ describe('buildUserContent — AC4', () => {
         mimeType: 'application/pdf',
         bytes: new Uint8Array([4, 5, 6]),
         size: 3,
+        path: '.leo/attachments/2026-05-12-def-r.pdf',
       },
     ];
     const blocks = buildUserContent('hello', atts, toBase64);
-    expect(blocks).toEqual([
-      { type: 'text', text: 'hello' },
-      {
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: 'image/png',
-          data: toBase64(new Uint8Array([1, 2, 3])),
-        },
-        name: 'p.png',
-        size: 3,
+    expect(blocks).toHaveLength(5);
+    expect(blocks[0]).toEqual({ type: 'text', text: 'hello' });
+    expect(blocks[1]).toMatchObject({ type: 'text' });
+    expect((blocks[1] as { text: string }).text).toContain(
+      'path=".leo/attachments/2026-05-12-abc-p.png"',
+    );
+    expect((blocks[1] as { text: string }).text).toContain('image');
+    expect(blocks[2]).toEqual({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: 'image/png',
+        data: toBase64(new Uint8Array([1, 2, 3])),
       },
-      {
-        type: 'document',
-        source: {
-          type: 'base64',
-          media_type: 'application/pdf',
-          data: toBase64(new Uint8Array([4, 5, 6])),
-        },
-        name: 'r.pdf',
-        size: 3,
+      name: 'p.png',
+      size: 3,
+    });
+    expect(blocks[3]).toMatchObject({ type: 'text' });
+    expect((blocks[3] as { text: string }).text).toContain('r.pdf');
+    expect((blocks[3] as { text: string }).text).toContain('binary');
+    expect(blocks[4]).toEqual({
+      type: 'document',
+      source: {
+        type: 'base64',
+        media_type: 'application/pdf',
+        data: toBase64(new Uint8Array([4, 5, 6])),
       },
-    ]);
+      name: 'r.pdf',
+      size: 3,
+    });
   });
   it('produces single text block when no attachments', () => {
     expect(buildUserContent('hi', [], toBase64)).toEqual([{ type: 'text', text: 'hi' }]);
+  });
+  it('omits path attribute in note when attachment has no path', () => {
+    const blocks = buildUserContent(
+      '',
+      [
+        {
+          id: 'a1',
+          kind: 'image',
+          name: 'p.png',
+          mimeType: 'image/png',
+          bytes: new Uint8Array([1, 2, 3]),
+          size: 3,
+        },
+      ],
+      toBase64,
+    );
+    expect((blocks[1] as { text: string }).text).not.toContain('path=');
   });
 });
 
@@ -180,6 +206,16 @@ describe('estimateAttachmentTokens — AC9', () => {
       ],
       toBase64,
     );
-    expect(estimateAttachmentTokens(blocks)).toBe(2 + 2000 + 2000);
+    let textTokens = 0;
+    let images = 0;
+    let docs = 0;
+    for (const b of blocks) {
+      if (b.type === 'text') textTokens += Math.round(b.text.length / 4);
+      else if (b.type === 'image') images += 1;
+      else if (b.type === 'document') docs += 1;
+    }
+    expect(images).toBe(1);
+    expect(docs).toBe(1);
+    expect(estimateAttachmentTokens(blocks)).toBe(textTokens + 2000 + 2000);
   });
 });

@@ -79,6 +79,10 @@ export interface ToolSearchSettings {
   unsupportedModelSubstrings: readonly string[];
 }
 
+export interface AttachmentsSettings {
+  retentionDays: number;
+}
+
 export interface LeoSettings {
   schemaVersion: 1;
   logLevel: LogLevel;
@@ -90,6 +94,7 @@ export interface LeoSettings {
   ragMode: RagMode;
   externalAgents: ExternalAgentsSettings;
   toolSearch: ToolSearchSettings;
+  attachments: AttachmentsSettings;
   contextWindowOverride?: number;
 }
 
@@ -116,6 +121,10 @@ export const DEFAULT_TOOL_SEARCH: ToolSearchSettings = {
   mode: 'tst',
   killSwitch: false,
   unsupportedModelSubstrings: ['haiku'],
+};
+
+export const DEFAULT_ATTACHMENTS: AttachmentsSettings = {
+  retentionDays: 7,
 };
 
 export const DEFAULT_PROVIDER: ProviderSettings = {
@@ -169,6 +178,7 @@ export const DEFAULT_SETTINGS: LeoSettings = {
     ...DEFAULT_TOOL_SEARCH,
     unsupportedModelSubstrings: [...DEFAULT_TOOL_SEARCH.unsupportedModelSubstrings],
   },
+  attachments: { ...DEFAULT_ATTACHMENTS },
 };
 
 export function migrate(raw: unknown): LeoSettings {
@@ -186,6 +196,7 @@ export function migrate(raw: unknown): LeoSettings {
   const ragMode = parseRagMode(obj.ragMode);
   const externalAgents = mergeExternalAgents(obj.externalAgents);
   const toolSearch = mergeToolSearch(obj.toolSearch);
+  const attachments = mergeAttachments(obj.attachments);
   const contextWindowOverride = parseContextWindowOverride(obj.contextWindowOverride);
 
   return {
@@ -199,7 +210,16 @@ export function migrate(raw: unknown): LeoSettings {
     ragMode,
     externalAgents,
     toolSearch,
+    attachments,
     ...(contextWindowOverride !== undefined ? { contextWindowOverride } : {}),
+  };
+}
+
+function mergeAttachments(raw: unknown): AttachmentsSettings {
+  if (raw === null || typeof raw !== 'object') return { ...DEFAULT_ATTACHMENTS };
+  const o = raw as Record<string, unknown>;
+  return {
+    retentionDays: clampInt(o.retentionDays, 0, 3650, DEFAULT_ATTACHMENTS.retentionDays),
   };
 }
 
@@ -385,6 +405,7 @@ function cloneDefaults(): LeoSettings {
       ...DEFAULT_TOOL_SEARCH,
       unsupportedModelSubstrings: [...DEFAULT_TOOL_SEARCH.unsupportedModelSubstrings],
     },
+    attachments: { ...DEFAULT_ATTACHMENTS },
   };
 }
 

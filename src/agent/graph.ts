@@ -924,7 +924,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     call: ToolCallRequest,
     thread: ThreadId,
   ): {
-    content: ChatMessage['content'];
+    content: ToolResultContent;
     skillEnvelope: SkillEnvelopeShape | null;
     toolSearchWire: ReturnType<typeof buildToolSearchToolMessageContent> | null;
     mcpUi: { resources: readonly McpUiResource[]; uiContent: ToolResultContent } | null;
@@ -946,7 +946,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       mcpExtract !== null && mcpExtract.uiResources.length > 0
         ? buildMcpUiPayload(mcpExtract.textParts, mcpExtract.uiResources, serverId)
         : null;
-    let content: ChatMessage['content'];
+    let content: ToolResultContent;
     if (toolSearchWire !== null) {
       content = toolSearchWire.content;
     } else if (skillEnvelope !== null) {
@@ -1039,7 +1039,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     });
     workingTimestamps.push(deps.clock().getTime());
 
-    let mcpUiBlockCount = 0;
+    let toolResultBlockCount = 0;
     for (let i = 0; i < state.pendingToolCalls.length; i += 1) {
       const call = state.pendingToolCalls[i]!;
       const outcome = outcomes[i]!;
@@ -1059,20 +1059,21 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
         deps.toolSearch?.recordDiscovery(thread, toolSearchWire.discoveredAdded);
       }
       turn.events.push({ type: 'tool_result', id: call.id, result });
+      const uiContent: ToolResultContent = mcpUi !== null ? mcpUi.uiContent : content;
+      const blockIndex = state.blockIndexOffset + toolResultBlockCount;
+      turn.events.push({
+        type: 'block_start',
+        index: blockIndex,
+        block: {
+          type: 'tool_result',
+          tool_use_id: call.id,
+          content: uiContent,
+          ...(result.ok ? {} : { is_error: true }),
+        },
+      });
+      turn.events.push({ type: 'block_stop', index: blockIndex });
+      toolResultBlockCount += 1;
       if (mcpUi !== null) {
-        const blockIndex = state.blockIndexOffset + mcpUiBlockCount;
-        turn.events.push({
-          type: 'block_start',
-          index: blockIndex,
-          block: {
-            type: 'tool_result',
-            tool_use_id: call.id,
-            content: mcpUi.uiContent,
-            ...(result.ok ? {} : { is_error: true }),
-          },
-        });
-        turn.events.push({ type: 'block_stop', index: blockIndex });
-        mcpUiBlockCount += 1;
         deps.logger.info('mcp.ui.render', {
           thread,
           toolId: call.name,
@@ -1094,7 +1095,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       pendingToolCalls: [],
       iterationAssistantText: '',
       roundTrip: state.roundTrip + 1,
-      blockIndexOffset: state.blockIndexOffset + mcpUiBlockCount,
+      blockIndexOffset: state.blockIndexOffset + toolResultBlockCount,
     };
   };
 

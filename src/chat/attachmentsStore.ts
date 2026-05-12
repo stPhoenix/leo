@@ -93,6 +93,7 @@ export class AttachmentsStore {
       mimeType: a.mimeType,
       bytes: a.bytes,
       size: a.size,
+      ...(a.path !== undefined ? { path: a.path } : {}),
     }));
     for (const a of items) {
       if (a.previewUrl !== null) this.safeRevoke(a.previewUrl);

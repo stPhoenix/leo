@@ -478,6 +478,58 @@ describe('AgentRunner', () => {
     expect(toolResultIdx).toBeGreaterThan(toolCallIdx);
     const toolResult = out[toolResultIdx] as { type: 'tool_result'; id: string; result: unknown };
     expect(toolResult.result).toEqual({ ok: true, data: { echoed: 'hi' } });
+
+    // Tool execution must also emit a tool_result ContentBlock so the UI shows the output.
+    const resultBlockStart = out.find(
+      (e) =>
+        e.type === 'block_start' && e.block.type === 'tool_result' && e.block.tool_use_id === 'c1',
+    );
+    expect(resultBlockStart).toBeDefined();
+    if (resultBlockStart?.type === 'block_start' && resultBlockStart.block.type === 'tool_result') {
+      expect(resultBlockStart.block.is_error).toBeUndefined();
+      const content = resultBlockStart.block.content;
+      expect(typeof content === 'string' ? content : '').toContain('echoed');
+    }
+  });
+
+  it('emits a tool_result block with is_error=true when the tool fails', async () => {
+    const provider = new FakeProvider();
+    const { logger } = makeLogger();
+    const { ToolRegistry } = await import('@/tools/toolRegistry');
+    const registry = new ToolRegistry();
+    registry.register({
+      id: 'bad_tool',
+      description: 'always fails',
+      schema: z.any() as unknown as z.ZodType<unknown>,
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      requiresConfirmation: false,
+      source: 'builtin',
+      validate: () => ({ ok: true, data: {} }),
+      invoke: async () => ({ ok: false, error: 'boom' }),
+    });
+    const runner = new AgentRunner({
+      provider,
+      focusedContext: new MutableFocus(),
+      logger,
+      model: () => 'm',
+      toolRegistry: registry,
+    });
+    provider.plan({
+      events: [
+        { type: 'tool_call', call: { id: 'b1', name: 'bad_tool', argsJson: '{}' } },
+        { type: 'done' },
+      ],
+    });
+    provider.plan({ events: [{ type: 'token', text: 'fin' }, { type: 'done' }] });
+    const out = await collect(runner.send({ role: 'user', content: 'q' }, 't'));
+    const resultBlockStart = out.find(
+      (e) =>
+        e.type === 'block_start' && e.block.type === 'tool_result' && e.block.tool_use_id === 'b1',
+    );
+    expect(resultBlockStart).toBeDefined();
+    if (resultBlockStart?.type === 'block_start' && resultBlockStart.block.type === 'tool_result') {
+      expect(resultBlockStart.block.is_error).toBe(true);
+    }
   });
 
   it('passes the OpenAI tools array to the provider when the registry has tools, omits when empty', async () => {

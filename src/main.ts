@@ -17,6 +17,7 @@ import {
 } from '@/storage/safeStorage';
 import type { VaultAdapter } from '@/storage/vaultAdapter';
 import { wireMcp, type McpWiring } from '@/mcp/wireMcp';
+import { createSdkTransportFactory } from '@/mcp/sdkTransportFactory';
 import { ThreadsStore } from '@/storage/threadsStore';
 import { SkillEditorController } from '@/skills/skillEditorController';
 import { SettingsStore } from '@/settings/settingsStore';
@@ -107,6 +108,7 @@ import type { ChatStreamStarter, ThreadsSource } from '@/ui/chatView';
 import { ChatMessageStore } from '@/chat/messageStore';
 import { DEFAULT_THREAD_ID, type ConversationStore } from '@/storage/conversationStore';
 import { createObsidianVaultAdapter } from '@/storage/vaultAdapter';
+import { purgeOldAttachments } from '@/storage/attachmentsRetention';
 import type { StoredMessage } from '@/storage/conversationSchema';
 import type { BannerKind, ChatMessageRecord } from '@/chat/types';
 import { recordsToAnalyzerInputs } from '@/chat/contextBridge';
@@ -307,7 +309,9 @@ function mimeFromExtension(ext: string): string {
   }
 }
 
-function pickFilesViaInput(): Promise<readonly CaptureFileInput[]> {
+function pickFilesViaInput(
+  persist?: (name: string, bytes: Uint8Array) => Promise<string | null>,
+): Promise<readonly CaptureFileInput[]> {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -324,11 +328,14 @@ function pickFilesViaInput(): Promise<readonly CaptureFileInput[]> {
         const f = files.item(i);
         if (f === null) continue;
         const buf = await f.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        const path = persist !== undefined ? await persist(f.name, bytes) : null;
         out.push({
           name: f.name,
           mimeType: f.type !== '' ? f.type : 'application/octet-stream',
-          bytes: new Uint8Array(buf),
+          bytes,
           size: f.size,
+          ...(path !== null ? { path } : {}),
         });
       }
       resolve(out);
@@ -345,6 +352,28 @@ import { wireContextStatusLine, type ContextStatusLineWiring } from '@/ui/wireCo
 const LEO_DIR = '.leo';
 const LOGS_DIR = '.leo/logs';
 const LOG_PATH = '.leo/logs/leo.log';
+const ATTACHMENTS_DIR = '.leo/attachments';
+
+function sanitizeAttachmentName(name: string): string {
+  const stripped = name
+    // eslint-disable-next-line no-control-regex
+    .replace(/[/\\:*?"<>|\x00-\x1f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const safe = stripped.replace(/^\.+/, '');
+  return safe.length === 0 ? 'file' : safe.slice(0, 80);
+}
+
+function attachmentDateStamp(now: Date = new Date()): string {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function attachmentRandomId(): string {
+  return Math.random().toString(36).slice(2, 9); // NOSONAR(typescript:S2245): non-cryptographic filename suffix
+}
 
 export default class LeoPlugin extends Plugin {
   store!: SettingsStore;
@@ -372,6 +401,7 @@ export default class LeoPlugin extends Plugin {
   safeStorage!: SafeStorage;
   tracer!: TracerService;
   mcp: McpWiring | null = null;
+  private mcpStartupController: AbortController | null = null;
   threadsStore: ThreadsStore | null = null;
   skillEditor: SkillEditorController | null = null;
   userTools: UserToolsWiring | null = null;
@@ -582,6 +612,7 @@ export default class LeoPlugin extends Plugin {
     this.editorBridge.start();
 
     const vaultAdapter = createObsidianVaultAdapter(this.app.vault.adapter, this.app);
+    void this.runAttachmentRetention(vaultAdapter);
     this.toolRegistry = new ToolRegistry({
       logger: this.logger,
       isToolAllowedInPlan: (toolId, thread) => {
@@ -1343,11 +1374,22 @@ export default class LeoPlugin extends Plugin {
     }
 
     try {
+      this.mcpStartupController = new AbortController();
       this.mcp = await wireMcp({
         logger: this.logger,
         vault: vaultAdapter,
         toolRegistry: this.toolRegistry,
         safeStorage: this.safeStorage,
+        transportFactory: createSdkTransportFactory({ logger: this.logger }),
+        startupRetry: {
+          signal: this.mcpStartupController.signal,
+          notifier: (failure): void => {
+            new Notice(
+              `MCP server "${failure.serverId}" failed to connect after ${failure.attempts} attempts: ${failure.error}`,
+              10_000,
+            );
+          },
+        },
       });
       void this.mcp.connectAll();
     } catch (err) {
@@ -1936,7 +1978,7 @@ export default class LeoPlugin extends Plugin {
           ...(this.attachments !== null
             ? {
                 attachments: this.attachments,
-                pickFiles: () => pickFilesViaInput(),
+                pickFiles: () => pickFilesViaInput((n, b) => this.persistAttachmentBytes(n, b)),
                 vaultFiles: () =>
                   this.app.vault.getFiles().map((f) => ({
                     path: f.path,
@@ -1944,6 +1986,7 @@ export default class LeoPlugin extends Plugin {
                     kind: classifyVaultFile(f.extension),
                   })),
                 readVaultFile: (path) => this.readVaultFileBytes(path),
+                persistAttachment: (n, b) => this.persistAttachmentBytes(n, b),
               }
             : {}),
           piiDetector: createPiiDetectAgent({
@@ -2119,6 +2162,8 @@ export default class LeoPlugin extends Plugin {
     this.editLock?.release();
     this.planApprovalController?.dispose();
     try {
+      this.mcpStartupController?.abort();
+      this.mcpStartupController = null;
       if (this.mcp !== null) await this.mcp.shutdown();
     } catch {
       /* logged by wiring */
@@ -2149,7 +2194,51 @@ export default class LeoPlugin extends Plugin {
     const buf = await adapter.readBinary(path);
     const bytes = new Uint8Array(buf);
     const name = path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
-    return { name, mimeType, bytes, size: bytes.byteLength };
+    return { name, mimeType, bytes, size: bytes.byteLength, path };
+  }
+
+  private async runAttachmentRetention(adapter: VaultAdapter): Promise<void> {
+    try {
+      const ttl = this.store.get().attachments.retentionDays;
+      const result = await purgeOldAttachments(adapter, ATTACHMENTS_DIR, ttl);
+      if (result.removed > 0 || result.errors > 0) {
+        this.logger?.info('attachments.retention.swept', {
+          retentionDays: ttl,
+          removed: result.removed,
+          kept: result.kept,
+          errors: result.errors,
+        });
+      }
+    } catch (err) {
+      this.logger?.warn('attachments.retention.failure', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private async persistAttachmentBytes(name: string, bytes: Uint8Array): Promise<string | null> {
+    try {
+      const adapter = this.app.vault.adapter;
+      if (!(await adapter.exists(ATTACHMENTS_DIR))) {
+        await adapter.mkdir(ATTACHMENTS_DIR);
+      }
+      const safeName = sanitizeAttachmentName(name);
+      const filename = `${attachmentDateStamp()}-${attachmentRandomId()}-${safeName}`;
+      const path = `${ATTACHMENTS_DIR}/${filename}`;
+      const view = bytes;
+      const buf = view.buffer.slice(
+        view.byteOffset,
+        view.byteOffset + view.byteLength,
+      ) as ArrayBuffer;
+      await adapter.writeBinary(path, buf);
+      return path;
+    } catch (err) {
+      this.logger?.warn('attachments.persist.failure', {
+        name,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   private async analyzeContextForChat(signal: AbortSignal): Promise<ContextData> {

@@ -49,7 +49,7 @@ export function AssistantBlocks(props: AssistantBlocksProps): JSX.Element {
             <div key={key} className="leo-assistant-block leo-assistant-block-group">
               <GroupedToolUses
                 toolName={seg.toolName}
-                blocks={seg.blocks}
+                pairs={seg.pairs}
                 {...(props.toolUseSlots !== undefined ? { slots: props.toolUseSlots } : {})}
               />
             </div>

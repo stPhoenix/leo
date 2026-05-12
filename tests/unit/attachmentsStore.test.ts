@@ -101,6 +101,18 @@ describe('AttachmentsStore', () => {
     store.capture([imageFile('b.png')]);
     expect(listener).toHaveBeenCalledTimes(1);
   });
+
+  it('preserves path field through capture and drainForNext', () => {
+    const store = new AttachmentsStore({ idFactory: mkId() });
+    const withPath: CaptureFileInput = {
+      ...imageFile('a.png'),
+      path: '.leo/attachments/2026-05-12-x-a.png',
+    };
+    store.capture([withPath]);
+    expect(store.getSnapshot()[0]?.path).toBe('.leo/attachments/2026-05-12-x-a.png');
+    const drained = store.drainForNext();
+    expect(drained[0]?.path).toBe('.leo/attachments/2026-05-12-x-a.png');
+  });
 });
 
 function mkId(): () => string {

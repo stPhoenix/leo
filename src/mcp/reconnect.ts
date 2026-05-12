@@ -24,7 +24,7 @@ export interface ReconnectLogger {
 
 export interface ReconnectSchedulerOpts {
   readonly serverId: string;
-  readonly transport: 'stdio' | 'sse';
+  readonly transport: 'stdio' | 'http';
   readonly logger: ReconnectLogger;
   readonly attempt: () => Promise<boolean>;
   readonly maxAttempts?: number;

@@ -85,7 +85,7 @@ describe('validateAddition', () => {
       validateAddition([], {
         id: 'ok',
         enabled: true,
-        transport: 'sse',
+        transport: 'http',
         url: 'not-a-url',
       }),
     ).toMatch(/url/);
@@ -93,7 +93,7 @@ describe('validateAddition', () => {
       validateAddition([], {
         id: 'ok',
         enabled: true,
-        transport: 'sse',
+        transport: 'http',
         url: 'https://x',
       }),
     ).toBeNull();

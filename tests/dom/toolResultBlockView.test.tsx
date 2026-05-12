@@ -80,18 +80,18 @@ describe('ToolResultBlockView — truncation toggle (F05 AC3)', () => {
     );
     expect(container.querySelector('.leo-tool-result.is-collapsed')).not.toBeNull();
     expect(
-      container.querySelector('[data-slot="tool-result-body"]')?.getAttribute('aria-hidden'),
+      container.querySelector('.leo-tool-result-body-inner')?.getAttribute('aria-hidden'),
     ).toBe('true');
     const btn = container.querySelector('[data-slot="tool-result-toggle"]') as HTMLButtonElement;
     expect(btn.textContent).toContain('show more');
     act(() => fireEvent.click(btn));
     expect(container.querySelector('.leo-tool-result.is-collapsed')).toBeNull();
     expect(
-      container.querySelector('[data-slot="tool-result-body"]')?.getAttribute('aria-hidden'),
+      container.querySelector('.leo-tool-result-body-inner')?.getAttribute('aria-hidden'),
     ).toBe('false');
   });
 
-  it('errored ignores long-content collapse threshold', () => {
+  it('errored body collapsed by default, toggle expands', () => {
     const long = 'x'.repeat(5000);
     const { container } = render(
       <ToolResultBlockView
@@ -100,7 +100,10 @@ describe('ToolResultBlockView — truncation toggle (F05 AC3)', () => {
       />,
     );
     expect(container.querySelector('[data-slot="tool-result-body"]')).not.toBeNull();
-    expect(container.querySelector('[data-slot="tool-result-toggle"]')).toBeNull();
+    expect(container.querySelector('.leo-tool-result.is-collapsed')).not.toBeNull();
+    const btn = container.querySelector('[data-slot="tool-result-toggle"]') as HTMLButtonElement;
+    expect(btn).not.toBeNull();
+    expect(btn.textContent).toContain('show more');
   });
 });
 

@@ -1,4 +1,3 @@
-import { debounce } from '@/util/debounce';
 import type { ContextData } from './contextAnalyzer';
 
 export interface ContextSnapshotStore {
@@ -15,17 +14,16 @@ export interface ContextSnapshotStoreDeps {
 }
 
 export function createContextSnapshotStore(deps: ContextSnapshotStoreDeps): ContextSnapshotStore {
-  const debounceMs = deps.debounceMs ?? 200;
   let cached: ContextData | null = null;
   const listeners = new Set<() => void>();
   let inflight: AbortController | null = null;
+  let pending = false;
 
   const notify = (): void => {
     for (const l of listeners) l();
   };
 
   const run = async (signal?: AbortSignal): Promise<ContextData | null> => {
-    if (inflight !== null) inflight.abort();
     const ctrl = new AbortController();
     inflight = ctrl;
     const onAbort = (): void => ctrl.abort();
@@ -49,9 +47,16 @@ export function createContextSnapshotStore(deps: ContextSnapshotStoreDeps): Cont
     }
   };
 
-  const debouncedRefresh = debounce(() => {
-    void run();
-  }, debounceMs);
+  const tick = (): void => {
+    if (inflight !== null) {
+      pending = true;
+      return;
+    }
+    pending = false;
+    void run().finally(() => {
+      if (pending && inflight === null && listeners.size > 0) tick();
+    });
+  };
 
   return {
     getSnapshot: () => cached,
@@ -60,16 +65,17 @@ export function createContextSnapshotStore(deps: ContextSnapshotStoreDeps): Cont
       return () => {
         listeners.delete(cb);
         if (listeners.size === 0) {
-          debouncedRefresh.cancel();
+          pending = false;
           if (inflight !== null) inflight.abort();
         }
       };
     },
     refresh() {
-      debouncedRefresh();
+      tick();
     },
     refreshNow(signal) {
-      debouncedRefresh.cancel();
+      if (inflight !== null) inflight.abort();
+      pending = false;
       return run(signal);
     },
   };

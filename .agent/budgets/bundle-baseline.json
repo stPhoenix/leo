@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "comment": "Bundle baseline. Updated 2026-05-11 after adding MCP-UI support. Net delta vs prior baseline (2,574,610 B): +31,556 B. Adds hand-rolled MCP-UI integration: src/mcp/mcpUiTypes.ts (resource extractor), src/mcp/mcpUiActions.ts (tool|prompt|link|notify action router with URL scheme allowlist), src/ui/chat/blocks/MCPUIBlockView.tsx (sandboxed iframe with theme bridge + postMessage protocol), src/ui/chat/hooks/useObsidianThemeVars.ts (Obsidian CSS-var snapshot), src/ui/chat/mcpUiContext.ts (deps context); plus type-system extension McpUiContent across chat/types, conversationSchema, contextBridge, graph buildToolResultContent. No new prod dependency. Cap reset to 30 KB for incremental tuning on top.",
-  "baselineBytes": 2606166,
+  "comment": "Bundle baseline. Updated 2026-05-11 after wiring @modelcontextprotocol/sdk MCP transport. Delta vs prior baseline (2,606,166 B): +218,217 B. Adds SDK Client + StdioClientTransport + SSEClientTransport pulled by src/mcp/sdkTransportFactory.ts (wired in src/main.ts) to replace NOOP transport that threw on every connect. SDK is bundled — esbuild platform: browser, format: cjs single-file output cannot code-split; node builtins (child_process, stream) stay external. Cap reset to 30 KB for incremental tuning on top.",
+  "baselineBytes": 2824383,
   "maxDeltaBytes": 30720,
   "lastUpdated": "2026-05-11"
 }

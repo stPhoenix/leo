@@ -1,4 +1,4 @@
-export type McpTransportKind = 'stdio' | 'sse';
+export type McpTransportKind = 'stdio' | 'http';
 
 export interface McpStdioConfig {
   readonly id: string;
@@ -10,16 +10,16 @@ export interface McpStdioConfig {
   readonly [extra: string]: unknown;
 }
 
-export interface McpSseConfig {
+export interface McpHttpConfig {
   readonly id: string;
   readonly enabled: boolean;
-  readonly transport: 'sse';
+  readonly transport: 'http';
   readonly url: string;
   readonly headers?: Record<string, string>;
   readonly [extra: string]: unknown;
 }
 
-export type McpServerConfig = McpStdioConfig | McpSseConfig;
+export type McpServerConfig = McpStdioConfig | McpHttpConfig;
 
 export interface McpConfigFile {
   readonly mcpServers?: readonly McpServerConfig[];
@@ -70,10 +70,11 @@ function parseEntry(
   if (typeof enabled !== 'boolean') {
     return { ok: false, error: `entry ${idx} (${id}) missing enabled boolean` };
   }
-  const transport = obj.transport;
-  if (transport !== 'stdio' && transport !== 'sse') {
+  const rawTransport = obj.transport;
+  if (rawTransport !== 'stdio' && rawTransport !== 'http' && rawTransport !== 'sse') {
     return { ok: false, error: `entry ${idx} (${id}) invalid transport` };
   }
+  const transport: 'stdio' | 'http' = rawTransport === 'sse' ? 'http' : rawTransport;
   if (transport === 'stdio') {
     const command = obj.command;
     if (typeof command !== 'string' || command.length === 0) {
@@ -99,7 +100,7 @@ function parseEntry(
     return { ok: false, error: `entry ${idx} (${id}) missing url` };
   }
   const headers = isStringMap(obj.headers) ? (obj.headers as Record<string, string>) : undefined;
-  const data: McpSseConfig = {
+  const data: McpHttpConfig = {
     ...obj,
     id,
     enabled,

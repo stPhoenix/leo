@@ -1,5 +1,10 @@
+import { bytesToText, isTextDecodableMime } from './textDecode';
+
 export const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 export const ATTACHMENT_MAX_COUNT_PER_TURN = 4;
+export const ATTACHMENT_TRUNCATE_TOKENS = 500;
+const CHARS_PER_TOKEN = 4;
+export const ATTACHMENT_TRUNCATE_CHARS = ATTACHMENT_TRUNCATE_TOKENS * CHARS_PER_TOKEN;
 
 export type AttachmentKind = 'image' | 'document';
 
@@ -10,6 +15,7 @@ export interface Attachment {
   readonly mimeType: string;
   readonly bytes: Uint8Array;
   readonly size: number;
+  readonly path?: string;
 }
 
 export type AttachmentRejectReason =
@@ -28,6 +34,7 @@ export interface CaptureFileInput {
   readonly mimeType: string;
   readonly bytes: Uint8Array;
   readonly size: number;
+  readonly path?: string;
 }
 
 export interface CaptureOptions {
@@ -80,6 +87,7 @@ export function captureAttachments(
       mimeType: f.mimeType,
       bytes: f.bytes,
       size: f.size,
+      ...(f.path !== undefined ? { path: f.path } : {}),
     });
     total += 1;
   }
@@ -95,6 +103,43 @@ import type {
 
 export type { ContentBlock, ContentBlockText, ContentBlockImage, ContentBlockDocument };
 
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+function buildTextAttachmentBlock(a: Attachment): ContentBlockText {
+  const decoded = bytesToText(a.bytes);
+  const totalTokens = estimateTokens(decoded);
+  const truncated = totalTokens > ATTACHMENT_TRUNCATE_TOKENS;
+  const body = truncated ? decoded.slice(0, ATTACHMENT_TRUNCATE_CHARS) : decoded;
+  const pathAttr = a.path !== undefined ? ` path="${a.path}"` : '';
+  const nameAttr = ` name="${a.name}"`;
+  const mimeAttr = ` mime="${a.mimeType}"`;
+  const hint =
+    truncated && a.path !== undefined
+      ? ` truncated ${ATTACHMENT_TRUNCATE_TOKENS}/${totalTokens} tokens — use read_file path="${a.path}" for full content`
+      : truncated
+        ? ` truncated ${ATTACHMENT_TRUNCATE_TOKENS}/${totalTokens} tokens — full content unavailable (no path)`
+        : '';
+  return {
+    type: 'text',
+    text: `[attachment${pathAttr}${nameAttr}${mimeAttr}${hint}]\n${body}\n[/attachment]`,
+  };
+}
+
+function buildAttachmentNoteBlock(a: Attachment): ContentBlockText {
+  const pathAttr = a.path !== undefined ? ` path="${a.path}"` : '';
+  const nameAttr = ` name="${a.name}"`;
+  const mimeAttr = ` mime="${a.mimeType}"`;
+  const kindLabel = a.kind === 'image' ? 'image' : 'doc';
+  const sizeAttr = ` size=${a.size}`;
+  const suffix = a.kind === 'image' ? '' : ' — binary, content sent as base64 below';
+  return {
+    type: 'text',
+    text: `[attachment ${kindLabel}${pathAttr}${nameAttr}${mimeAttr}${sizeAttr}${suffix}]`,
+  };
+}
+
 export function buildUserContent(
   text: string,
   attachments: readonly Attachment[],
@@ -102,6 +147,11 @@ export function buildUserContent(
 ): ContentBlock[] {
   const blocks: ContentBlock[] = [{ type: 'text', text }];
   for (const a of attachments) {
+    if (a.kind === 'document' && isTextDecodableMime(a.mimeType)) {
+      blocks.push(buildTextAttachmentBlock(a));
+      continue;
+    }
+    blocks.push(buildAttachmentNoteBlock(a));
     if (a.kind === 'image') {
       blocks.push({
         type: 'image',

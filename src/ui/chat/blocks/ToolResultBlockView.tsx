@@ -18,14 +18,12 @@ export interface ToolResultBlockViewProps {
   readonly renderBody?: (block: ToolResultBlock, associated: ToolUseBlock) => ReactNode;
 }
 
-const DEFAULT_COLLAPSE = 2000;
-
 function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
   const { block, associatedToolUse } = props;
   const isError = block.is_error === true;
-  const contentText = toolResultContentToText(block.content);
-  const long = contentText.length > (props.defaultCollapseAtChars ?? DEFAULT_COLLAPSE);
-  const [expanded, setExpanded] = useState<boolean>(!long || isError);
+  const rawText = toolResultContentToText(block.content);
+  const contentText = formatForDisplay(rawText, isError);
+  const [expanded, setExpanded] = useState<boolean>(false);
   const fromStore = useToolUseStatus(props.runState, block.tool_use_id);
   const mcpUiCtx = useMcpUiContext();
   const mcpUiResources = collectMcpUi(block.content);
@@ -54,7 +52,8 @@ function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
   else status = 'success';
 
   const hasMcpUi = mcpUiResources.length > 0 && mcpUiCtx !== null;
-  const collapsible = status === 'success' && long && props.renderBody === undefined && !hasMcpUi;
+  const hasBody = status === 'success' || status === 'errored';
+  const collapsible = hasBody && props.renderBody === undefined && !hasMcpUi;
   const isCollapsed = collapsible && !expanded;
   return (
     <section
@@ -66,7 +65,7 @@ function ToolResultBlockViewImpl(props: ToolResultBlockViewProps): JSX.Element {
     >
       <header className="leo-tool-result-header" data-slot="tool-result-header">
         {renderHeader(status, block, contentText)}
-        {status === 'success' && long ? (
+        {collapsible ? (
           <button
             type="button"
             className="leo-tool-result-toggle"
@@ -130,9 +129,11 @@ function renderBody(
   if (status === 'errored') {
     return (
       <div className="leo-tool-result-body-wrap">
-        <pre className="leo-tool-result-body" data-slot="tool-result-body" data-status="errored">
-          {contentText}
-        </pre>
+        <div className="leo-tool-result-body-inner" aria-hidden={isCollapsed}>
+          <pre className="leo-tool-result-body" data-slot="tool-result-body" data-status="errored">
+            {contentText}
+          </pre>
+        </div>
       </div>
     );
   }
@@ -141,16 +142,32 @@ function renderBody(
   }
   return (
     <div className="leo-tool-result-body-wrap">
-      <pre
-        className="leo-tool-result-body"
-        data-slot="tool-result-body"
-        data-status="success"
-        aria-hidden={isCollapsed}
-      >
-        {contentText}
-      </pre>
+      <div className="leo-tool-result-body-inner" aria-hidden={isCollapsed}>
+        <pre className="leo-tool-result-body" data-slot="tool-result-body" data-status="success">
+          {contentText}
+        </pre>
+      </div>
     </div>
   );
+}
+
+function formatForDisplay(raw: string, isError: boolean): string {
+  if (raw.length === 0) return raw;
+  if (raw[0] !== '{' && raw[0] !== '[') return raw;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed === null || typeof parsed !== 'object') return raw;
+    const obj = parsed as { ok?: unknown; data?: unknown; error?: unknown };
+    if (isError && typeof obj.error === 'string') return obj.error;
+    if (obj.ok === false && typeof obj.error === 'string') return obj.error;
+    if (obj.ok === true && obj.data !== undefined) {
+      if (typeof obj.data === 'string') return obj.data;
+      return JSON.stringify(obj.data, null, 2);
+    }
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return raw;
+  }
 }
 
 export const ToolResultBlockView = memo(ToolResultBlockViewImpl);

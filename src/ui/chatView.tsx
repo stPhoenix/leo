@@ -139,6 +139,7 @@ export interface ChatViewDeps {
   readonly pickFiles?: () => Promise<readonly CaptureFileInput[]>;
   readonly vaultFiles?: () => readonly VaultFileEntry[];
   readonly readVaultFile?: (path: string) => Promise<CaptureFileInput | null>;
+  readonly persistAttachment?: (name: string, bytes: Uint8Array) => Promise<string | null>;
   readonly piiDetector?: PiiDetectAgent;
   readonly clearThreadReadState?: (threadId: string) => void;
   readonly mcpClient?: MCPClient;
@@ -512,7 +513,17 @@ export class ChatView extends ItemView {
   private async captureAttachmentFiles(files: readonly CaptureFileInput[]): Promise<void> {
     const wiring = this.deps.attachments;
     if (wiring === undefined) return;
-    const out = wiring.store.capture(files);
+    const persist = this.deps.persistAttachment;
+    const withPath: CaptureFileInput[] = [];
+    for (const f of files) {
+      if (f.path !== undefined || persist === undefined) {
+        withPath.push(f);
+        continue;
+      }
+      const path = await persist(f.name, f.bytes);
+      withPath.push(path !== null ? { ...f, path } : f);
+    }
+    const out = wiring.store.capture(withPath);
     if (out.rejected.length > 0) {
       this.appendAttachmentRejections(
         out.rejected.map((r) => ({
@@ -775,7 +786,8 @@ export class ChatView extends ItemView {
   }
 
   private renderContextAsWidget(data: ContextData): void {
-    const contextWindow = resolveContextWindow({ model: data.model });
+    const contextWindow =
+      this.deps.getContextWindow?.() ?? resolveContextWindow({ model: data.model });
     const now = new Date().toISOString();
     this.messageStore.append({
       id: `ctx-${Date.now()}`,

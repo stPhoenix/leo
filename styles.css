@@ -3820,6 +3820,7 @@
 .leo-slash-expanded-body-wrap {
   display: grid;
   grid-template-rows: 1fr;
+  overflow: hidden;
   transition: grid-template-rows 180ms ease;
 }
 
@@ -3842,6 +3843,7 @@
 .leo-slash-expanded-body-wrap > * {
   overflow: hidden;
   min-height: 0;
+  box-sizing: border-box;
 }
 
 @keyframes leo-block-in {

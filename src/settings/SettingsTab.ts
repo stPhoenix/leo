@@ -775,6 +775,22 @@ export class SettingsTab extends PluginSettingTab {
           }));
         });
       });
+
+    new Setting(body)
+      .setName('Attachment retention (days)')
+      .setDesc(
+        'Auto-delete files under .leo/attachments/ older than this many days on plugin load. 0 disables cleanup. Default 7.',
+      )
+      .addText((t) => {
+        t.setValue(String(settings.attachments.retentionDays)).onChange(async (value) => {
+          const parsed = Number.parseInt(value, 10);
+          if (!Number.isFinite(parsed) || parsed < 0) return;
+          await this.deps.store.update((prev) => ({
+            ...prev,
+            attachments: { ...prev.attachments, retentionDays: parsed },
+          }));
+        });
+      });
   }
 
   private renderSkillsBody(
@@ -1146,7 +1162,7 @@ export class SettingsTab extends PluginSettingTab {
 
     new Setting(body).setName('transport').addDropdown((d) => {
       d.addOption('stdio', 'stdio');
-      d.addOption('sse', 'sse');
+      d.addOption('http', 'http (streamable)');
       d.setValue(draft.transport);
       d.onChange((v) => {
         draft.transport = v as McpTransportKind;
@@ -1291,7 +1307,7 @@ export class SettingsTab extends PluginSettingTab {
       config: {
         id: draft.id,
         enabled: draft.enabled,
-        transport: 'sse',
+        transport: 'http',
         url: draft.url,
         ...(Object.keys(headersParse.map).length > 0 ? { headers: headersParse.map } : {}),
       },

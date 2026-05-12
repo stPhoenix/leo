@@ -88,7 +88,7 @@ describe('parseMcpConfig', () => {
     const raw = {
       mcpServers: [
         { id: 'a', enabled: true, transport: 'stdio', command: '/bin/x' },
-        { id: 'b', enabled: true, transport: 'sse', url: 'https://x' },
+        { id: 'b', enabled: true, transport: 'http', url: 'https://x' },
       ],
     };
     const { configs, errors } = parseMcpConfig(raw);
@@ -144,7 +144,7 @@ describe('resolveSecretsForConfig — AC6', () => {
     const cfg: McpServerConfig = {
       id: 's2',
       enabled: true,
-      transport: 'sse',
+      transport: 'http',
       url: 'https://x',
       headers: { Authorization: `${SAFE_STORAGE_PREFIX}missing` },
     };

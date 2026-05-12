@@ -34,26 +34,58 @@ afterEach(() => {
 describe('contextSnapshotStore', () => {
   it('returns null before the first refresh completes', () => {
     const analyze = vi.fn(async () => makeData(1));
-    const store = createContextSnapshotStore({ analyze, debounceMs: 50 });
+    const store = createContextSnapshotStore({ analyze });
     expect(store.getSnapshot()).toBeNull();
   });
 
-  it('debounces multiple refresh() calls into one analyze invocation', async () => {
+  it('fires the first refresh immediately', async () => {
     const analyze = vi.fn(async () => makeData(42));
-    const store = createContextSnapshotStore({ analyze, debounceMs: 50 });
+    const store = createContextSnapshotStore({ analyze });
     store.refresh();
-    store.refresh();
-    store.refresh();
-    expect(analyze).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(50);
-    await Promise.resolve();
     expect(analyze).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
     expect(store.getSnapshot()?.totalTokens).toBe(42);
+  });
+
+  it('coalesces a burst of refresh() calls into one in-flight + one trailing run', async () => {
+    const resolvers: ((d: ContextData) => void)[] = [];
+    const analyze = vi.fn(
+      () =>
+        new Promise<ContextData>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    // Keep a subscriber so cleanup doesn't cancel the pending tick.
+    const store = createContextSnapshotStore({ analyze });
+    const unsub = store.subscribe(() => {});
+
+    store.refresh();
+    expect(analyze).toHaveBeenCalledTimes(1);
+
+    // Burst while first run is in flight — all should collapse into one trailing run.
+    store.refresh();
+    store.refresh();
+    store.refresh();
+    expect(analyze).toHaveBeenCalledTimes(1);
+
+    // Resolve first run → trailing run kicks off automatically.
+    resolvers[0]?.(makeData(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(analyze).toHaveBeenCalledTimes(2);
+
+    // Resolve trailing run; no further runs should start.
+    resolvers[1]?.(makeData(2));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(analyze).toHaveBeenCalledTimes(2);
+    expect(store.getSnapshot()?.totalTokens).toBe(2);
+
+    unsub();
   });
 
   it('notifies subscribers after the cache swaps', async () => {
     const analyze = vi.fn(async () => makeData(7));
-    const store = createContextSnapshotStore({ analyze, debounceMs: 0 });
+    const store = createContextSnapshotStore({ analyze });
     const cb = vi.fn();
     store.subscribe(cb);
     store.refresh();

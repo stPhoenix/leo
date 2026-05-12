@@ -24,6 +24,21 @@ import {
   MAX_RECONNECT_ATTEMPTS,
 } from './reconnect';
 
+export interface StartupRetryFailure {
+  readonly serverId: string;
+  readonly error: string;
+  readonly attempts: number;
+}
+
+export interface StartupRetryOptions {
+  readonly maxAttempts?: number;
+  readonly notifier?: (failure: StartupRetryFailure) => void;
+  readonly signal?: AbortSignal;
+  readonly setTimeoutFn?: typeof setTimeout;
+  readonly clearTimeoutFn?: typeof clearTimeout;
+  readonly random?: () => number;
+}
+
 export interface WireMcpOptions {
   readonly logger: Logger;
   readonly vault: VaultAdapter;
@@ -31,7 +46,10 @@ export interface WireMcpOptions {
   readonly safeStorage: SafeStorage;
   readonly transportFactory?: McpTransportFactory;
   readonly configPath?: string;
+  readonly startupRetry?: StartupRetryOptions;
 }
+
+const DEFAULT_STARTUP_MAX_ATTEMPTS = 3;
 
 export interface McpWiring {
   readonly client: MCPClient;
@@ -112,11 +130,85 @@ export async function wireMcp(opts: WireMcpOptions): Promise<McpWiring> {
 
   const connectAll = async (): Promise<readonly PromiseSettledResult<ServerRuntime>[]> => {
     const configs: readonly McpServerConfig[] = await settingsStore.list();
-    if (configs.length === 0) {
+    const enabled = configs.filter((c) => c.enabled);
+    if (enabled.length === 0) {
       opts.logger.info('mcp.client.ready', { servers: 0 });
       return [];
     }
-    return client.connectAll(configs);
+    const retryOpts = opts.startupRetry;
+    const maxAttempts = retryOpts?.maxAttempts ?? DEFAULT_STARTUP_MAX_ATTEMPTS;
+    const setTimeoutFn = retryOpts?.setTimeoutFn ?? setTimeout;
+    const clearTimeoutFn = retryOpts?.clearTimeoutFn ?? clearTimeout;
+    const random = retryOpts?.random;
+    const signal = retryOpts?.signal;
+
+    const sleepWithSignal = (ms: number): Promise<boolean> =>
+      new Promise<boolean>((resolve) => {
+        if (signal?.aborted === true) {
+          resolve(false);
+          return;
+        }
+        let timer: ReturnType<typeof setTimeoutFn> | null = null;
+        const onAbort = (): void => {
+          if (timer !== null) clearTimeoutFn(timer);
+          resolve(false);
+        };
+        timer = setTimeoutFn(() => {
+          if (signal !== undefined) signal.removeEventListener('abort', onAbort);
+          resolve(true);
+        }, ms);
+        if (signal !== undefined) signal.addEventListener('abort', onAbort, { once: true });
+      });
+
+    const connectWithRetry = async (cfg: McpServerConfig): Promise<ServerRuntime> => {
+      let last: ServerRuntime | undefined;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        if (signal?.aborted === true) break;
+        if (attempt > 1) {
+          const delayMs = computeBackoffDelay(attempt - 2, { random });
+          opts.logger.info('mcp.startup.retry.scheduled', {
+            serverId: cfg.id,
+            transport: cfg.transport,
+            attempt,
+            delayMs,
+          });
+          const slept = await sleepWithSignal(delayMs);
+          if (!slept) break;
+        }
+        last = await client.connectOne(cfg, signal);
+        if (last.status === 'connected') return last;
+      }
+      if (last !== undefined && last.status === 'failed' && signal?.aborted !== true) {
+        const error = last.error ?? 'unknown error';
+        opts.logger.warn('mcp.startup.gaveUp', {
+          serverId: cfg.id,
+          transport: cfg.transport,
+          attempts: maxAttempts,
+          error,
+        });
+        try {
+          retryOpts?.notifier?.({ serverId: cfg.id, error, attempts: maxAttempts });
+        } catch (notifyErr) {
+          opts.logger.warn('mcp.startup.notifier.fail', {
+            serverId: cfg.id,
+            error: notifyErr instanceof Error ? notifyErr.message : String(notifyErr),
+          });
+        }
+      }
+      return (
+        last ?? {
+          id: cfg.id,
+          config: cfg,
+          status: 'failed',
+          tools: [],
+          resources: [],
+          prompts: [],
+          error: 'startup aborted',
+        }
+      );
+    };
+
+    return Promise.allSettled(enabled.map((cfg) => connectWithRetry(cfg)));
   };
 
   const shutdown = async (): Promise<void> => {

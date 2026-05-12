@@ -10,6 +10,12 @@ const tu = (id: string, name: string): ContentBlock => ({
   input: { path: `${id}.md` },
 });
 
+const tr = (toolUseId: string, content = 'ok'): ContentBlock => ({
+  type: 'tool_result',
+  tool_use_id: toolUseId,
+  content,
+});
+
 const txt = (text: string): ContentBlock => ({ type: 'text', text });
 
 const READ_ONLY = new Set(['readNote', 'searchVault']);
@@ -34,8 +40,48 @@ describe('detectGroups (F10 AC1)', () => {
     expect(segs.length).toBe(1);
     expect(segs[0]?.kind).toBe('group');
     if (segs[0]?.kind === 'group') {
-      expect(segs[0].blocks.length).toBe(4);
+      expect(segs[0].pairs.length).toBe(4);
+      expect(segs[0].pairs.every((p) => p.result === undefined)).toBe(true);
     }
+  });
+
+  it('pairs each tool_use with its trailing tool_result', () => {
+    const blocks = [
+      tu('1', 'readNote'),
+      tr('1', 'body 1'),
+      tu('2', 'readNote'),
+      tr('2', 'body 2'),
+      tu('3', 'readNote'),
+      tr('3', 'body 3'),
+    ];
+    const rs = new RunStateStore();
+    for (const id of ['1', '2', '3']) {
+      rs.markRunning(id);
+      rs.markResolved(id, false);
+    }
+    const segs = detectGroups({ blocks, runState: rs.getSnapshot(), isReadOnly });
+    expect(segs.length).toBe(1);
+    expect(segs[0]?.kind).toBe('group');
+    if (segs[0]?.kind === 'group') {
+      expect(segs[0].pairs.length).toBe(3);
+      expect(segs[0].indices).toEqual([0, 1, 2, 3, 4, 5]);
+      expect(segs[0].pairs[0]?.result?.tool_use_id).toBe('1');
+      expect(segs[0].pairs[1]?.result?.tool_use_id).toBe('2');
+      expect(segs[0].pairs[2]?.result?.tool_use_id).toBe('3');
+    }
+  });
+
+  it('mismatched tool_result tool_use_id is not paired', () => {
+    const blocks = [tu('1', 'readNote'), tr('999'), tu('2', 'readNote')];
+    const rs = new RunStateStore();
+    for (const id of ['1', '2']) {
+      rs.markRunning(id);
+      rs.markResolved(id, false);
+    }
+    const segs = detectGroups({ blocks, runState: rs.getSnapshot(), isReadOnly });
+    // tool_use #1 has no matching result; walker stops at the mismatched tr.
+    // Since pairs.length=1 < min=2, the run collapses to singles.
+    expect(segs[0]?.kind).toBe('single');
   });
 
   it('mid-failure splits run into singles', () => {

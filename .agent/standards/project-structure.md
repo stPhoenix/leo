@@ -40,7 +40,7 @@ leo/
 │   ├── rag/                             # RAG engine, graph traversal, scoring, exclude/tag matchers, snapshot
 │   ├── settings/                        # Settings tab, wizard, commands, exclude store, external-agents UI
 │   ├── skills/                          # Skill parse/store/runtime — conditional, hooks, perms, shell, slash, dynamic
-│   ├── storage/                         # VaultAdapter-backed stores (vectors, conversations, threads, plans, safeStorage)
+│   ├── storage/                         # VaultAdapter-backed stores (vectors, conversations, threads, plans, safeStorage, attachments retention)
 │   ├── tools/                           # Tool registry + builtins + user loader + zod adapter
 │   │   ├── builtin/                     # First-party tools (read/write notes, search, glob/grep, askUserQuestion, delegate_*)
 │   │   ├── toolSearch/                  # Deferred-tool fetcher tool wiring

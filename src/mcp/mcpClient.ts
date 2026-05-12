@@ -45,7 +45,7 @@ export interface McpCallToolResult {
 }
 
 export interface McpTransportConnection {
-  readonly kind: 'stdio' | 'sse';
+  readonly kind: 'stdio' | 'http';
   listTools(): Promise<readonly McpToolInfo[]>;
   listResources(): Promise<readonly McpResourceInfo[]>;
   listPrompts(): Promise<readonly McpPromptInfo[]>;
@@ -144,7 +144,7 @@ export class MCPClient {
     return Promise.allSettled(promises);
   }
 
-  private async connectOne(config: McpServerConfig, signal?: AbortSignal): Promise<ServerRuntime> {
+  async connectOne(config: McpServerConfig, signal?: AbortSignal): Promise<ServerRuntime> {
     const start = this.clock();
     this.logger.info('mcp.connect.start', {
       serverId: config.id,
@@ -164,10 +164,24 @@ export class MCPClient {
     try {
       const resolvedConfig = await resolveSecretsForConfig(config, this.secrets);
       connection = await this.transportFactory.connect(resolvedConfig, signal);
+      this.logger.info('mcp.handshake.ok', {
+        serverId: config.id,
+        transport: config.transport,
+        durationMs: this.clock() - start,
+      });
       const [tools, resources, prompts] = await Promise.all([
-        connection.listTools(),
-        connection.listResources(),
-        connection.listPrompts(),
+        connection.listTools().then((r) => {
+          this.logger.debug('mcp.discovery.tools.ok', { serverId: config.id, count: r.length });
+          return r;
+        }),
+        connection.listResources().then((r) => {
+          this.logger.debug('mcp.discovery.resources.ok', { serverId: config.id, count: r.length });
+          return r;
+        }),
+        connection.listPrompts().then((r) => {
+          this.logger.debug('mcp.discovery.prompts.ok', { serverId: config.id, count: r.length });
+          return r;
+        }),
       ]);
       for (const tool of tools) {
         this.registerTool(config.id, tool);
@@ -196,6 +210,18 @@ export class MCPClient {
       return runtime;
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
+      const statusCode =
+        err !== null &&
+        typeof err === 'object' &&
+        typeof (err as { code?: unknown }).code === 'number'
+          ? (err as { code: number }).code
+          : undefined;
+      const cause =
+        err !== null &&
+        typeof err === 'object' &&
+        (err as { cause?: unknown }).cause instanceof Error
+          ? (err as { cause: Error }).cause.message
+          : undefined;
       const runtime: ServerRuntime = {
         ...initial,
         status: 'failed',
@@ -207,6 +233,8 @@ export class MCPClient {
         serverId: config.id,
         transport: config.transport,
         error,
+        ...(statusCode !== undefined ? { statusCode } : {}),
+        ...(cause !== undefined ? { cause } : {}),
         durationMs: this.clock() - start,
       });
       if (connection !== undefined) {
