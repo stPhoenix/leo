@@ -47,6 +47,7 @@ export function createTodoWriteTool(
     parameters: jsonSchemaFromZod(TodoWriteSchema),
     requiresConfirmation: false,
     source: 'builtin',
+    shouldDefer: false,
     validate: validateFromZod(TodoWriteSchema),
     async invoke(args, ctx) {
       const key = opts.keyFor({ thread: ctx.thread });

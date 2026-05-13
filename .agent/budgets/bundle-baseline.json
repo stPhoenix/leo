@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "comment": "Bundle baseline. Updated 2026-05-11 after wiring @modelcontextprotocol/sdk MCP transport. Delta vs prior baseline (2,606,166 B): +218,217 B. Adds SDK Client + StdioClientTransport + SSEClientTransport pulled by src/mcp/sdkTransportFactory.ts (wired in src/main.ts) to replace NOOP transport that threw on every connect. SDK is bundled — esbuild platform: browser, format: cjs single-file output cannot code-split; node builtins (child_process, stream) stay external. Cap reset to 30 KB for incremental tuning on top.",
-  "baselineBytes": 2824383,
+  "comment": "Bundle baseline. Updated 2026-05-13 after adding the `task` subagent tool slice. Delta vs prior baseline (2,824,383 B): +32,755 B. Adds src/agent/task/* (orchestrator, single-turn graph driver, tool-registry proxy, widget controller, terminal snapshot, run-id), src/tools/builtin/task.ts, src/prompts/{agent/taskSubagentPreamble, tools/builtin/taskDescription}, and src/ui/chat/blocks/Subagent{Live,Terminal}Block.tsx. Reuses existing graph/EventChannel/ConfirmationController surfaces — no new third-party deps. Cap reset to 30 KB for further incremental tuning.",
+  "baselineBytes": 2857138,
   "maxDeltaBytes": 30720,
-  "lastUpdated": "2026-05-11"
+  "lastUpdated": "2026-05-13"
 }

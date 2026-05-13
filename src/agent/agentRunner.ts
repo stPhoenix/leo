@@ -342,6 +342,16 @@ export class AgentRunner {
     };
   }
 
+  /**
+   * Public surface that returns a fresh `GraphDeps` copy. The subagent
+   * orchestrator (`task` tool) consumes this, then layers its own overrides
+   * (private history map, filtered tool registry, sub-thread `agentIdFor`,
+   * `planMode: null`, `autocompact: null`) on top.
+   */
+  buildGraphDepsForSubagent(): GraphDeps {
+    return this.buildGraphDeps();
+  }
+
   private buildGraphDeps(): GraphDeps {
     return {
       provider: this.provider,

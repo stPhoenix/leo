@@ -21,6 +21,7 @@ leo/
 │   │   ├── externalAgent/               # External-agent delegation — adapter contract, refine, FSM, slot, writer, widget
 │   │   │   └── adapters/                # Adapter base + concrete adapters (inline-agent, openfang)
 │   │   │       └── openfang/            # OpenFang/Demiurg A2A adapter — config schema, http transport, polling, artifacts, failure decoder, http-error mapper, requestUrl driver
+│   │   ├── task/                        # Subagent slice — orchestrator, single-turn graph driver, registry proxy, widget controller, terminal snapshot
 │   │   ├── toolSearch/                  # Deferred-tool fetcher — request assembly, gating, mapping, session
 │   │   └── wiki/                        # Wiki slice — ingest, lint, search, inbox; mutex-gated
 │   │       ├── inbox/                   # wiki-inbox.md pipe-table parser/serializer
@@ -34,7 +35,7 @@ leo/
 │   ├── mcp/                             # MCP client, config, reconnect, resource picker, prompt-skill adapter, MCP-UI actions/types
 │   ├── platform/                        # Logger, sinks, error channel, langfuse tracer, ALS init
 │   ├── prompts/                         # Centralized LLM prompts + tool descriptions, mirrors agent/ + tools/ tree
-│   │   ├── agent/                       # Per-slice agent prompts (leoPreamble, compact, canvas, externalAgent, wiki)
+│   │   ├── agent/                       # Per-slice agent prompts (leoPreamble, compact, canvas, externalAgent, wiki, task subagent preamble)
 │   │   └── tools/                       # Tool description strings (builtin, planMode, todoWrite, toolSearch)
 │   ├── providers/                       # LLM + embedding providers, langchain bridge, manager, registry, trace
 │   ├── rag/                             # RAG engine, graph traversal, scoring, exclude/tag matchers, snapshot
@@ -42,7 +43,7 @@ leo/
 │   ├── skills/                          # Skill parse/store/runtime — conditional, hooks, perms, shell, slash, dynamic
 │   ├── storage/                         # VaultAdapter-backed stores (vectors, conversations, threads, plans, safeStorage, attachments retention)
 │   ├── tools/                           # Tool registry + builtins + user loader + zod adapter
-│   │   ├── builtin/                     # First-party tools (read/write notes, search, glob/grep, askUserQuestion, delegate_*)
+│   │   ├── builtin/                     # First-party tools (read/write notes, search, glob/grep, askUserQuestion, delegate_*, task)
 │   │   ├── toolSearch/                  # Deferred-tool fetcher tool wiring
 │   │   └── user/                        # User-defined tool loader
 │   ├── ui/                              # ChatView, blocks, widgets, composer, dialogs, header, notifications

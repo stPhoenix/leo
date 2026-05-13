@@ -213,6 +213,19 @@ import {
   unregisterLiveController,
 } from '@/agent/externalAgent/liveControllerRegistry';
 import { ExternalAgentWidgetController } from '@/agent/externalAgent/widgetController';
+import {
+  SUBAGENT_LIVE_KIND,
+  SUBAGENT_TERMINAL_KIND,
+  registerTaskLiveController,
+  releaseTaskLiveController,
+} from '@/agent/task/liveControllerRegistry';
+import { SubagentLiveBlock } from '@/ui/chat/blocks/SubagentLiveBlock';
+import { SubagentTerminalBlock } from '@/ui/chat/blocks/SubagentTerminalBlock';
+import { TaskOrchestrator, type TaskRunHandle } from '@/agent/task/orchestrator';
+import type { TaskTerminalSnapshot } from '@/agent/task/terminalSnapshot';
+import { buildTaskTerminalSnapshot } from '@/agent/task/terminalSnapshot';
+import { TASK_SUBAGENT_PREAMBLE } from '@/prompts/agent/taskSubagentPreamble';
+import { createTaskTool } from '@/tools/builtin/task';
 import { createOrchestratorUrlFetcher } from '@/agent/wiki/ingest/orchestratorUrlFetcher';
 import type { RunHandle as ExternalAgentRunHandle } from '@/agent/externalAgent/subgraph';
 import { OpenfangAdapter } from '@/agent/externalAgent/adapters/openfang';
@@ -413,6 +426,7 @@ export default class LeoPlugin extends Plugin {
   adapterRegistry!: AdapterRegistry;
   externalAgentSlots!: SlotManager;
   externalAgentOrchestrator!: ExternalAgentOrchestrator;
+  taskOrchestrator: TaskOrchestrator | null = null;
   canvasMutex!: CanvasMutex;
   canvasPreviewingDispatcher!: CanvasPreviewingDispatcher;
   canvasOrchestrator!: CanvasOrchestrator;
@@ -952,6 +966,72 @@ export default class LeoPlugin extends Plugin {
             });
           } catch (err) {
             this.logger.warn('externalAgent.live.append-failed', {
+              runId: handle.runId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        },
+      }) as unknown as ToolSpec<unknown, unknown>,
+    );
+
+    registerWidget(SUBAGENT_LIVE_KIND, SubagentLiveBlock);
+    registerWidget(SUBAGENT_TERMINAL_KIND, SubagentTerminalBlock);
+    const persistTaskSnapshot = (snapshot: TaskTerminalSnapshot): void => {
+      try {
+        const id = `task-${snapshot.runId}`;
+        const existing = this.chatMessageStore.getSnapshot().find((m) => m.id === id);
+        if (existing !== undefined) {
+          this.chatMessageStore.update(id, (prev) => ({
+            ...prev,
+            widget: { kind: SUBAGENT_TERMINAL_KIND, props: snapshot },
+          }));
+        } else {
+          this.chatMessageStore.append({
+            id,
+            role: 'widget',
+            content: '',
+            createdAt: new Date().toISOString(),
+            widget: { kind: SUBAGENT_TERMINAL_KIND, props: snapshot },
+          });
+        }
+        releaseTaskLiveController(snapshot.runId);
+      } catch (err) {
+        this.logger.warn('task.persist.append-failed', {
+          runId: snapshot.runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+    this.taskOrchestrator = new TaskOrchestrator({
+      buildGraphDeps: () => this.agentRunner.buildGraphDepsForSubagent(),
+      confirmation: this.confirmationController,
+      subagentPreamble: TASK_SUBAGENT_PREAMBLE,
+      logger: this.logger,
+      persistSnapshot: persistTaskSnapshot,
+    });
+    this.toolRegistry.register(
+      createTaskTool({
+        orchestrator: this.taskOrchestrator,
+        confirmation: this.confirmationController,
+        onHandle: (handle: TaskRunHandle) => {
+          registerTaskLiveController(handle.runId, handle.controller);
+          try {
+            this.chatMessageStore.append({
+              id: `task-${handle.runId}`,
+              role: 'widget',
+              content: '',
+              createdAt: new Date().toISOString(),
+              widget: {
+                kind: SUBAGENT_LIVE_KIND,
+                props: {
+                  runId: handle.runId,
+                  threadId: handle.threadId,
+                  prompt: handle.controller.viewModel().prompt,
+                },
+              },
+            });
+          } catch (err) {
+            this.logger.warn('task.live.append-failed', {
               runId: handle.runId,
               error: err instanceof Error ? err.message : String(err),
             });
@@ -2105,6 +2185,35 @@ export default class LeoPlugin extends Plugin {
             content: '',
             createdAt: new Date().toISOString(),
             widget: { kind: EXTERNAL_AGENT_WIDGET_KIND, props: snapshot },
+          });
+        } catch {
+          /* persistence failure on reload-flush is non-fatal */
+        }
+        handle.cancel();
+      }
+    } catch {
+      /* */
+    }
+    try {
+      const liveTasks = this.taskOrchestrator?.liveHandlesSnapshot() ?? [];
+      for (const handle of liveTasks) {
+        const controller = handle.controller;
+        const vm = controller.viewModel();
+        const reloadVm = {
+          ...vm,
+          phase: 'error' as const,
+          error: { code: 'reload' as const, message: 'Plugin reloaded during run' },
+          startedAt: vm.startedAt ?? Date.now(),
+          endedAt: vm.endedAt ?? Date.now(),
+        };
+        const snapshot = buildTaskTerminalSnapshot({ view: reloadVm });
+        try {
+          this.chatMessageStore?.append({
+            id: `task-${snapshot.runId}`,
+            role: 'widget',
+            content: '',
+            createdAt: new Date().toISOString(),
+            widget: { kind: SUBAGENT_TERMINAL_KIND, props: snapshot },
           });
         } catch {
           /* persistence failure on reload-flush is non-fatal */

@@ -68,7 +68,7 @@ export function createDelegateExternalTool(
     parameters: jsonSchemaFromZod(DelegateExternalSchema),
     requiresConfirmation: false, // F06 owns its own per-call confirmation
     source: 'builtin',
-    shouldDefer: true,
+    shouldDefer: false,
     validate(raw): ToolResult<DelegateExternalArgs> {
       const parsed = DelegateExternalSchema.safeParse(raw);
       if (!parsed.success) {

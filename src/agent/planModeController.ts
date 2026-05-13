@@ -16,7 +16,7 @@ export type StaleTodoSuppressReason = 'empty' | 'rate-limit' | 'todowrite-called
 export function buildPlanEnterReminder(planFilePath: string): string {
   return [
     '<system-reminder>',
-    'Plan mode is now active. Available tools: read_note, read_file, search_vault, list_notes, glob_vault, grep_vault, open_note, reveal_in_note, reveal_in_canvas, TodoWrite, AskUserQuestion, ExitPlanMode, delegate_canvas_create, delegate_canvas_content_edit, delegate_canvas_layout_edit. Write-capable tools (create_note, edit_note, append_to_note, create_folder, rename_note, move_note, copy_note, delete_note, delete_folder, delegate_external) are blocked. Canvas delegates are visible but each requires explicit user confirmation; only invoke them after ExitPlanMode is approved.',
+    'Plan mode is now active. Available tools: read_note, read_file, search_vault, list_notes, glob_vault, grep_vault, open_note, reveal_in_note, reveal_in_canvas, TodoWrite, AskUserQuestion, ExitPlanMode, delegate_canvas_create, delegate_canvas_content_edit, delegate_canvas_layout_edit. Write-capable tools (create_note, edit_note, append_to_note, create_folder, rename_note, move_note, copy_note, delete_note, delete_folder, delegate_external, task) are blocked. Canvas delegates are visible but each requires explicit user confirmation; only invoke them after ExitPlanMode is approved.',
     '',
     'Explore the vault, design the note structure (which notes to create or edit, how they link, headings, frontmatter), and present your plan via ExitPlanMode when ready. Use AskUserQuestion if a structural choice depends on user preference.',
     '',
