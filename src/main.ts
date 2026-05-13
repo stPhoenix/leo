@@ -1867,6 +1867,7 @@ export default class LeoPlugin extends Plugin {
           workspaceNavigator: this.workspaceNavigator,
           streamStarter,
           messageStore: this.chatMessageStore,
+          settingsStore: this.store,
           ...(this.threadsStore !== null
             ? { threadsSource: this.buildThreadsSource(this.threadsStore) }
             : {}),

@@ -11,6 +11,7 @@ import type { ContextIndicatorSource } from '../../ContextIndicator';
 import type { IndexStatusSource } from '../../IndexStatusBlock';
 import type { PhaseSource, QueueSource } from '../../ChatRoot';
 import type { ThreadsUiSource } from '../../ThreadSwitcher';
+import type { TemperatureSource } from '../../temperatureSource';
 import { marked } from 'marked';
 import type { CodeBlockClipboard } from '../../codeBlockEnhancer';
 import { enhanceCodeBlocks } from '../../codeBlockEnhancer';
@@ -97,6 +98,24 @@ export function makeQueueSource(length: number): QueueSource {
   return {
     getLength: () => length,
     subscribe: () => () => {},
+  };
+}
+
+export function makeTemperatureSource(initial = 0.7): TemperatureSource {
+  let value = initial;
+  const listeners = new Set<() => void>();
+  return {
+    getValue: () => value,
+    subscribe: (cb) => {
+      listeners.add(cb);
+      return () => {
+        listeners.delete(cb);
+      };
+    },
+    setValue: (next) => {
+      value = next;
+      for (const l of listeners) l();
+    },
   };
 }
 

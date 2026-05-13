@@ -18,6 +18,8 @@ import {
 import type { PlanModeSource } from './planModeSource';
 import type { PlanMode } from '@/agent/planModeController';
 import { ThreadSwitcher, type ThreadsUiSource } from './ThreadSwitcher';
+import { TemperatureSliderLive } from './TemperatureSliderLive';
+import type { TemperatureSource } from './temperatureSource';
 import { IndexStatusBlock, type IndexStatusSource } from './IndexStatusBlock';
 import type { DrainListener } from '@/indexer/vaultIndexer';
 import { isCollapsed } from '../responsiveCollapse';
@@ -67,6 +69,7 @@ export interface ChatRootProps {
   readonly clarifyingQuestionSource?: ClarifyingQuestionSource;
   readonly planModeSource?: PlanModeSource;
   readonly headerStats?: ReactNode;
+  readonly temperatureSource?: TemperatureSource;
   readonly threadsSource?: ThreadsUiSource;
   readonly indexStatusSource?: IndexStatusSource;
   readonly indexDrainSubscribe?: (listener: DrainListener) => () => void;
@@ -153,6 +156,16 @@ export function ChatRoot(props: ChatRootProps): JSX.Element {
         onOverflowMenu={props.onOverflowMenu}
         planModeActive={planModeActive}
         {...(props.headerStats !== undefined ? { stats: props.headerStats } : {})}
+        {...(props.temperatureSource !== undefined
+          ? {
+              temperature: (
+                <TemperatureSliderLive
+                  source={props.temperatureSource}
+                  {...(props.setIcon !== undefined ? { setIcon: props.setIcon } : {})}
+                />
+              ),
+            }
+          : {})}
         {...(props.threadsSource !== undefined
           ? { threadSwitcher: <ThreadSwitcher source={props.threadsSource} /> }
           : {})}

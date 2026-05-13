@@ -10,6 +10,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { createElement } from 'react';
 import { HeaderStatsLive } from './chat/HeaderStatsLive';
 import { makeContextUsageSource } from './chat/headerStatsSources';
+import { makeTemperatureSource, type TemperatureSource } from './chat/temperatureSource';
+import type { SettingsStore } from '@/settings/settingsStore';
 import type { Logger } from '@/platform/Logger';
 import { ChatMessageStore } from '@/chat/messageStore';
 import { toLegacyContent } from '@/chat/types';
@@ -146,6 +148,7 @@ export interface ChatViewDeps {
   readonly vault?: VaultAdapter;
   readonly editorBridge?: EditNoteBridge;
   readonly subscribeThemeChange?: (cb: () => void) => () => void;
+  readonly settingsStore?: SettingsStore;
 }
 
 export interface CompactRunnerAdapter {
@@ -321,6 +324,7 @@ export class ChatView extends ItemView {
     };
 
     const headerStats = this.buildHeaderStats();
+    const temperatureSource = this.buildTemperatureSource();
     const attachmentsWiring = this.deps.attachments;
     if (attachmentsWiring !== undefined) {
       const unsubscribe = attachmentsWiring.store.subscribe(() => this.requestRender());
@@ -360,6 +364,7 @@ export class ChatView extends ItemView {
       ...(acceptRejectSource !== undefined ? { acceptRejectSource } : {}),
       ...(this.deps.threadsSource !== undefined ? { threadsSource: this.deps.threadsSource } : {}),
       ...(headerStats !== null ? { headerStats } : {}),
+      ...(temperatureSource !== null ? { temperatureSource } : {}),
       ...(this.deps.indexStatusSource !== undefined
         ? { indexStatusSource: this.deps.indexStatusSource }
         : {}),
@@ -938,6 +943,12 @@ export class ChatView extends ItemView {
     if (getWindow === undefined || snapshot === undefined) return null;
     const context = makeContextUsageSource(snapshot, getWindow);
     return createElement(HeaderStatsLive, { context });
+  }
+
+  private buildTemperatureSource(): TemperatureSource | null {
+    const store = this.deps.settingsStore;
+    if (store === undefined) return null;
+    return makeTemperatureSource(store);
   }
 
   private buildContextIndicatorSource(): {

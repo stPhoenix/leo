@@ -15,6 +15,7 @@ import {
   makeMessageStore,
   makePhaseSource,
   makeQueueSource,
+  makeTemperatureSource,
   makeThreadsSource,
   mockClipboard,
   mockRenderMarkdownFn,
@@ -122,6 +123,13 @@ export const HeaderStatsCritical: Story = {
   args: {
     messageStore: makeMessageStore(exampleConversation),
     headerStats: <HeaderStat variant="context" label="ctx" pct={94} detail="188k / 200k tokens" />,
+  },
+};
+
+export const WithTemperatureSlider: Story = {
+  args: {
+    messageStore: makeMessageStore(exampleConversation),
+    temperatureSource: makeTemperatureSource(0.7),
   },
 };
 
