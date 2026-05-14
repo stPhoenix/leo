@@ -14,9 +14,12 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 
 - Sidebar chat panel with streaming markdown, code copy, syntax highlighting, and per-message actions (copy, regenerate, edit-and-resend, delete).
 - Multiple conversation threads, persisted to `.leo/conversations/`.
-- Composer with paste / drop attachments, `@`-mention vault files, and `/` slash-commands (`/context`, `/rag`, custom skills).
+- Composer with paste / drop attachments, `@`-mention vault files (fuzzy picker), and `/` slash-commands (`/context`, `/rag`, `/wiki`, `/canvas`, `/compact`, custom skills).
 - Stop streaming mid-response — in-flight tool calls finish atomically, the rest are skipped.
 - Inline tool-confirmation prompts (Allow once / Allow for thread / Deny) for any write or destructive tool.
+- Live header widgets: token-usage stats, context budget, temperature slider (per-thread, with optional external settings source).
+- Collapsible agent progress tree — nested tool calls grouped by call site, with live phase chips.
+- Auto-scroll anchoring (sticks to bottom unless user scrolls up) and code-block copy enhancer for markdown previews.
 - Token usage shown per message; cost shown when a cloud provider is configured.
 - Fully themed via Obsidian CSS variables — light, dark, and custom themes work out of the box.
 
@@ -31,12 +34,15 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 ### Agent
 
 - LangGraph.js state-graph agent loop: gather-context → retrieve → model → tools → route.
-- Built-in tools: `read_note`, `create_note`, `edit_note`, `append_to_note`, `delete_note`, `move_note`, `copy_note`, `create_folder`, `delete_folder`, `list_notes`, `search_vault`, `glob_vault`, `grep_vault`, `read_file`, `open_note`, `reveal_in_note`, `TodoWrite`, `AskUserQuestion`, `EnterPlanMode` / `ExitPlanMode`, `delegate_external`.
-- Skills: reusable prompt presets (`{name, description, systemPrompt, allowedTools?, defaultModel?}`) stored in `.leo/skills/`. Built-in skills bundled; user skills user-editable.
+- Built-in tools: `read_note`, `create_note`, `edit_note`, `append_to_note`, `delete_note`, `move_note`, `copy_note`, `rename_note`, `create_folder`, `delete_folder`, `list_notes`, `search_vault`, `glob_vault`, `grep_vault`, `read_file`, `open_note`, `reveal_in_note`, `TodoWrite`, `AskUserQuestion`, `EnterPlanMode` / `ExitPlanMode`, `task`, `delegate_external`, `delegate_canvas_*`, `reveal_in_canvas`, `delegate_wiki_ingest`, `delegate_wiki_lint`, `search_wiki`, `inbox_add`.
+- `task` sub-agent tool: spawn a single-turn subgraph with its own prompt, time budget (5 min default, 30 min hard cap), and tool-registry proxy. Concurrency limited (default 4 in-flight). Live + terminal widget per sub-run; orchestrator tracks runs, timeout extension, and structured error codes.
+- Skills: reusable prompt presets (`{name, description, systemPrompt, allowedTools?, defaultModel?}`) stored in `.leo/skills/`. Built-in skills bundled; user skills user-editable from an in-app skill editor.
 - Plan mode: read-only exploration with plan-file authoring under `.leo/plans/<slug>.md`, gated by an Approve / Edit / Reject dialog.
+- Clarifying questions: agent can pause with `AskUserQuestion` to surface a structured choice dialog (single / multi-select, optional notes).
 - Per-thread tool allowlists — "Allow for thread" remembered until the thread is deleted.
 - Cancellation everywhere via `AbortController`.
-- External-agent delegation subgraph (refine → ready → running → writing) with adapter registry, per-thread one-slot concurrency, and a live widget.
+- External-agent delegation subgraph (refine → ready → running → writing) with adapter registry, per-thread one-slot concurrency, and a live widget. Bundled adapters: in-process inline agent and OpenFang / Demiurg A2A (HTTP transport, polling, artifact download, failure decoder, HTTP-error mapping).
+- Pre-flight PII review before any external dispatch: a local main-assistant LLM scans the resolved prompt for emails, phones, government IDs, payment cards, API keys, JWTs, IBANs, IPs, and credentialed URLs; you decide mask / remove / ignore per finding in an inline banner.
 - Deferred / on-demand tool fetcher — large tool catalogs surfaced by name, schemas pulled in only when the agent calls `ToolSearch` (keyword or `select:` query).
 - `/compact` live widget with phase sink — manual compaction with a terminal snapshot of what got summarized.
 
@@ -50,7 +56,9 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 ### Skills
 
 - Markdown / JSON skill files in `.leo/skills/` parsed into `Skill` objects (`{name, description, systemPrompt, allowedTools?, defaultModel?}`). Built-ins bundled, user skills user-editable.
+- In-app skill editor — create, edit, and delete user skills without leaving Obsidian.
 - Conditional skills (auto-trigger on matchers), pre/post hooks, per-skill permission overrides, shell-command skills, slash-command skills, and dynamic (LLM-generated) skills.
+- Variable substitutions and a listing-attachment helper inside skill prompts.
 - Selected skill's `systemPrompt` injected into LangGraph state at thread init; `allowedTools` filters the registry per thread.
 - `/slash_expanded` chat block renders the resolved slash invocation inline so you can audit what the skill actually expanded to.
 
@@ -82,6 +90,8 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 - Google Gemini via `@langchain/google-genai` — `gemini-2.5-pro`, `2.5-flash`, `2.5-flash-lite`, `2.0-flash` bundled; auto-detect through Generative Language API.
 - Streaming, FIFO request queue, exponential-backoff retries, 120 s per-request timeout.
 - Auto-detect models via `/v1/models` (or provider-native list endpoint).
+- Anthropic native token counting via `/v1/messages/count_tokens` — exact pre-flight counts when an API key is present, falling back to the hybrid estimator otherwise.
+- Obsidian `requestUrl` fetch bridge — bypasses Electron / renderer CORS so cloud SDKs work without preload tricks; adapts the narrow Obsidian fetch signature to the wider `RequestInit` shape that LangChain and the OpenAI SDK expect.
 - Cloud API keys stored in Electron `safeStorage` (OS keyring) — never plaintext in the vault.
 - Langfuse tracing integration (optional).
 
@@ -98,12 +108,15 @@ Leo embeds an AI assistant into your vault. The agent has live access to the act
 - Server config in `.leo/config.json` (`mcpServers` shape compatible with the standard MCP host config).
 - Discovered tools registered as `mcp.<serverId>.<toolName>` (confirmation-gated by default).
 - Resources insertable via picker; prompts surfaced as skills.
+- **MCP-UI**: tool results containing `ui://` resources (HTML or Remote-DOM) are rendered inline as interactive blocks; UI actions piped back to the host as structured events.
 - Reconnect with exponential backoff; clean stdio shutdown on plugin unload.
 
 ### Privacy
 
 - 100% local by default. No telemetry. No cloud calls unless you configure a cloud provider or cloud-backed MCP server.
 - All vault state — config, conversations, skills, plans, logs, embeddings — lives under `<vault>/.leo/` via `VaultAdapter`. Encryption-friendly (your vault encryption applies), sync-friendly.
+- Pre-flight PII scan before any external-agent dispatch (see Agent section) — sensitive content never leaves the vault without an explicit per-finding decision.
+- Attachments retention purge — staged attachment blobs under `.leo/attachments/` are aged out on a configurable retention window so old paste / drop captures don't accumulate indefinitely.
 
 ---
 

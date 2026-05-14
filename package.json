@@ -1,6 +1,6 @@
 {
   "name": "leo",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Local-first Obsidian chat, RAG, and agent plugin.",
   "main": "main.js",
   "scripts": {
