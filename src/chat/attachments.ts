@@ -149,6 +149,7 @@ export function buildUserContent(
   for (const a of attachments) {
     if (a.kind === 'document' && isTextDecodableMime(a.mimeType)) {
       blocks.push(buildTextAttachmentBlock(a));
+      blocks.push(buildChipBlock(a));
       continue;
     }
     blocks.push(buildAttachmentNoteBlock(a));
@@ -175,8 +176,20 @@ export function buildUserContent(
         size: a.size,
       });
     }
+    blocks.push(buildChipBlock(a));
   }
   return blocks;
+}
+
+function buildChipBlock(a: Attachment): ContentBlock {
+  return {
+    type: 'attachment_chip',
+    kind: a.kind,
+    name: a.name,
+    mimeType: a.mimeType,
+    size: a.size,
+    ...(a.path !== undefined ? { path: a.path } : {}),
+  };
 }
 
 export function toBase64(bytes: Uint8Array): string {
@@ -213,6 +226,7 @@ export function estimateAttachmentTokens(blocks: readonly ContentBlock[]): numbe
   let sum = 0;
   for (const b of blocks) {
     if (b.type === 'text') sum += Math.round(b.text.length / 4);
+    else if (b.type === 'attachment_chip') continue;
     else sum += IMAGE_DOCUMENT_TOKENS;
   }
   return sum;

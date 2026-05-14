@@ -101,3 +101,87 @@ describe('zodAdapter', () => {
     expect(r).toEqual({ ok: false, error: 'invalid args' });
   });
 });
+
+describe('validateFromZod — stringified JSON coercion', () => {
+  it('accepts native arrays untouched', () => {
+    const validate = validateFromZod(z.object({ tags: z.array(z.string()) }));
+    expect(validate({ tags: ['a', 'b'] })).toEqual({ ok: true, data: { tags: ['a', 'b'] } });
+  });
+
+  it('coerces a stringified array into a real array', () => {
+    const validate = validateFromZod(z.object({ tags: z.array(z.string()) }));
+    expect(validate({ tags: '["a","b"]' })).toEqual({ ok: true, data: { tags: ['a', 'b'] } });
+  });
+
+  it('coerces a stringified object into a real object', () => {
+    const validate = validateFromZod(z.object({ meta: z.object({ k: z.number() }) }));
+    expect(validate({ meta: '{"k":1}' })).toEqual({ ok: true, data: { meta: { k: 1 } } });
+  });
+
+  it('does not coerce a string field even when its value looks like JSON', () => {
+    const validate = validateFromZod(z.object({ name: z.string() }));
+    expect(validate({ name: '[1,2,3]' })).toEqual({ ok: true, data: { name: '[1,2,3]' } });
+  });
+
+  it('coerces through ZodOptional wrapper', () => {
+    const validate = validateFromZod(z.object({ tags: z.array(z.string()).optional() }));
+    expect(validate({ tags: '["a"]' })).toEqual({ ok: true, data: { tags: ['a'] } });
+  });
+
+  it('coerces through ZodNullable wrapper', () => {
+    const validate = validateFromZod(z.object({ tags: z.array(z.string()).nullable() }));
+    expect(validate({ tags: '["a"]' })).toEqual({ ok: true, data: { tags: ['a'] } });
+  });
+
+  it('coerces through ZodDefault wrapper', () => {
+    const validate = validateFromZod(z.object({ tags: z.array(z.string()).default([]) }));
+    expect(validate({ tags: '["x","y"]' })).toEqual({ ok: true, data: { tags: ['x', 'y'] } });
+  });
+
+  it('coerces a record-typed field', () => {
+    const validate = validateFromZod(z.object({ meta: z.record(z.string(), z.number()) }));
+    expect(validate({ meta: '{"a":1,"b":2}' })).toEqual({
+      ok: true,
+      data: { meta: { a: 1, b: 2 } },
+    });
+  });
+
+  it('leaves a malformed JSON string alone and surfaces the Zod error', () => {
+    const validate = validateFromZod(z.object({ tags: z.array(z.string()) }));
+    const r = validate({ tags: 'not-json' });
+    expect(r.ok).toBe(false);
+  });
+
+  it('does not coerce strings that do not start with [ or {', () => {
+    const validate = validateFromZod(z.object({ tags: z.array(z.string()) }));
+    expect(validate({ tags: 'a,b,c' }).ok).toBe(false);
+  });
+
+  it('only mutates the offending fields, not the rest', () => {
+    const validate = validateFromZod(z.object({ name: z.string(), tags: z.array(z.string()) }));
+    expect(validate({ name: 'leo', tags: '["a"]' })).toEqual({
+      ok: true,
+      data: { name: 'leo', tags: ['a'] },
+    });
+  });
+
+  it('accepts whitespace-padded stringified JSON', () => {
+    const validate = validateFromZod(z.object({ tags: z.array(z.string()) }));
+    expect(validate({ tags: '  ["a","b"]  ' })).toEqual({
+      ok: true,
+      data: { tags: ['a', 'b'] },
+    });
+  });
+
+  it('does not apply preprocess for non-object root schemas', () => {
+    const validate = validateFromZod(z.array(z.string()));
+    expect(validate(['a', 'b'])).toEqual({ ok: true, data: ['a', 'b'] });
+    expect(validate('["a","b"]').ok).toBe(false);
+  });
+
+  it('falls back to Zod error when JSON parses but yields the wrong type', () => {
+    const validate = validateFromZod(z.object({ tags: z.array(z.string()) }));
+    // String parses to a number, not an array — Zod should reject with type mismatch.
+    expect(validate({ tags: '42' }).ok).toBe(false);
+  });
+});

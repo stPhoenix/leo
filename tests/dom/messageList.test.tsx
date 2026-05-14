@@ -96,6 +96,53 @@ describe('MessageList — render order + role styling (FR-CHAT-02)', () => {
   });
 });
 
+describe('MessageList — attachment chip badge', () => {
+  it('mounts SentAttachmentList when user record carries attachment_chip blocks', () => {
+    const store = new ChatMessageStore();
+    store.set([
+      {
+        id: 'u1',
+        role: 'user',
+        content: 'check this',
+        createdAt: '2026-05-14T10:00:00.000Z',
+        blocks: [
+          { type: 'text', text: 'check this' },
+          {
+            type: 'attachment_chip',
+            kind: 'document',
+            name: 'notes.md',
+            mimeType: 'text/markdown',
+            size: 1024,
+          },
+        ],
+      },
+    ]);
+    const { container } = render(
+      <MessageList
+        store={store}
+        renderMarkdown={fakeAssistantMarkdown}
+        clipboard={noopClipboard}
+      />,
+    );
+    const list = container.querySelector('[data-slot="sent-attachments"]');
+    expect(list).not.toBeNull();
+    expect(container.textContent).toContain('notes.md');
+  });
+
+  it('does not mount SentAttachmentList for plain text user record', () => {
+    const store = new ChatMessageStore();
+    store.set([record('u1', 'user', 'just text')]);
+    const { container } = render(
+      <MessageList
+        store={store}
+        renderMarkdown={fakeAssistantMarkdown}
+        clipboard={noopClipboard}
+      />,
+    );
+    expect(container.querySelector('[data-slot="sent-attachments"]')).toBeNull();
+  });
+});
+
 describe('MessageList — markdown rendering (FR-CHAT-06, AC4)', () => {
   it('invokes renderMarkdown once per assistant message into its bubble container', () => {
     const renderMarkdown = vi.fn<Parameters<MarkdownRenderFn>, ReturnType<MarkdownRenderFn>>(

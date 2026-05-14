@@ -305,6 +305,27 @@ describe('analyzeContextUsage — AC7 final-total selection', () => {
     expect(res.tokenTotalSource).toBe('estimated');
     expect(res.totalTokens).toBe(8);
   });
+
+  it('skips zero apiTotal and falls through to estimated sum', async () => {
+    const { logger } = makeLogger();
+    const counters = makeCounters();
+    const res = await analyzeContextUsage({
+      messages: [{ role: 'user', content: 'hi' }],
+      originalMessages: [
+        { role: 'user', content: 'earlier' },
+        {
+          role: 'assistant',
+          content: 'done',
+          usage: { input_tokens: 0 },
+        } as ChatMessage,
+      ],
+      model: 'm',
+      logger,
+      counters,
+    });
+    expect(res.tokenTotalSource).toBe('estimated');
+    expect(res.totalTokens).toBe(8);
+  });
 });
 
 describe('analyzeContextUsage — AC8 abort propagation', () => {

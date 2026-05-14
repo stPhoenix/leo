@@ -6,7 +6,7 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import type { ChatMessageRecord } from '@/chat/types';
+import type { AttachmentChipBlock, ChatMessageRecord } from '@/chat/types';
 import type { ChatMessageStore } from '@/chat/messageStore';
 import { enhanceCodeBlocks, type CodeBlockClipboard } from './codeBlockEnhancer';
 import { isNearBottom } from './scrollAnchoring';
@@ -200,7 +200,7 @@ function UserBubble(props: UserBubbleProps): JSX.Element {
     );
   }
   const userBlocks = record.blocks ?? [];
-  const hasAttachments = userBlocks.some((b) => b.type === 'image' || b.type === 'document');
+  const chips = userBlocks.filter((b): b is AttachmentChipBlock => b.type === 'attachment_chip');
   const slashExpanded = userBlocks.filter((b) => b.type === 'slash_expanded');
   return (
     <div className="leo-bubble leo-bubble-user">
@@ -210,7 +210,7 @@ function UserBubble(props: UserBubbleProps): JSX.Element {
           {formatBubbleTime(record.createdAt)}
         </time>
       </header>
-      {hasAttachments ? <SentAttachmentList blocks={userBlocks} setIcon={props.setIcon} /> : null}
+      {chips.length > 0 ? <SentAttachmentList chips={chips} setIcon={props.setIcon} /> : null}
       <div className="leo-bubble-body" data-slot="user-text">
         {record.content}
       </div>

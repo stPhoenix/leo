@@ -82,6 +82,8 @@ export function toTokenBlock(b: ContentBlock): TokenBlock {
       return { type: 'redacted_thinking', data: b.data };
     case 'slash_expanded':
       return { type: 'text', text: b.expandedBody };
+    case 'attachment_chip':
+      return { type: 'text', text: '' };
     case 'mcp_ui':
       return { type: 'text', text: `[MCP UI: ${b.uri}]` };
   }

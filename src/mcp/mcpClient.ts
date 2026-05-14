@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Logger } from '@/platform/Logger';
 import type { JsonSchema, ToolCtx, ToolResult, ToolSpec } from '@/tools/types';
 import type { ToolRegistry } from '@/tools/toolRegistry';
+import { coerceStringifiedJsonByJsonSchema } from '@/tools/jsonSchemaCoerce';
 
 // MCP tools advertise their own JsonSchema via the server handshake; we keep
 // that for LLM tool-calling and satisfy the zod contract with a permissive
@@ -503,7 +504,10 @@ export class MCPClient {
       source: 'mcp',
       isMcp: true,
       mcpServerId: serverId,
-      validate: (raw): ToolResult<unknown> => ({ ok: true, data: raw }),
+      validate: (raw): ToolResult<unknown> => ({
+        ok: true,
+        data: coerceStringifiedJsonByJsonSchema(raw, tool.inputSchema),
+      }),
       invoke: async (args, ctx): Promise<ToolResult<unknown>> =>
         this.callTool(serverId, tool.name, args, ctx),
     };

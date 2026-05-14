@@ -138,15 +138,21 @@ export async function analyzeContextUsage(inputs: ContextAnalyzerInputs): Promis
     }
   }
 
-  const totalTokens = exactTotal ?? apiTotal ?? hybridTotal ?? estimatedTotal;
-  const tokenTotalSource: TokenTotalSource =
-    exactTotal !== null
-      ? 'exact'
-      : apiTotal !== null
-        ? 'api'
-        : hybridTotal !== null
-          ? 'hybrid'
-          : 'estimated';
+  let totalTokens: number;
+  let tokenTotalSource: TokenTotalSource;
+  if (exactTotal !== null && exactTotal > 0) {
+    totalTokens = exactTotal;
+    tokenTotalSource = 'exact';
+  } else if (apiTotal !== null && apiTotal > 0) {
+    totalTokens = apiTotal;
+    tokenTotalSource = 'api';
+  } else if (hybridTotal !== null && hybridTotal > 0) {
+    totalTokens = hybridTotal;
+    tokenTotalSource = 'hybrid';
+  } else {
+    totalTokens = estimatedTotal;
+    tokenTotalSource = 'estimated';
+  }
 
   return {
     systemTokens,

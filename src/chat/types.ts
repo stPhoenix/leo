@@ -89,6 +89,15 @@ export interface SlashExpandedBlock {
   readonly expandedBody: string;
 }
 
+export interface AttachmentChipBlock {
+  readonly type: 'attachment_chip';
+  readonly kind: 'image' | 'document';
+  readonly name: string;
+  readonly mimeType: string;
+  readonly size: number;
+  readonly path?: string;
+}
+
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock
@@ -99,6 +108,7 @@ export type ContentBlock =
   | ImageBlock
   | DocumentBlock
   | SlashExpandedBlock
+  | AttachmentChipBlock
   | McpUiContent;
 
 export interface ChatMessageRecord {

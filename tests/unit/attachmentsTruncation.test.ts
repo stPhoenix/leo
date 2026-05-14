@@ -28,12 +28,13 @@ describe('buildUserContent — text-document truncation', () => {
   it('emits single text block with full content when under cap', () => {
     const att = textAttachment('hello world', 'text/plain', '.leo/attachments/x.txt');
     const blocks = buildUserContent('', [att], toBase64);
-    expect(blocks).toHaveLength(2);
+    expect(blocks).toHaveLength(3);
     expect(blocks[1]).toMatchObject({ type: 'text' });
     const text = (blocks[1] as { text: string }).text;
     expect(text).toContain('hello world');
     expect(text).toContain('path=".leo/attachments/x.txt"');
     expect(text).not.toContain('truncated');
+    expect(blocks[2]).toMatchObject({ type: 'attachment_chip', kind: 'document' });
   });
 
   it('truncates over-cap text to ATTACHMENT_TRUNCATE_CHARS and includes read_file hint with path', () => {
@@ -82,10 +83,11 @@ describe('buildUserContent — text-document truncation', () => {
       path: '.leo/attachments/r.pdf',
     };
     const blocks = buildUserContent('', [att], toBase64);
-    expect(blocks).toHaveLength(3);
+    expect(blocks).toHaveLength(4);
     expect(blocks[1]).toMatchObject({ type: 'text' });
     expect((blocks[1] as { text: string }).text).toContain('binary');
     expect(blocks[2]).toMatchObject({ type: 'document' });
+    expect(blocks[3]).toMatchObject({ type: 'attachment_chip', kind: 'document' });
   });
 
   it('image keeps ImageBlock and prepends a note with path', () => {
@@ -99,10 +101,11 @@ describe('buildUserContent — text-document truncation', () => {
       path: '.leo/attachments/pic.png',
     };
     const blocks = buildUserContent('', [att], toBase64);
-    expect(blocks).toHaveLength(3);
+    expect(blocks).toHaveLength(4);
     expect(blocks[1]).toMatchObject({ type: 'text' });
     expect((blocks[1] as { text: string }).text).toContain('path=".leo/attachments/pic.png"');
     expect(blocks[2]).toMatchObject({ type: 'image' });
+    expect(blocks[3]).toMatchObject({ type: 'attachment_chip', kind: 'image' });
   });
 
   it('preserves UTF-8 multibyte content in truncated text', () => {

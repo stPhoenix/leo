@@ -139,7 +139,9 @@ export class VaultIndexer {
       this.logger?.info('indexer.header.user-choice', { choice });
       if (choice === 'now') {
         for (const entry of this.files.listMarkdown()) {
-          if (INDEXABLE_EXTENSIONS.has(entry.extension)) this.queue.add(entry.path);
+          if (!INDEXABLE_EXTENSIONS.has(entry.extension)) continue;
+          if (this.isExcluded(entry.path)) continue;
+          this.queue.add(entry.path);
         }
         await writeIndexHeader(this.vault, {
           model: expected.model,
@@ -291,7 +293,9 @@ export class VaultIndexer {
   private async persistManifestSnapshot(): Promise<void> {
     if (this.disposed) return;
     const expected = this.spec();
-    const entries = this.files.listMarkdown().filter((e) => INDEXABLE_EXTENSIONS.has(e.extension));
+    const entries = this.files
+      .listMarkdown()
+      .filter((e) => INDEXABLE_EXTENSIONS.has(e.extension) && !this.isExcluded(e.path));
     const manifest: IndexManifestEntry[] = entries.map((e) => ({
       path: e.path,
       mtime: e.mtime,
@@ -391,7 +395,9 @@ export class VaultIndexer {
       this.waitingOnUser = false;
       this.logger?.info('indexer.reindex.resume-from-wait', { model: expected.model });
     }
-    const entries = this.files.listMarkdown().filter((e) => INDEXABLE_EXTENSIONS.has(e.extension));
+    const entries = this.files
+      .listMarkdown()
+      .filter((e) => INDEXABLE_EXTENSIONS.has(e.extension) && !this.isExcluded(e.path));
     for (const entry of entries) this.queue.add(entry.path);
     this.emitDirtyIfChanged();
     this.logger?.info('indexer.reindex.enqueued', { count: entries.length });
@@ -459,14 +465,18 @@ export class VaultIndexer {
     const storedManifest = this.lastHeader?.manifest ?? [];
     const currentEntries = this.files
       .listMarkdown()
-      .filter((e) => INDEXABLE_EXTENSIONS.has(e.extension));
+      .filter((e) => INDEXABLE_EXTENSIONS.has(e.extension) && !this.isExcluded(e.path));
     const current: IndexManifestEntry[] = currentEntries.map((e) => ({
       path: e.path,
       mtime: e.mtime,
       size: e.size,
     }));
     const { added, modified, removed } = diffManifest(storedManifest, current);
-    for (const p of [...added, ...modified, ...removed]) this.queue.add(p);
+    for (const p of [...added, ...modified]) {
+      if (this.isExcluded(p)) continue;
+      this.queue.add(p);
+    }
+    for (const p of removed) this.queue.add(p);
     this.emitDirtyIfChanged();
     this.logger?.info('indexer.diff.complete', {
       added: added.length,

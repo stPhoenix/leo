@@ -2,55 +2,46 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 import { SentAttachmentList } from '@/ui/chat/SentAttachmentList';
-import type { ContentBlock } from '@/chat/types';
+import type { AttachmentChipBlock } from '@/chat/types';
 
 afterEach(() => cleanup());
 
 describe('SentAttachmentList', () => {
-  it('returns null when no image/document blocks present', () => {
-    const blocks: readonly ContentBlock[] = [{ type: 'text', text: 'hello' }];
-    const { container } = render(<SentAttachmentList blocks={blocks} />);
+  it('returns null when no chips', () => {
+    const { container } = render(<SentAttachmentList chips={[]} />);
     expect(container.querySelector('[data-slot="sent-attachments"]')).toBeNull();
   });
 
-  it('renders an image chip with thumbnail data URL', () => {
-    const blocks: readonly ContentBlock[] = [
+  it('renders an image chip', () => {
+    const chips: readonly AttachmentChipBlock[] = [
       {
-        type: 'image',
-        source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+        type: 'attachment_chip',
+        kind: 'image',
         name: 'shot.png',
+        mimeType: 'image/png',
         size: 1234,
       },
     ];
-    const { container } = render(<SentAttachmentList blocks={blocks} />);
-    const thumb = container.querySelector('img[data-slot="sent-thumb"]') as HTMLImageElement;
-    expect(thumb).not.toBeNull();
-    expect(thumb.getAttribute('src')).toBe('data:image/png;base64,AAAA');
+    const { container } = render(<SentAttachmentList chips={chips} />);
+    const item = container.querySelector('[data-slot="sent-attachment"]');
+    expect(item).not.toBeNull();
+    expect(item?.getAttribute('data-kind')).toBe('image');
     expect(container.textContent).toContain('shot.png');
   });
 
-  it('renders a document chip without thumbnail', () => {
-    const blocks: readonly ContentBlock[] = [
+  it('renders a document chip', () => {
+    const chips: readonly AttachmentChipBlock[] = [
       {
-        type: 'document',
-        source: { type: 'base64', media_type: 'text/markdown', data: 'AAAA' },
+        type: 'attachment_chip',
+        kind: 'document',
         name: 'notes.md',
+        mimeType: 'text/markdown',
         size: 200,
       },
     ];
-    const { container } = render(<SentAttachmentList blocks={blocks} />);
-    expect(container.querySelector('img[data-slot="sent-thumb"]')).toBeNull();
+    const { container } = render(<SentAttachmentList chips={chips} />);
+    const item = container.querySelector('[data-slot="sent-attachment"]');
+    expect(item?.getAttribute('data-kind')).toBe('document');
     expect(container.textContent).toContain('notes.md');
-  });
-
-  it('falls back to generic name when block has none', () => {
-    const blocks: readonly ContentBlock[] = [
-      {
-        type: 'document',
-        source: { type: 'base64', media_type: 'application/pdf', data: 'AAAA' },
-      },
-    ];
-    const { container } = render(<SentAttachmentList blocks={blocks} />);
-    expect(container.textContent).toContain('document');
   });
 });

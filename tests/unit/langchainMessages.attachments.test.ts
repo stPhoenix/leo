@@ -57,6 +57,28 @@ describe('toLangchainMessages — multimodal user blocks', () => {
     });
   });
 
+  it('drops attachment_chip blocks from provider content', () => {
+    const msgs: ChatMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'hi' },
+          {
+            type: 'attachment_chip',
+            kind: 'document',
+            name: 'notes.md',
+            mimeType: 'text/markdown',
+            size: 200,
+          },
+        ],
+      },
+    ];
+    const lc = toLangchainMessages(msgs);
+    const content = (lc[0] as HumanMessage).content as Array<Record<string, unknown>>;
+    expect(content).toHaveLength(1);
+    expect(content[0]).toEqual({ type: 'text', text: 'hi' });
+  });
+
   it('flattens text content for system / assistant / tool roles', () => {
     const msgs: ChatMessage[] = [
       { role: 'system', content: 'sys' },

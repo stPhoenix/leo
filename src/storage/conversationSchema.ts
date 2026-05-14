@@ -255,6 +255,24 @@ function parseSingleBlock(obj: Record<string, unknown>): ContentBlock | null {
       };
     }
   }
+  if (type === 'attachment_chip') {
+    const kind = obj.kind;
+    if (
+      (kind === 'image' || kind === 'document') &&
+      typeof obj.name === 'string' &&
+      typeof obj.mimeType === 'string' &&
+      typeof obj.size === 'number'
+    ) {
+      return {
+        type: 'attachment_chip',
+        kind,
+        name: obj.name,
+        mimeType: obj.mimeType,
+        size: obj.size,
+        ...(typeof obj.path === 'string' ? { path: obj.path } : {}),
+      };
+    }
+  }
   return null;
 }
 

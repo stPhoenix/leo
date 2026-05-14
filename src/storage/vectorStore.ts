@@ -303,6 +303,17 @@ export class VectorStore {
     return Array.from(this.rows.values());
   }
 
+  async listPaths(): Promise<readonly string[]> {
+    if (!this.loaded) {
+      try {
+        await this.open();
+      } catch {
+        return [];
+      }
+    }
+    return Array.from(this.byPath.keys());
+  }
+
   async rebuild(): Promise<Result<void>> {
     try {
       this.close();

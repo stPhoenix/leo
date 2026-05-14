@@ -98,6 +98,7 @@ describe('VaultIndexer', () => {
     onProcess?: (path: string) => Promise<void> | void;
     revertModel?: () => void;
     idleMs?: number;
+    isExcluded?: (path: string) => boolean;
   }) {
     const vault = new FakeVault();
     const files = new FakeFiles(opts.files ?? []);
@@ -131,6 +132,7 @@ describe('VaultIndexer', () => {
       idleMs: () => opts.idleMs ?? 30_000,
       queueDebounceMs: 0,
       minChunkBudgetMs: 1,
+      ...(opts.isExcluded !== undefined ? { isExcluded: opts.isExcluded } : {}),
     });
     return { vault, files, events, indexer, processed, promptCalls: () => promptCalls };
   }
@@ -554,6 +556,72 @@ describe('VaultIndexer', () => {
       mtime: 10,
       size: 100,
     });
+    indexer.shutdown();
+  });
+
+  it('runDiffSweep skips excluded added/modified paths', async () => {
+    const { indexer } = await buildIndexer({
+      existingHeader: { model: 'm1', manifest: [] },
+      files: [mdFile('keep.md', 1, 10), mdFile('jim/a.md', 2, 20), mdFile('jim/b.md', 3, 30)],
+      isExcluded: (p) => p.startsWith('jim/'),
+    });
+    await indexer.init();
+    expect([...indexer.queueSnapshot()].sort()).toEqual(['keep.md']);
+    indexer.shutdown();
+  });
+
+  it('runDiffSweep still propagates removals for excluded paths so vectors get cleaned', async () => {
+    const { indexer } = await buildIndexer({
+      existingHeader: {
+        model: 'm1',
+        manifest: [{ path: 'jim/old.md', mtime: 1, size: 10 }],
+      },
+      files: [],
+      isExcluded: (p) => p.startsWith('jim/'),
+    });
+    await indexer.init();
+    expect(indexer.queueSnapshot()).toEqual(['jim/old.md']);
+    indexer.shutdown();
+  });
+
+  it("mismatch + 'now' choice skips excluded paths when enqueuing full reindex", async () => {
+    const { indexer } = await buildIndexer({
+      existingHeader: { model: 'old' },
+      spec: { model: 'm1' },
+      files: [mdFile('a.md', 1, 10), mdFile('jim/secret.md', 2, 20)],
+      prompt: 'now',
+      isExcluded: (p) => p.startsWith('jim/'),
+    });
+    await indexer.init();
+    expect([...indexer.queueSnapshot()].sort()).toEqual(['a.md']);
+    indexer.shutdown();
+  });
+
+  it('reindexAll skips excluded paths', async () => {
+    const { indexer, processed } = await buildIndexer({
+      existingHeader: { model: 'm1' },
+      files: [mdFile('a.md', 1, 10), mdFile('jim/b.md', 2, 20)],
+      isExcluded: (p) => p.startsWith('jim/'),
+    });
+    await indexer.init();
+    const count = await indexer.reindexAll();
+    expect(count).toBe(1);
+    expect(processed).toEqual(['a.md']);
+    indexer.shutdown();
+  });
+
+  it('persistManifestSnapshot omits excluded paths from manifest', async () => {
+    const { indexer, vault } = await buildIndexer({
+      existingHeader: { model: 'm1', manifest: [] },
+      files: [mdFile('a.md', 10, 100), mdFile('jim/b.md', 20, 200)],
+      isExcluded: (p) => p.startsWith('jim/'),
+    });
+    await indexer.init();
+    await indexer.drainPending();
+    const stored = JSON.parse(vault.files.get(INDEX_HEADER_PATH)!) as {
+      manifest: Array<{ path: string; mtime: number; size: number }>;
+    };
+    expect(stored.manifest.map((m) => m.path)).toEqual(['a.md']);
     indexer.shutdown();
   });
 

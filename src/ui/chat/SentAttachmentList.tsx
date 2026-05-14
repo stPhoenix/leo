@@ -1,64 +1,53 @@
 import { useEffect, useRef } from 'react';
-import type { ContentBlock, ImageBlock, DocumentBlock } from '@/chat/types';
+import type { AttachmentChipBlock } from '@/chat/types';
 
 export interface SentAttachmentListProps {
-  readonly blocks: readonly ContentBlock[];
+  readonly chips: readonly AttachmentChipBlock[];
   readonly setIcon?: (el: HTMLElement, name: string) => void;
 }
 
 export function SentAttachmentList(props: SentAttachmentListProps): JSX.Element | null {
-  const items: ReadonlyArray<ImageBlock | DocumentBlock> = props.blocks.filter(
-    (b): b is ImageBlock | DocumentBlock => b.type === 'image' || b.type === 'document',
-  );
-  if (items.length === 0) return null;
+  if (props.chips.length === 0) return null;
   return (
     <ul className="leo-sent-attachments" aria-label="sent attachments" data-slot="sent-attachments">
-      {items.map((b, i) => (
-        <SentAttachmentChip key={`${b.type}-${i}`} block={b} setIcon={props.setIcon} />
+      {props.chips.map((c, i) => (
+        <SentAttachmentChip key={`${c.kind}-${i}-${c.name}`} chip={c} setIcon={props.setIcon} />
       ))}
     </ul>
   );
 }
 
 function SentAttachmentChip(props: {
-  readonly block: ImageBlock | DocumentBlock;
+  readonly chip: AttachmentChipBlock;
   readonly setIcon?: (el: HTMLElement, name: string) => void;
 }): JSX.Element {
-  const { block } = props;
+  const { chip } = props;
   const iconRef = useRef<HTMLSpanElement | null>(null);
-  const isImage = block.type === 'image';
-  const name = block.name ?? (isImage ? 'image' : 'document');
-  const previewUrl = isImage ? `data:${block.source.media_type};base64,${block.source.data}` : null;
+  const isImage = chip.kind === 'image';
 
   useEffect(() => {
     const el = iconRef.current;
-    if (el === null || previewUrl !== null) return;
+    if (el === null) return;
     el.replaceChildren();
     const glyph = isImage ? 'image' : 'file-text';
     if (props.setIcon !== undefined) props.setIcon(el, glyph);
     else el.textContent = isImage ? '🖼' : '📄';
-  }, [isImage, previewUrl, props.setIcon]);
+  }, [isImage, props.setIcon]);
 
   return (
     <li
-      className={`leo-attachment-chip is-${block.type} is-sent`}
+      className={`leo-attachment-chip is-${chip.kind} is-sent`}
       data-slot="sent-attachment"
-      data-kind={block.type}
-      title={name}
+      data-kind={chip.kind}
+      title={chip.name}
     >
-      {previewUrl !== null ? (
-        <img className="leo-attachment-thumb" src={previewUrl} alt="" data-slot="sent-thumb" />
-      ) : (
-        <span ref={iconRef} className="leo-attachment-icon" data-slot="sent-icon" />
-      )}
+      <span ref={iconRef} className="leo-attachment-icon" data-slot="sent-icon" />
       <span className="leo-attachment-name" data-slot="sent-name">
-        {name}
+        {chip.name}
       </span>
-      {block.size !== undefined ? (
-        <span className="leo-attachment-size" data-slot="sent-size">
-          {formatBytes(block.size)}
-        </span>
-      ) : null}
+      <span className="leo-attachment-size" data-slot="sent-size">
+        {formatBytes(chip.size)}
+      </span>
     </li>
   );
 }

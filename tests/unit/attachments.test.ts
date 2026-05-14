@@ -129,7 +129,7 @@ describe('buildUserContent — AC4', () => {
       },
     ];
     const blocks = buildUserContent('hello', atts, toBase64);
-    expect(blocks).toHaveLength(5);
+    expect(blocks).toHaveLength(7);
     expect(blocks[0]).toEqual({ type: 'text', text: 'hello' });
     expect(blocks[1]).toMatchObject({ type: 'text' });
     expect((blocks[1] as { text: string }).text).toContain(
@@ -146,10 +146,18 @@ describe('buildUserContent — AC4', () => {
       name: 'p.png',
       size: 3,
     });
-    expect(blocks[3]).toMatchObject({ type: 'text' });
-    expect((blocks[3] as { text: string }).text).toContain('r.pdf');
-    expect((blocks[3] as { text: string }).text).toContain('binary');
-    expect(blocks[4]).toEqual({
+    expect(blocks[3]).toEqual({
+      type: 'attachment_chip',
+      kind: 'image',
+      name: 'p.png',
+      mimeType: 'image/png',
+      size: 3,
+      path: '.leo/attachments/2026-05-12-abc-p.png',
+    });
+    expect(blocks[4]).toMatchObject({ type: 'text' });
+    expect((blocks[4] as { text: string }).text).toContain('r.pdf');
+    expect((blocks[4] as { text: string }).text).toContain('binary');
+    expect(blocks[5]).toEqual({
       type: 'document',
       source: {
         type: 'base64',
@@ -158,6 +166,41 @@ describe('buildUserContent — AC4', () => {
       },
       name: 'r.pdf',
       size: 3,
+    });
+    expect(blocks[6]).toEqual({
+      type: 'attachment_chip',
+      kind: 'document',
+      name: 'r.pdf',
+      mimeType: 'application/pdf',
+      size: 3,
+      path: '.leo/attachments/2026-05-12-def-r.pdf',
+    });
+  });
+
+  it('emits an attachment_chip for text-decoded documents alongside inline text', () => {
+    const atts: Attachment[] = [
+      {
+        id: 'a1',
+        kind: 'document',
+        name: 'note.md',
+        mimeType: 'text/markdown',
+        bytes: new TextEncoder().encode('# hello'),
+        size: 7,
+        path: '.leo/attachments/note.md',
+      },
+    ];
+    const blocks = buildUserContent('hi', atts, toBase64);
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0]).toEqual({ type: 'text', text: 'hi' });
+    expect(blocks[1]).toMatchObject({ type: 'text' });
+    expect((blocks[1] as { text: string }).text).toContain('# hello');
+    expect(blocks[2]).toEqual({
+      type: 'attachment_chip',
+      kind: 'document',
+      name: 'note.md',
+      mimeType: 'text/markdown',
+      size: 7,
+      path: '.leo/attachments/note.md',
     });
   });
   it('produces single text block when no attachments', () => {

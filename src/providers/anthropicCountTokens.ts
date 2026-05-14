@@ -215,6 +215,8 @@ function toAnthropicBlock(b: ContentBlock): AnthropicContentBlock | null {
       return { type: 'text', text: b.expandedBody };
     case 'mcp_ui':
       return { type: 'text', text: `[MCP UI: ${b.uri}]` };
+    case 'attachment_chip':
+      return null;
     case 'redacted_thinking':
       return null;
   }

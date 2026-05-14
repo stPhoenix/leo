@@ -253,9 +253,40 @@ export async function wireIndexerRag(opts: IndexerRagWiringOptions): Promise<Ind
   // an empty list, which makes `runDiffSweep` classify every persisted entry
   // as removed and triggers a full reindex on every restart.
 
+  const scrubExcludedVectors = async (matcher: (path: string) => boolean): Promise<void> => {
+    let paths: readonly string[];
+    try {
+      paths = await vectorStore.listPaths();
+    } catch (err) {
+      opts.logger.warn('indexer.exclude.scrub-list-failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    let removed = 0;
+    for (const path of paths) {
+      if (!matcher(path)) continue;
+      const result = await vectorStore.deleteByPath(path);
+      if (result.ok) {
+        removed += 1;
+      } else {
+        opts.logger.warn('indexer.exclude.scrub-delete-failed', {
+          path,
+          error: result.error.message,
+        });
+      }
+    }
+    if (removed > 0) {
+      opts.logger.info('indexer.exclude.vectors-purged', { count: removed });
+    }
+  };
+
   const unsubExclude = excludeStore.subscribe(() => {
     vaultIndexer.purgeExcluded(excludeStore.matcher());
+    void scrubExcludedVectors(excludeStore.matcher());
   });
+
+  void scrubExcludedVectors(excludeStore.matcher());
 
   const statusBar = new IndexerStatusBar({
     subscribe: (l) => vaultIndexer.subscribe(l),

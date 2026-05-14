@@ -1,29 +1,28 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { SentAttachmentList } from './SentAttachmentList';
 import { mockSetIcon } from './__stories__/mocks/sources';
-import type { ContentBlock } from '@/chat/types';
+import type { AttachmentChipBlock } from '@/chat/types';
 
-const TINY_PNG_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAA1BMVEX///+nxBvIAAAAC0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII=';
-
-const blocks: readonly ContentBlock[] = [
-  { type: 'text', text: 'attached for review' },
+const chips: readonly AttachmentChipBlock[] = [
   {
-    type: 'image',
-    source: { type: 'base64', media_type: 'image/png', data: TINY_PNG_BASE64 },
+    type: 'attachment_chip',
+    kind: 'image',
     name: 'screenshot.png',
+    mimeType: 'image/png',
     size: 84_320,
   },
   {
-    type: 'document',
-    source: { type: 'base64', media_type: 'text/markdown', data: 'IyBub3Rlcw==' },
+    type: 'attachment_chip',
+    kind: 'document',
     name: 'notes.md',
+    mimeType: 'text/markdown',
     size: 1_400,
   },
   {
-    type: 'document',
-    source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' },
+    type: 'attachment_chip',
+    kind: 'document',
     name: 'spec.pdf',
+    mimeType: 'application/pdf',
     size: 1_200_000,
   },
 ];
@@ -32,7 +31,7 @@ const meta: Meta<typeof SentAttachmentList> = {
   title: 'Chat/SentAttachmentList',
   component: SentAttachmentList,
   args: {
-    blocks,
+    chips,
     setIcon: mockSetIcon,
   },
 };
@@ -43,13 +42,13 @@ type Story = StoryObj<typeof SentAttachmentList>;
 export const Mixed: Story = {};
 
 export const ImageOnly: Story = {
-  args: { blocks: [blocks[1]!] },
+  args: { chips: [chips[0]!] },
 };
 
 export const DocumentsOnly: Story = {
-  args: { blocks: [blocks[2]!, blocks[3]!] },
+  args: { chips: [chips[1]!, chips[2]!] },
 };
 
 export const Empty: Story = {
-  args: { blocks: [{ type: 'text', text: 'no attachments here' }] },
+  args: { chips: [] },
 };

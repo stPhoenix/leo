@@ -175,6 +175,66 @@ describe('conversation schema round-trip', () => {
     expect(parsed).toEqual(original);
   });
 
+  it('round-trips attachment_chip blocks', () => {
+    const original: StoredThread = {
+      id: 'default',
+      schemaVersion: CONVERSATION_SCHEMA_VERSION,
+      createdAt: '2026-05-14T00:00:00.000Z',
+      updatedAt: '2026-05-14T00:00:01.000Z',
+      metadata: { allowedTools: [] },
+      messages: [
+        {
+          id: 'u1',
+          role: 'user',
+          content: 'hi',
+          createdAt: '2026-05-14T00:00:30.000Z',
+          blocks: [
+            { type: 'text', text: 'hi' },
+            {
+              type: 'attachment_chip',
+              kind: 'document',
+              name: 'notes.md',
+              mimeType: 'text/markdown',
+              size: 200,
+              path: '.leo/attachments/notes.md',
+            },
+          ],
+        },
+      ],
+    };
+    const parsed = parseThread(JSON.parse(serializeThread(original)), ctx);
+    expect(parsed).toEqual(original);
+  });
+
+  it('drops attachment_chip block with invalid kind', () => {
+    const raw = {
+      id: 'default',
+      schemaVersion: CONVERSATION_SCHEMA_VERSION,
+      createdAt: 'c',
+      updatedAt: 'c',
+      metadata: { allowedTools: [] },
+      messages: [
+        {
+          id: 'u1',
+          role: 'user',
+          content: '',
+          createdAt: 'c',
+          blocks: [
+            {
+              type: 'attachment_chip',
+              kind: 'video',
+              name: 'x',
+              mimeType: 'video/mp4',
+              size: 1,
+            },
+          ],
+        },
+      ],
+    };
+    const parsed = parseThread(raw, ctx);
+    expect(parsed.messages[0]?.blocks).toEqual([]);
+  });
+
   it('drops image/document block with invalid source', () => {
     const raw = {
       id: 'default',
