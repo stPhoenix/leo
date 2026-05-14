@@ -40,10 +40,14 @@ export class EmbeddingClient {
   }
 
   async embed(texts: readonly string[], signal?: AbortSignal): Promise<number[][]> {
+    if (texts.length === 0) return [];
+    const model = this.opts.model();
+    if (model.length === 0) {
+      throw new ProviderConnectError('embedding model not configured');
+    }
     if (this.opts.connection !== undefined && !this.opts.connection.isReachable()) {
       throw new ProviderConnectError('provider unreachable');
     }
-    if (texts.length === 0) return [];
     if (texts.length > EMBED_BATCH_SIZE) {
       const out: number[][] = [];
       for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
@@ -136,6 +140,12 @@ export class EmbeddingClient {
     }
     const baseURL = `${this.opts.endpoint().replace(/\/+$/, '')}/v1`; // NOSONAR(typescript:S5852): anchored trailing-slash trim, linear.
     const apiKey = this.opts.apiKey?.() ?? 'placeholder';
+    const fetchImpl = this.opts.fetch;
+    const sdkFetch =
+      fetchImpl !== undefined
+        ? (input: string | URL | Request, init?: RequestInit): Promise<Response> =>
+            fetchImpl(typeof input === 'string' ? input : input.toString(), init)
+        : undefined;
     const embeddings = new OpenAIEmbeddings({
       model: this.opts.model(),
       apiKey,
@@ -143,6 +153,7 @@ export class EmbeddingClient {
       configuration: {
         baseURL,
         dangerouslyAllowBrowser: true,
+        ...(sdkFetch !== undefined ? { fetch: sdkFetch } : {}),
       },
     });
     if (signal?.aborted === true) throw signal.reason ?? new Error('aborted');

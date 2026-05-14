@@ -18,7 +18,7 @@ describe('SubagentWidget (controller-driven)', () => {
       prompt: 'count files',
     });
     c.setPhase('running');
-    const { container } = render(<SubagentWidget controller={c} />);
+    const { container } = render(<SubagentWidget controller={c} handle={null} />);
     const root = container.querySelector('[data-slot="subagent-widget"]');
     expect(root?.getAttribute('data-phase')).toBe('running');
     expect(root?.getAttribute('data-runid')).toBe('task-x');
@@ -34,7 +34,7 @@ describe('SubagentWidget (controller-driven)', () => {
     c.setPhase('running');
     c.noteToolCall('read_note');
     c.noteToolCall('grep_vault');
-    const { container } = render(<SubagentWidget controller={c} />);
+    const { container } = render(<SubagentWidget controller={c} handle={null} />);
     expect(container.textContent).toContain('Tool calls');
     expect(container.textContent).toContain('2');
     expect(container.textContent).toContain('grep_vault');
@@ -49,7 +49,7 @@ describe('SubagentWidget (controller-driven)', () => {
     c.setPhase('running');
     c.update({ endedAt: (c.viewModel().startedAt ?? 0) + 2_000 });
     c.setPhase('done', { summary: 'final answer here' });
-    const { container } = render(<SubagentWidget controller={c} />);
+    const { container } = render(<SubagentWidget controller={c} handle={null} />);
     const summary = container.querySelector('[data-slot="subagent-summary"]');
     expect(summary?.textContent).toContain('final answer here');
   });
@@ -61,7 +61,7 @@ describe('SubagentWidget (controller-driven)', () => {
       prompt: 'p',
     });
     c.recordError('no_summary', 'nothing produced');
-    const { container } = render(<SubagentWidget controller={c} />);
+    const { container } = render(<SubagentWidget controller={c} handle={null} />);
     const err = container.querySelector('[data-slot="subagent-error"]');
     expect(err).not.toBeNull();
     expect(err?.textContent).toContain('No final answer produced');
@@ -74,7 +74,7 @@ describe('SubagentWidget (controller-driven)', () => {
       threadId: 't1',
       prompt: 'p',
     });
-    const { container } = render(<SubagentWidget controller={c} />);
+    const { container } = render(<SubagentWidget controller={c} handle={null} />);
     expect(
       container.querySelector('[data-slot="subagent-widget"]')?.getAttribute('data-phase'),
     ).toBe('preparing');
@@ -120,5 +120,45 @@ describe('SubagentLiveBlock', () => {
   it('returns null for malformed props', () => {
     const { container } = render(<SubagentLiveBlock props={{ wrong: true } as unknown} />);
     expect(container.firstChild).toBeNull();
+  });
+
+  it('renders extend button + timeout when registered with a live handle', () => {
+    const c = new TaskWidgetController({
+      runId: 'task-live-b',
+      threadId: 't1',
+      prompt: 'p',
+    });
+    c.setPhase('running');
+    c.setDeadline(Date.now() + 90_000);
+    const calls: number[] = [];
+    const handle = {
+      extendTimeout(addMs: number) {
+        calls.push(addMs);
+        return { ok: true as const, newDeadlineMs: Date.now() + 90_000 + addMs, newTotalMs: addMs };
+      },
+      currentDeadlineMs: (): number | null => Date.now() + 90_000,
+    };
+    registerTaskLiveController('task-live-b', c, handle);
+    try {
+      const { container } = render(
+        <SubagentLiveBlock props={{ runId: 'task-live-b', threadId: 't1', prompt: 'p' }} />,
+      );
+      const btn = container.querySelector<HTMLButtonElement>('[data-slot="subagent-extend"]');
+      expect(btn).not.toBeNull();
+      expect(container.querySelector('[data-slot="subagent-timeout"]')?.textContent).toMatch(
+        /timeout in/,
+      );
+      act(() => btn!.click());
+      expect(calls).toEqual([5 * 60_000]);
+    } finally {
+      releaseTaskLiveController('task-live-b');
+    }
+  });
+
+  it('omits extend button on reload-rehydrate (no live handle)', () => {
+    const { container } = render(
+      <SubagentLiveBlock props={{ runId: 'task-live-missing-2', threadId: 't1', prompt: 'p' }} />,
+    );
+    expect(container.querySelector('[data-slot="subagent-extend"]')).toBeNull();
   });
 });

@@ -8,11 +8,14 @@ import {
   type TextComponent,
 } from 'obsidian';
 import {
+  ANTHROPIC_THINKING_MODES,
+  MIN_ANTHROPIC_THINKING_BUDGET,
   PROVIDER_KINDS,
   RAG_MODES,
   SECTION_LABELS,
   SECTION_ORDER,
   SECTION_PLACEHOLDERS,
+  type AnthropicThinkingMode,
   type LeoSettings,
   type ProviderKind,
   type RagMode,
@@ -22,7 +25,12 @@ import {
   type SettingsStore,
 } from './settingsStore';
 import type { SafeStorage } from '@/storage/safeStorage';
-import { kindRequiresApiKey, defaultEndpointFor } from '@/providers/registry';
+import {
+  kindRequiresApiKey,
+  defaultEndpointFor,
+  createProviderForKind,
+} from '@/providers/registry';
+import { createObsidianFetch } from '@/platform/obsidianFetch';
 import type { LogLevel } from '@/platform/logTypes';
 import { LOG_LEVELS } from '@/platform/logTypes';
 import type { Logger } from '@/platform/Logger';
@@ -97,6 +105,8 @@ const RAG_MODE_DESC =
 
 export class SettingsTab extends PluginSettingTab {
   private discoveredModels: ProviderModel[] = [];
+  private discoveredEmbeddingModels: ProviderModel[] = [];
+  private embeddingProbeReachable: boolean | null = null;
   private renderDisposers: Array<() => void> = [];
   private editingSkillId: string | null = null;
   private skillDraft: SkillDraft | null = null;
@@ -418,6 +428,8 @@ export class SettingsTab extends PluginSettingTab {
     this.renderModelPicker(body, settings, 'chat');
     this.renderModelPicker(body, settings, 'embedding');
 
+    this.renderEmbeddingProviderOverride(body, settings);
+
     new Setting(body)
       .setName('Temperature')
       .setDesc('0 = deterministic, 2 = highly random.')
@@ -482,6 +494,24 @@ export class SettingsTab extends PluginSettingTab {
       });
 
     new Setting(body)
+      .setName('Anthropic: use billing-grade token count')
+      .setDesc(
+        "When on, the context widget and autocompact threshold call Anthropic's free " +
+          '/v1/messages/count_tokens endpoint for exact token counts (debounced + cached). ' +
+          'Falls back to the heuristic on rate-limit or network error. Anthropic provider only.',
+      )
+      .addToggle((t) => {
+        t.setValue(settings.provider.useExactTokenCountAnthropic).onChange(async (value) => {
+          await this.deps.store.update((prev) => ({
+            ...prev,
+            provider: { ...prev.provider, useExactTokenCountAnthropic: value },
+          }));
+        });
+      });
+
+    if (settings.provider.kind === 'anthropic') this.renderAnthropicThinking(body, settings);
+
+    new Setting(body)
       .setName('Context window override')
       .setDesc(
         'Manual context window size (tokens) for autocompact + status line. Empty = auto-detect. Beats model ID and provider-reported size.',
@@ -510,6 +540,55 @@ export class SettingsTab extends PluginSettingTab {
             }));
           });
       });
+  }
+
+  private renderAnthropicThinking(body: HTMLElement, settings: LeoSettings): void {
+    const thinking = settings.provider.anthropicThinking;
+
+    new Setting(body)
+      .setName('Anthropic: extended thinking')
+      .setDesc(
+        'Enable Claude extended thinking. ' +
+          '"adaptive" lets Claude pick the budget. ' +
+          '"enabled" fixes a token budget. ' +
+          'Forces temperature=1 and bumps max_tokens above the budget when needed.',
+      )
+      .addDropdown((d) => {
+        for (const m of ANTHROPIC_THINKING_MODES) d.addOption(m, m);
+        d.setValue(thinking.mode).onChange(async (raw) => {
+          const next = raw as AnthropicThinkingMode;
+          await this.deps.store.update((prev) => ({
+            ...prev,
+            provider: {
+              ...prev.provider,
+              anthropicThinking: { ...prev.provider.anthropicThinking, mode: next },
+            },
+          }));
+          this.display();
+        });
+      });
+
+    if (thinking.mode === 'enabled') {
+      new Setting(body)
+        .setName('Anthropic: thinking budget (tokens)')
+        .setDesc(
+          `Tokens Claude may spend reasoning. Min ${MIN_ANTHROPIC_THINKING_BUDGET}. ` +
+            'Must be less than max_tokens; the provider auto-bumps max if needed.',
+        )
+        .addText((t) => {
+          t.setValue(String(thinking.budgetTokens)).onChange(async (value) => {
+            const parsed = Number.parseInt(value, 10);
+            if (!Number.isFinite(parsed) || parsed < MIN_ANTHROPIC_THINKING_BUDGET) return;
+            await this.deps.store.update((prev) => ({
+              ...prev,
+              provider: {
+                ...prev.provider,
+                anthropicThinking: { ...prev.provider.anthropicThinking, budgetTokens: parsed },
+              },
+            }));
+          });
+        });
+    }
   }
 
   private renderModelPicker(
@@ -1349,6 +1428,183 @@ export class SettingsTab extends PluginSettingTab {
       }
     }
     return { ok: true, map };
+  }
+
+  private renderEmbeddingProviderOverride(body: HTMLElement, settings: LeoSettings): void {
+    const emb = settings.embeddingProvider;
+
+    new Setting(body)
+      .setName('Embedding provider')
+      .setDesc(
+        'Embeddings can use a different provider than chat. Useful when the chat provider ' +
+          '(e.g. Ollama Cloud) does not expose an embeddings endpoint.',
+      )
+      .setHeading();
+
+    new Setting(body)
+      .setName('Use same provider as chat')
+      .setDesc('Off = configure a separate provider, endpoint, key, and model for embeddings.')
+      .addToggle((t) => {
+        t.setValue(emb.inheritFromChat).onChange(async (value) => {
+          await this.deps.store.update((prev) => ({
+            ...prev,
+            embeddingProvider: { ...prev.embeddingProvider, inheritFromChat: value },
+          }));
+          this.display();
+        });
+      });
+
+    if (emb.inheritFromChat) return;
+
+    new Setting(body).setName('Embedding provider kind').addDropdown((d) => {
+      for (const kind of PROVIDER_KINDS) d.addOption(kind, PROVIDER_KIND_LABELS[kind]);
+      d.setValue(emb.kind);
+      d.onChange(async (value) => {
+        const next = value as ProviderKind;
+        const current = this.deps.store.get().embeddingProvider;
+        const shouldResetEndpoint =
+          current.endpoint.length === 0 || current.endpoint === defaultEndpointFor(current.kind);
+        await this.deps.store.update((prev) => ({
+          ...prev,
+          embeddingProvider: {
+            ...prev.embeddingProvider,
+            kind: next,
+            endpoint: shouldResetEndpoint
+              ? defaultEndpointFor(next)
+              : prev.embeddingProvider.endpoint,
+          },
+        }));
+        this.discoveredEmbeddingModels = [];
+        this.embeddingProbeReachable = null;
+        this.display();
+      });
+    });
+
+    new Setting(body).setName('Embedding endpoint URL').addText((t) => {
+      t.setValue(emb.endpoint).onChange(async (value) => {
+        await this.deps.store.update((prev) => ({
+          ...prev,
+          embeddingProvider: { ...prev.embeddingProvider, endpoint: value },
+        }));
+      });
+    });
+
+    const status = body.createDiv({ cls: 'leo-provider-status' });
+    this.renderEmbeddingProbeStatus(status);
+
+    new Setting(body).setName('Probe embedding endpoint').addButton((b) => {
+      b.setButtonText('Probe').onClick(async () => {
+        await this.probeEmbeddingProvider(status);
+      });
+    });
+
+    if (kindRequiresApiKey(emb.kind) && this.deps.safeStorage !== undefined) {
+      const safeStorage = this.deps.safeStorage;
+      const storageKey = `embeddingProvider.${emb.kind}.apiKey`;
+      const slot = body.createDiv();
+      void safeStorage.get(storageKey).then((existing) => {
+        new Setting(slot)
+          .setName('Embedding API key')
+          .setDesc(
+            safeStorage.keyringAvailable()
+              ? 'Stored via Electron safeStorage (OS keyring).'
+              : 'Stored with obfuscation only — OS keyring not available.',
+          )
+          .addText((t) => {
+            t.inputEl.type = 'password';
+            t.setValue(existing ?? '').onChange(async (value) => {
+              if (value.length === 0) {
+                await safeStorage.delete(storageKey);
+              } else {
+                await safeStorage.set(storageKey, value);
+              }
+            });
+          });
+      });
+    }
+
+    this.renderEmbeddingModelField(body, settings);
+  }
+
+  private renderEmbeddingModelField(body: HTMLElement, settings: LeoSettings): void {
+    const emb = settings.embeddingProvider;
+    const isGoogle = emb.kind === 'google';
+    const showDropdown =
+      this.embeddingProbeReachable === true &&
+      this.discoveredEmbeddingModels.length > 0 &&
+      !isGoogle;
+    const desc = isGoogle
+      ? 'Type a Gemini embedding model id (e.g. gemini-embedding-001, text-embedding-004).'
+      : showDropdown
+        ? 'Pick from the discovered list, or type any model id.'
+        : 'Probe the endpoint or type a model id manually.';
+
+    const setting = new Setting(body).setName('Embedding model').setDesc(desc);
+
+    let textCmp: TextComponent | null = null;
+    setting.addText((t) => {
+      textCmp = t;
+      t.setPlaceholder('model id').setValue(emb.model);
+      t.onChange(async (value) => {
+        await this.deps.store.update((prev) => ({
+          ...prev,
+          embeddingProvider: { ...prev.embeddingProvider, model: value.trim() },
+        }));
+      });
+    });
+
+    if (showDropdown) {
+      setting.addDropdown((d) => {
+        d.addOption('', '— pick from list —');
+        for (const m of this.discoveredEmbeddingModels) d.addOption(m.id, m.id);
+        d.setValue('');
+        d.onChange(async (value) => {
+          if (value.length === 0) return;
+          textCmp?.setValue(value);
+          await this.deps.store.update((prev) => ({
+            ...prev,
+            embeddingProvider: { ...prev.embeddingProvider, model: value },
+          }));
+          d.setValue('');
+        });
+      });
+    }
+  }
+
+  private renderEmbeddingProbeStatus(host: HTMLElement): void {
+    host.empty();
+    if (this.embeddingProbeReachable === null) {
+      host.setText('Status: not probed');
+    } else if (this.embeddingProbeReachable) {
+      host.setText(`Status: connected · ${this.discoveredEmbeddingModels.length} models`);
+    } else {
+      host.setText('Status: unreachable');
+    }
+  }
+
+  private async probeEmbeddingProvider(host: HTMLElement): Promise<void> {
+    host.setText('Status: probing…');
+    const emb = this.deps.store.get().embeddingProvider;
+    const apiKeyName = `embeddingProvider.${emb.kind}.apiKey`;
+    const safeStorage = this.deps.safeStorage;
+    const apiKey = safeStorage !== undefined ? ((await safeStorage.get(apiKeyName)) ?? '') : '';
+    const provider = createProviderForKind(emb.kind, {
+      endpoint: () => emb.endpoint,
+      apiKey: () => apiKey,
+      fetch: createObsidianFetch(),
+    });
+    try {
+      this.discoveredEmbeddingModels = await provider.listModels();
+      this.embeddingProbeReachable = true;
+    } catch (err) {
+      this.discoveredEmbeddingModels = [];
+      this.embeddingProbeReachable = false;
+      this.deps.logger.warn('settings.embeddingProbe.failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    this.renderEmbeddingProbeStatus(host);
+    this.display();
   }
 }
 

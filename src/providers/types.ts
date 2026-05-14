@@ -40,10 +40,16 @@ export interface OpenAITool {
   readonly defer_loading?: boolean;
 }
 
+export type AnthropicThinkingConfig =
+  | { readonly type: 'disabled' }
+  | { readonly type: 'enabled'; readonly budgetTokens: number }
+  | { readonly type: 'adaptive' };
+
 export interface ProviderHints {
   readonly betas?: readonly string[];
   readonly nativeDeferral?: boolean;
   readonly disableParallelToolCalls?: boolean;
+  readonly thinking?: AnthropicThinkingConfig;
 }
 
 export interface ProviderTraceContext {
@@ -74,6 +80,7 @@ export interface Provider {
   readonly id: string;
   stream(req: ProviderChatRequest, signal: AbortSignal): AsyncIterable<StreamEvent>;
   listModels(signal?: AbortSignal): Promise<ProviderModel[]>;
+  countTokens?(req: ProviderChatRequest, signal?: AbortSignal): Promise<number>;
 }
 
 export class ProviderConnectError extends Error {

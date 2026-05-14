@@ -42,6 +42,18 @@ describe('zodAdapter', () => {
     expect(js.type).toBe('object');
   });
 
+  it('jsonSchemaFromZod emits numeric exclusiveMinimum (draft-2020-12, not draft-4 boolean)', () => {
+    // Anthropic requires JSON Schema draft 2020-12 where exclusiveMinimum is a
+    // number; draft-4 / openapi-3.0 emit a boolean which Anthropic rejects with
+    // "tools.X.custom.input_schema: JSON schema is invalid".
+    const schema = z.object({ n: z.number().positive() }).strict();
+    const js = jsonSchemaFromZod(schema) as {
+      properties: { n: { exclusiveMinimum?: unknown; minimum?: unknown } };
+    };
+    expect(typeof js.properties.n.exclusiveMinimum).toBe('number');
+    expect(js.properties.n.exclusiveMinimum).toBe(0);
+  });
+
   it('jsonSchemaFromZod embeds min-length and enum constraints', () => {
     const schema = z
       .object({

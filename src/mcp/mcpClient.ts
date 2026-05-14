@@ -103,6 +103,42 @@ export function namespaceTool(serverId: string, toolName: string): string {
   return `mcp.${serverId}.${toolName}`;
 }
 
+// MCP SDK throws `McpError` with `code` (number) + optional `data`. Servers (e.g. jim) put
+// `{reason, hint, details}` on `data`; the model needs `details` to fix bad tool args. Quack-type
+// to avoid coupling to the SDK class across transports. Tool-result-level failures
+// (`{isError: true, structuredContent}`) are normalized at the transport boundary so `data`
+// reaches here regardless of which path produced the error.
+export function formatMcpToolError(err: unknown): { error: string; data?: unknown } {
+  const baseMessage = err instanceof Error ? err.message : String(err);
+  if (err === null || typeof err !== 'object') return { error: baseMessage };
+  const record = err as { data?: unknown };
+  if (record.data === undefined) return { error: baseMessage };
+
+  const details = extractDetails(record.data);
+  if (details !== undefined) {
+    return { error: `${baseMessage} — ${details}`, data: record.data };
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(record.data);
+  } catch {
+    return { error: baseMessage, data: record.data };
+  }
+  return { error: `${baseMessage} ${serialized}`, data: record.data };
+}
+
+function extractDetails(data: unknown): string | undefined {
+  if (data === null || typeof data !== 'object') return undefined;
+  const details = (data as { details?: unknown }).details;
+  if (details === undefined) return undefined;
+  if (typeof details === 'string') return details;
+  try {
+    return JSON.stringify(details);
+  } catch {
+    return undefined;
+  }
+}
+
 export class MCPClient {
   private readonly logger: Logger;
   private readonly transportFactory: McpTransportFactory;
@@ -298,11 +334,12 @@ export class MCPClient {
       });
       return { ok: true, data };
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
+      const { error, data } = formatMcpToolError(err);
       this.logger.warn('mcp.tool.invoke.error', {
         serverId,
         toolName,
         error,
+        ...(data !== undefined ? { data } : {}),
         durationMs: this.clock() - start,
       });
       return { ok: false, error };

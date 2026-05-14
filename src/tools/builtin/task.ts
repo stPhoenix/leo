@@ -1,7 +1,13 @@
 import { z } from 'zod';
 import type { ConfirmationController } from '@/agent/confirmationController';
 import { prettifyArgs } from '@/agent/confirmationController';
-import type { TaskOrchestrator, TaskRunHandle, TaskToolResult } from '@/agent/task/orchestrator';
+import {
+  DEFAULT_TASK_TIMEOUT_MS,
+  TIMEOUT_HARD_LIMIT_MS,
+  type TaskOrchestrator,
+  type TaskRunHandle,
+  type TaskToolResult,
+} from '@/agent/task/orchestrator';
 import { TASK_LOG } from '@/agent/task/loggingNamespaces';
 import { TASK_TOOL_DESCRIPTION } from '@/prompts/tools/builtin/taskDescription';
 import type { ToolResult, ToolSpec } from '../types';
@@ -11,7 +17,6 @@ export const TASK_TOOL_ID = 'task';
 
 const PROMPT_HARD_LIMIT_CHARS = 16_384;
 const SUMMARY_INSTRUCTIONS_LIMIT = 2_048;
-const TIMEOUT_HARD_LIMIT_MS = 30 * 60_000;
 
 export interface TaskArgs {
   readonly prompt: string;
@@ -42,7 +47,13 @@ const TaskArgsSchema: z.ZodType<TaskArgs> = z
       .positive()
       .max(TIMEOUT_HARD_LIMIT_MS)
       .optional()
-      .describe('Wall-clock cap for the subagent run in ms. Defaults to 600_000 (10 min).'),
+      .describe(
+        `Wall-clock cap for the subagent run in ms. Defaults to ${DEFAULT_TASK_TIMEOUT_MS} (${Math.round(
+          DEFAULT_TASK_TIMEOUT_MS / 60_000,
+        )} min). Hard cap ${TIMEOUT_HARD_LIMIT_MS} (${Math.round(
+          TIMEOUT_HARD_LIMIT_MS / 60_000,
+        )} min). User may extend mid-run via the live widget.`,
+      ),
   })
   .strict() as unknown as z.ZodType<TaskArgs>;
 

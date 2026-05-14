@@ -8,6 +8,7 @@ import {
   type SafeStorageLike,
 } from '@/mcp/config';
 import {
+  formatMcpToolError,
   MCPClient,
   namespaceTool,
   type McpTransportConnection,
@@ -225,6 +226,42 @@ describe('MCPClient — AC1–AC7', () => {
     expect(spec2).toBeDefined();
   });
 
+  it('surfaces McpError data.details through the registered tool result', async () => {
+    const { logger } = makeLogger();
+    // Simulate the SDK's McpError shape: Error with .code (number) and .data
+    const mcpErr = Object.assign(new Error('MCP error -32011: mapping-invalid'), {
+      code: -32011,
+      data: { reason: 'invalid_mapping', details: 'csvFields.date references missing column' },
+    });
+    const transport = makeFakeTransport({
+      s1: {
+        tools: [
+          { name: 'import_write_mapping', description: 'm', inputSchema: { type: 'object' } },
+        ],
+        onCall: () => {
+          throw mcpErr;
+        },
+      },
+    });
+    const registry = new ToolRegistry({ logger });
+    const client = new MCPClient({
+      logger,
+      transportFactory: transport,
+      registry,
+      secrets: new InMemorySafeStorage(),
+    });
+    await client.connectAll([{ id: 's1', enabled: true, transport: 'stdio', command: '/x' }]);
+    const result = await registry.invoke(
+      'mcp.s1.import_write_mapping',
+      JSON.stringify({ slug: 'x' }),
+      { ...makeToolCtx({ thread: 'T' }), logger },
+    );
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toBe(
+      'MCP error -32011: mapping-invalid — csvFields.date references missing column',
+    );
+  });
+
   it('invoking a registered mcp.* tool delegates to the transport callTool', async () => {
     const { logger } = makeLogger();
     let calls = 0;
@@ -323,5 +360,65 @@ describe('MCPClient — AC1–AC7', () => {
     expect(fastBefore?.status === 'connected').toBe(true);
     if (resolveHang !== null) (resolveHang as () => void)();
     await p;
+  });
+});
+
+describe('formatMcpToolError', () => {
+  it('returns the error message when no data attached', () => {
+    expect(formatMcpToolError(new Error('boom'))).toEqual({ error: 'boom' });
+  });
+
+  it('coerces non-Error values to string', () => {
+    expect(formatMcpToolError('weird')).toEqual({ error: 'weird' });
+    expect(formatMcpToolError(null)).toEqual({ error: 'null' });
+  });
+
+  it('appends string-typed data.details verbatim and preserves data', () => {
+    const err = Object.assign(new Error('invalid args'), {
+      code: -32602,
+      data: { reason: 'bad_input', hint: 'try again', details: 'field "name" required' },
+    });
+    expect(formatMcpToolError(err)).toEqual({
+      error: 'invalid args — field "name" required',
+      data: err.data,
+    });
+  });
+
+  it('serializes object-typed data.details to JSON', () => {
+    const err = Object.assign(new Error('invalid args'), {
+      data: { details: { field: 'name', got: null } },
+    });
+    expect(formatMcpToolError(err)).toEqual({
+      error: 'invalid args — {"field":"name","got":null}',
+      data: err.data,
+    });
+  });
+
+  it('falls back to JSON.stringify of full data when details absent', () => {
+    const err = Object.assign(new Error('failed'), { data: { reason: 'x', hint: 'y' } });
+    expect(formatMcpToolError(err)).toEqual({
+      error: 'failed {"reason":"x","hint":"y"}',
+      data: err.data,
+    });
+  });
+
+  it('surfaces details even when code is missing (tool-result-level errors)', () => {
+    // Path: sdkTransportFactory wraps {isError:true, structuredContent} as Error+data
+    const err = Object.assign(new Error('tool failed'), {
+      data: { details: 'rate limited' },
+    });
+    expect(formatMcpToolError(err)).toEqual({
+      error: 'tool failed — rate limited',
+      data: err.data,
+    });
+  });
+
+  it('falls back to base message when data is not serializable and details missing', () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const err = Object.assign(new Error('boom'), { data: cyclic });
+    const out = formatMcpToolError(err);
+    expect(out.error).toBe('boom');
+    expect(out.data).toBe(cyclic);
   });
 });

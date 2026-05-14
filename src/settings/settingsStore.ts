@@ -28,6 +28,21 @@ export const RAG_MODES: readonly RagMode[] = ['auto', 'no-focus', 'off'];
 
 export const DEFAULT_RAG_MODE: RagMode = 'no-focus';
 
+export type AnthropicThinkingMode = 'off' | 'adaptive' | 'enabled';
+
+export const ANTHROPIC_THINKING_MODES: readonly AnthropicThinkingMode[] = [
+  'off',
+  'adaptive',
+  'enabled',
+];
+
+export const MIN_ANTHROPIC_THINKING_BUDGET = 1024;
+
+export interface AnthropicThinkingSettings {
+  mode: AnthropicThinkingMode;
+  budgetTokens: number;
+}
+
 export interface ProviderSettings {
   kind: ProviderKind;
   endpoint: string;
@@ -37,6 +52,15 @@ export interface ProviderSettings {
   maxTokens: number;
   maxToolRoundTrips: number;
   disableParallelToolCalls: boolean;
+  useExactTokenCountAnthropic: boolean;
+  anthropicThinking: AnthropicThinkingSettings;
+}
+
+export interface EmbeddingProviderSettings {
+  inheritFromChat: boolean;
+  kind: ProviderKind;
+  endpoint: string;
+  model: string;
 }
 
 export interface UiSettings {
@@ -87,6 +111,7 @@ export interface LeoSettings {
   schemaVersion: 1;
   logLevel: LogLevel;
   provider: ProviderSettings;
+  embeddingProvider: EmbeddingProviderSettings;
   indexing: IndexingSettings;
   ui: UiSettings;
   providerTimeouts: ProviderTimeoutSettings;
@@ -127,6 +152,11 @@ export const DEFAULT_ATTACHMENTS: AttachmentsSettings = {
   retentionDays: 7,
 };
 
+export const DEFAULT_ANTHROPIC_THINKING: AnthropicThinkingSettings = {
+  mode: 'adaptive',
+  budgetTokens: 4096,
+};
+
 export const DEFAULT_PROVIDER: ProviderSettings = {
   kind: 'lmstudio',
   endpoint: 'http://localhost:1234',
@@ -136,6 +166,15 @@ export const DEFAULT_PROVIDER: ProviderSettings = {
   maxTokens: 2048,
   maxToolRoundTrips: 16,
   disableParallelToolCalls: false,
+  useExactTokenCountAnthropic: false,
+  anthropicThinking: { ...DEFAULT_ANTHROPIC_THINKING },
+};
+
+export const DEFAULT_EMBEDDING_PROVIDER: EmbeddingProviderSettings = {
+  inheritFromChat: true,
+  kind: 'lmstudio',
+  endpoint: 'http://localhost:1234',
+  model: '',
 };
 
 export const PROVIDER_KINDS: readonly ProviderKind[] = [
@@ -164,6 +203,7 @@ export const DEFAULT_SETTINGS: LeoSettings = {
   schemaVersion: 1,
   logLevel: 'info',
   provider: DEFAULT_PROVIDER,
+  embeddingProvider: DEFAULT_EMBEDDING_PROVIDER,
   indexing: DEFAULT_INDEXING,
   ui: {
     firstRunComplete: false,
@@ -189,6 +229,7 @@ export function migrate(raw: unknown): LeoSettings {
   const logLevel: LogLevel = isLogLevel(logLevelRaw) ? logLevelRaw : DEFAULT_SETTINGS.logLevel;
 
   const provider = mergeProvider(obj.provider);
+  const embeddingProvider = mergeEmbeddingProvider(obj.embeddingProvider, provider);
   const indexing = mergeIndexing(obj.indexing);
   const ui = mergeUi(obj.ui, provider);
   const providerTimeouts = mergeProviderTimeouts(obj.providerTimeouts);
@@ -203,6 +244,7 @@ export function migrate(raw: unknown): LeoSettings {
     schemaVersion: 1,
     logLevel,
     provider,
+    embeddingProvider,
     indexing,
     ui,
     providerTimeouts,
@@ -328,6 +370,28 @@ function mergeIndexing(raw: unknown): IndexingSettings {
   return { excludePatterns: patterns };
 }
 
+function mergeEmbeddingProvider(raw: unknown, chat: ProviderSettings): EmbeddingProviderSettings {
+  const inheritedDefaults: EmbeddingProviderSettings = {
+    inheritFromChat: true,
+    kind: chat.kind,
+    endpoint: chat.endpoint,
+    model: chat.embeddingModel,
+  };
+  if (raw === null || typeof raw !== 'object') return inheritedDefaults;
+  const o = raw as Record<string, unknown>;
+  const inherit =
+    typeof o.inheritFromChat === 'boolean' ? o.inheritFromChat : inheritedDefaults.inheritFromChat;
+  const kind: ProviderKind = PROVIDER_KINDS.includes(o.kind as ProviderKind)
+    ? (o.kind as ProviderKind)
+    : inheritedDefaults.kind;
+  return {
+    inheritFromChat: inherit,
+    kind,
+    endpoint: typeof o.endpoint === 'string' ? o.endpoint : inheritedDefaults.endpoint,
+    model: typeof o.model === 'string' ? o.model : inheritedDefaults.model,
+  };
+}
+
 function mergeProvider(raw: unknown): ProviderSettings {
   if (raw === null || typeof raw !== 'object') return { ...DEFAULT_PROVIDER };
   const o = raw as Record<string, unknown>;
@@ -347,7 +411,29 @@ function mergeProvider(raw: unknown): ProviderSettings {
       typeof o.disableParallelToolCalls === 'boolean'
         ? o.disableParallelToolCalls
         : DEFAULT_PROVIDER.disableParallelToolCalls,
+    useExactTokenCountAnthropic:
+      typeof o.useExactTokenCountAnthropic === 'boolean'
+        ? o.useExactTokenCountAnthropic
+        : DEFAULT_PROVIDER.useExactTokenCountAnthropic,
+    anthropicThinking: mergeAnthropicThinking(o.anthropicThinking),
   };
+}
+
+function mergeAnthropicThinking(raw: unknown): AnthropicThinkingSettings {
+  if (raw === null || typeof raw !== 'object') return { ...DEFAULT_ANTHROPIC_THINKING };
+  const o = raw as Record<string, unknown>;
+  const mode: AnthropicThinkingMode = (ANTHROPIC_THINKING_MODES as readonly string[]).includes(
+    o.mode as AnthropicThinkingMode,
+  )
+    ? (o.mode as AnthropicThinkingMode)
+    : DEFAULT_ANTHROPIC_THINKING.mode;
+  const budgetTokens = clampInt(
+    o.budgetTokens,
+    MIN_ANTHROPIC_THINKING_BUDGET,
+    1_000_000,
+    DEFAULT_ANTHROPIC_THINKING.budgetTokens,
+  );
+  return { mode, budgetTokens };
 }
 
 function mergeUi(raw: unknown, provider: ProviderSettings): UiSettings {
@@ -390,7 +476,8 @@ function cloneDefaults(): LeoSettings {
   return {
     schemaVersion: 1,
     logLevel: DEFAULT_SETTINGS.logLevel,
-    provider: { ...DEFAULT_PROVIDER },
+    provider: { ...DEFAULT_PROVIDER, anthropicThinking: { ...DEFAULT_ANTHROPIC_THINKING } },
+    embeddingProvider: { ...DEFAULT_EMBEDDING_PROVIDER },
     indexing: { excludePatterns: [...DEFAULT_INDEXING.excludePatterns] },
     ui: {
       firstRunComplete: DEFAULT_SETTINGS.ui.firstRunComplete,

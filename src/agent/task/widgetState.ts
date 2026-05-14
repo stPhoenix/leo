@@ -25,6 +25,8 @@ export interface TaskViewModel {
   readonly lastToolId: string | null;
   readonly summary: string | null;
   readonly error: TaskError | null;
+  /** Absolute epoch ms when timeout fires. Null when no live timer. */
+  readonly deadlineMs: number | null;
 }
 
 export const TERMINAL_TASK_PHASES: ReadonlySet<TaskPhase> = new Set(['done', 'cancelled', 'error']);
@@ -49,5 +51,6 @@ export function makeInitialTaskViewModel(input: {
     lastToolId: null,
     summary: null,
     error: null,
+    deadlineMs: null,
   };
 }

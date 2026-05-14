@@ -85,6 +85,18 @@ describe('TaskWidgetController', () => {
     expect(seen).toEqual([]);
   });
 
+  it('setDeadline patches deadlineMs and notifies listeners', () => {
+    const c = make();
+    const seen: Array<number | null> = [];
+    c.subscribe((vm) => seen.push(vm.deadlineMs));
+    expect(c.viewModel().deadlineMs).toBeNull();
+    c.setDeadline(1_700_000_000_000);
+    expect(c.viewModel().deadlineMs).toBe(1_700_000_000_000);
+    c.setDeadline(null);
+    expect(c.viewModel().deadlineMs).toBeNull();
+    expect(seen).toEqual([1_700_000_000_000, null]);
+  });
+
   it('reloadRehydrate produces phase=error code=reload', () => {
     const c = TaskWidgetController.reloadRehydrate({
       runId: 'task-x',

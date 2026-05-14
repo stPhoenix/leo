@@ -47,6 +47,7 @@ export interface PiiDetectAgentOptions {
   readonly provider: PiiDetectProvider;
   readonly model: () => string;
   readonly temperature?: () => number;
+  readonly maxTokens?: () => number;
   readonly logger?: Logger;
   readonly systemPromptOverride?: () => string;
   readonly chunkBudgetChars?: number;
@@ -189,6 +190,7 @@ async function runOneChunk(
     model: opts.model(),
     messages,
     ...(opts.temperature !== undefined ? { temperature: opts.temperature() } : {}),
+    ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens() } : {}),
     tools: [REPORT_TOOL],
   };
   const accum = { textBuffer: '', toolCalls: [] as Array<{ name: string; argsJson: string }> };

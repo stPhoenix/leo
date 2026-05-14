@@ -2,7 +2,7 @@ import type { Logger } from '@/platform/Logger';
 import type { ChatMessage } from '@/providers/types';
 import { MICROCOMPACT_BOUNDARY_MARKER } from './microcompact';
 import { COMPACT_BOUNDARY_MARKER } from './autocompact';
-import { apiUsageTokens, type TokenMessage } from './tokenEstimator';
+import { apiUsageTokens, tokenCountWithEstimation, type TokenMessage } from './tokenEstimator';
 import type { MessageBreakdown } from './messageBreakdown';
 
 export interface ContextAnalyzerInputs {
@@ -15,6 +15,10 @@ export interface ContextAnalyzerInputs {
   readonly counters: ContextCounters;
   readonly projectView?: (messages: readonly ChatMessage[]) => readonly ChatMessage[];
   readonly microcompact?: (messages: readonly ChatMessage[]) => readonly ChatMessage[];
+  readonly exactCounter?: (
+    messages: readonly ChatMessage[],
+    signal?: AbortSignal,
+  ) => Promise<number>;
 }
 
 export interface MessageTokenResult {
@@ -52,10 +56,12 @@ export interface ContextData {
   readonly skillTokens: number;
   readonly skillCountFailed: boolean;
   readonly totalTokens: number;
-  readonly tokenTotalSource: 'api' | 'estimated';
+  readonly tokenTotalSource: TokenTotalSource;
   readonly pipelineMessageCount: number;
   readonly model: string;
 }
+
+export type TokenTotalSource = 'api' | 'hybrid' | 'estimated' | 'exact';
 
 export async function analyzeContextUsage(inputs: ContextAnalyzerInputs): Promise<ContextData> {
   throwIfAborted(inputs.signal);
@@ -116,11 +122,31 @@ export async function analyzeContextUsage(inputs: ContextAnalyzerInputs): Promis
     slashCommandTokens +
     messageTokens +
     skillTokens;
-  const apiTotal = apiUsageTokens(
-    counterCtx.originalMessages as unknown as readonly TokenMessage[],
-  );
-  const totalTokens = apiTotal ?? estimatedTotal;
-  const tokenTotalSource: 'api' | 'estimated' = apiTotal !== null ? 'api' : 'estimated';
+  const originalAsTokenMessages = counterCtx.originalMessages as unknown as readonly TokenMessage[];
+  const apiTotal = apiUsageTokens(originalAsTokenMessages);
+  const hybridTotal = apiTotal === null ? tokenCountWithEstimation(originalAsTokenMessages) : null;
+
+  let exactTotal: number | null = null;
+  if (inputs.exactCounter !== undefined) {
+    try {
+      exactTotal = await inputs.exactCounter(microcompacted, inputs.signal);
+    } catch (err) {
+      if (isAbortError(err)) throw err;
+      inputs.logger.warn('context.exact_counter_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const totalTokens = exactTotal ?? apiTotal ?? hybridTotal ?? estimatedTotal;
+  const tokenTotalSource: TokenTotalSource =
+    exactTotal !== null
+      ? 'exact'
+      : apiTotal !== null
+        ? 'api'
+        : hybridTotal !== null
+          ? 'hybrid'
+          : 'estimated';
 
   return {
     systemTokens,

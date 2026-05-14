@@ -32,6 +32,8 @@ import {
   isCompactBoundary,
   normalizeMessagesForAPI,
   shouldAutoCompact,
+  shouldAutoCompactExact,
+  EXACT_GATE_FRACTION,
   stripImagesFromMessages,
   stripReinjectedAttachments,
   type AutocompactProvider,
@@ -259,6 +261,95 @@ describe('shouldAutoCompact — AC1 threshold boundary', () => {
     expect(shouldAutoCompact({ messages: msgs, model: 'local-m', querySource: 'compact' })).toBe(
       false,
     );
+  });
+});
+
+describe('shouldAutoCompactExact — Phase 2 exact-counter gating', () => {
+  it('returns false without calling exactCounter when heuristic is below 80% threshold', async () => {
+    const threshold = autoCompactThresholdFor(200_000, 20_000);
+    // 50% of threshold — well under the 80% gate.
+    const msgs: ChatMessage[] = [
+      { role: 'user', content: 'x'.repeat(Math.floor(threshold * 0.5) * 4) },
+    ];
+    const exactCounter = vi.fn(async () => threshold + 1);
+    const result = await shouldAutoCompactExact({
+      messages: msgs,
+      model: 'local-m',
+      exactCounter,
+    });
+    expect(result).toBe(false);
+    expect(exactCounter).not.toHaveBeenCalled();
+  });
+
+  it('consults exactCounter when heuristic ≥ 80% threshold and trusts the result', async () => {
+    const threshold = autoCompactThresholdFor(200_000, 20_000);
+    // Heuristic at 90% (above 80% gate) but exact at 105% — exact wins.
+    const msgs: ChatMessage[] = [
+      { role: 'user', content: 'x'.repeat(Math.floor(threshold * 0.9) * 4) },
+    ];
+    const exactCounter = vi.fn(async () => Math.ceil(threshold * 1.05));
+    const result = await shouldAutoCompactExact({
+      messages: msgs,
+      model: 'local-m',
+      exactCounter,
+    });
+    expect(result).toBe(true);
+    expect(exactCounter).toHaveBeenCalledOnce();
+  });
+
+  it('returns false when heuristic ≥ threshold but exact says under', async () => {
+    const threshold = autoCompactThresholdFor(200_000, 20_000);
+    const msgs: ChatMessage[] = [{ role: 'user', content: 'x'.repeat(threshold * 4) }];
+    const exactCounter = vi.fn(async () => Math.floor(threshold * 0.7));
+    const result = await shouldAutoCompactExact({
+      messages: msgs,
+      model: 'local-m',
+      exactCounter,
+    });
+    expect(result).toBe(false);
+  });
+
+  it('falls back to heuristic when exactCounter throws', async () => {
+    const threshold = autoCompactThresholdFor(200_000, 20_000);
+    const msgs: ChatMessage[] = [{ role: 'user', content: 'x'.repeat(threshold * 4) }];
+    const exactCounter = vi.fn(async () => {
+      throw new Error('rate_limited');
+    });
+    const result = await shouldAutoCompactExact({
+      messages: msgs,
+      model: 'local-m',
+      exactCounter,
+    });
+    expect(result).toBe(true); // heuristic = threshold ≥ threshold
+  });
+
+  it('matches sync shouldAutoCompact when no exactCounter is provided', async () => {
+    const threshold = autoCompactThresholdFor(200_000, 20_000);
+    const msgsAt: ChatMessage[] = [{ role: 'user', content: 'x'.repeat(threshold * 4) }];
+    expect(await shouldAutoCompactExact({ messages: msgsAt, model: 'local-m' })).toBe(true);
+    const msgsBelow: ChatMessage[] = [{ role: 'user', content: 'x'.repeat((threshold - 1) * 4) }];
+    expect(await shouldAutoCompactExact({ messages: msgsBelow, model: 'local-m' })).toBe(false);
+  });
+
+  it("returns false when querySource === 'compact'", async () => {
+    const threshold = autoCompactThresholdFor(200_000, 20_000);
+    const msgs: ChatMessage[] = [{ role: 'user', content: 'x'.repeat(threshold * 4) }];
+    const exactCounter = vi.fn(async () => threshold);
+    expect(
+      await shouldAutoCompactExact({
+        messages: msgs,
+        model: 'local-m',
+        querySource: 'compact',
+        exactCounter,
+      }),
+    ).toBe(false);
+    expect(exactCounter).not.toHaveBeenCalled();
+  });
+});
+
+describe('EXACT_GATE_FRACTION', () => {
+  it('is 0.8 (80% of threshold)', () => {
+    expect(EXACT_GATE_FRACTION).toBe(0.8);
   });
 });
 

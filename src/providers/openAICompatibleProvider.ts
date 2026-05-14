@@ -29,11 +29,13 @@ type OpenAICallable = Runnable<BaseMessage[], AIMessageChunk> | ChatOpenAI;
 export class OpenAICompatibleProvider implements Provider {
   readonly id: string;
   private readonly fetchImpl: FetchLike;
+  private readonly injectedFetch: FetchLike | null;
   private readonly headersFn: () => Record<string, string>;
   private readonly modelListPath: string;
 
   constructor(private readonly opts: OpenAICompatibleProviderOptions) {
     this.id = opts.id;
+    this.injectedFetch = opts.fetch ?? null;
     this.fetchImpl = opts.fetch ?? ((input, init) => fetch(input, init));
     this.headersFn = opts.headers ?? ((): Record<string, string> => ({}));
     this.modelListPath = opts.modelListPath ?? '/v1/models';
@@ -55,6 +57,10 @@ export class OpenAICompatibleProvider implements Provider {
         baseURL,
         dangerouslyAllowBrowser: true,
         ...(Object.keys(defaultHeaders).length > 0 ? { defaultHeaders } : {}),
+        // Renderer CORS blocks ollama.com etc.; route SDK through Obsidian
+        // requestUrl when caller injects a fetch. Trade-off: requestUrl
+        // buffers the full SSE body, so streaming is non-incremental.
+        ...(this.injectedFetch !== null ? { fetch: adaptInjectedFetch(this.injectedFetch) } : {}),
       },
     });
 
@@ -186,6 +192,16 @@ export function createCustomProvider(opts: CustomProviderOptions): OpenAICompati
     },
     ...(opts.fetch !== undefined ? { fetch: opts.fetch } : {}),
   });
+}
+
+type OpenAISdkFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+function adaptInjectedFetch(fn: FetchLike): OpenAISdkFetch {
+  return (input, init) => {
+    const url =
+      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    return fn(url, init);
+  };
 }
 
 function asConnectError(err: unknown, fallback: string): ProviderConnectError {

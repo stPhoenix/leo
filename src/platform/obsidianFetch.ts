@@ -3,6 +3,21 @@ import { requestUrl, type RequestUrlParam, type RequestUrlResponse } from 'obsid
 export type FetchLikeInit = Pick<RequestInit, 'method' | 'headers' | 'body' | 'signal'>;
 export type FetchLike = (url: string, init: FetchLikeInit) => Promise<Response>;
 
+export type WideFetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+// Bridges Obsidian's main-process fetch (narrow init) to the wider RequestInit
+// signature LangChain/OpenAI SDKs use. Body narrowed to string-or-undefined;
+// requestUrl cannot stream and SDKs serialize JSON bodies to strings.
+export function adaptToWideFetch(fn: FetchLike): WideFetchLike {
+  return (input, init) =>
+    fn(input, {
+      method: init?.method,
+      headers: init?.headers,
+      body: typeof init?.body === 'string' ? init.body : undefined,
+      signal: init?.signal ?? undefined,
+    });
+}
+
 function headersToRecord(h: HeadersInit | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   if (!h) return out;

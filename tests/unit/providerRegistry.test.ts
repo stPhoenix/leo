@@ -80,4 +80,58 @@ describe('provider registry', () => {
   it('defaultEndpointFor("google") returns empty (SDK default)', () => {
     expect(defaultEndpointFor('google')).toBe('');
   });
+
+  it('ollama-cloud routes listModels through injected fetch (bypasses renderer CORS)', async () => {
+    const calls: string[] = [];
+    const stubFetch = async (url: string): Promise<Response> => {
+      calls.push(url);
+      return new Response(JSON.stringify({ data: [{ id: 'gpt-oss:120b' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const provider = createProviderForKind('ollama-cloud', {
+      endpoint: () => 'https://ollama.com',
+      apiKey: () => 'KEY',
+      fetch: stubFetch,
+    });
+
+    const models = await provider.listModels();
+
+    expect(calls).toEqual(['https://ollama.com/v1/models']);
+    expect(models).toEqual([{ id: 'gpt-oss:120b' }]);
+  });
+
+  it('ollama-cloud routes chat stream through injected fetch (bypasses renderer CORS)', async () => {
+    const calls: string[] = [];
+    const sseBody =
+      'data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}\n\n' +
+      'data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
+      'data: [DONE]\n\n';
+    const stubFetch = async (url: string | URL | Request): Promise<Response> => {
+      const u = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+      calls.push(u);
+      return new Response(sseBody, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+    const provider = createProviderForKind('ollama-cloud', {
+      endpoint: () => 'https://ollama.com',
+      apiKey: () => 'KEY',
+      fetch: stubFetch as unknown as (input: string, init?: RequestInit) => Promise<Response>,
+    });
+
+    const ac = new AbortController();
+    const events: unknown[] = [];
+    for await (const ev of provider.stream(
+      { model: 'gpt-oss:120b', messages: [{ role: 'user', content: 'hi' }] },
+      ac.signal,
+    )) {
+      events.push(ev);
+    }
+
+    expect(calls).toContain('https://ollama.com/v1/chat/completions');
+    expect(events.length).toBeGreaterThan(0);
+  });
 });

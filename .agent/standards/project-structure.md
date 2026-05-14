@@ -20,7 +20,7 @@ leo/
 │   │   ├── compact/                     # /compact live + terminal widget, phaseSink
 │   │   ├── externalAgent/               # External-agent delegation — adapter contract, refine, FSM, slot, writer, widget
 │   │   │   └── adapters/                # Adapter base + concrete adapters (inline-agent, openfang)
-│   │   │       └── openfang/            # OpenFang/Demiurg A2A adapter — config schema, http transport, polling, artifacts, failure decoder, http-error mapper, requestUrl driver
+│   │   │       └── openfang/            # OpenFang/Demiurg A2A adapter — config schema, http transport, polling, artifacts, failure decoder, http-error mapper
 │   │   ├── task/                        # Subagent slice — orchestrator, single-turn graph driver, registry proxy, widget controller, terminal snapshot
 │   │   ├── toolSearch/                  # Deferred-tool fetcher — request assembly, gating, mapping, session
 │   │   └── wiki/                        # Wiki slice — ingest, lint, search, inbox; mutex-gated
@@ -33,7 +33,7 @@ leo/
 │   ├── graph/                           # Link graph cache
 │   ├── indexer/                         # Vault + canvas chunking, dirty queue, reindex
 │   ├── mcp/                             # MCP client, config, reconnect, resource picker, prompt-skill adapter, MCP-UI actions/types
-│   ├── platform/                        # Logger, sinks, error channel, langfuse tracer, ALS init
+│   ├── platform/                        # Logger, sinks, error channel, langfuse tracer, ALS init, Obsidian requestUrl fetch bridge
 │   ├── prompts/                         # Centralized LLM prompts + tool descriptions, mirrors agent/ + tools/ tree
 │   │   ├── agent/                       # Per-slice agent prompts (leoPreamble, compact, canvas, externalAgent, wiki, task subagent preamble)
 │   │   └── tools/                       # Tool description strings (builtin, planMode, todoWrite, toolSearch)
@@ -51,7 +51,7 @@ leo/
 │   │       ├── blocks/                  # Assistant message blocks (text/thinking/tool/diff/agent/grouped/widgets)
 │   │       ├── widgets/                 # Read-only status widgets (/context, /rag, /wiki, /canvas)
 │   │       └── hooks/                   # Shared chat-UI hooks
-│   ├── util/                            # Generic utils (debounce, delay, fifo)
+│   ├── util/                            # Generic utils (debounce, delay, fifo, lru-cache)
 │   └── main.ts                          # Obsidian plugin entry
 ├── tests/
 │   ├── helpers/                         # Cross-suite test helpers (in-memory VaultAdapter, etc.)

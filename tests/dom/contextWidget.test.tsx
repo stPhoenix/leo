@@ -106,6 +106,36 @@ describe('ContextWidget — messages breakdown sub-line', () => {
   });
 });
 
+describe('ContextWidget — token-source tier label', () => {
+  it("shows 'measured' for 'api'", () => {
+    const data = makeData({ totalTokens: 100, tokenTotalSource: 'api' });
+    const { container } = render(<ContextWidget props={{ data, contextWindow: 200_000 }} />);
+    const meta = container.querySelector('[data-slot="widget-meta"]')?.textContent ?? '';
+    expect(meta).toContain('measured');
+  });
+
+  it("shows 'hybrid' for 'hybrid'", () => {
+    const data = makeData({ totalTokens: 100, tokenTotalSource: 'hybrid' });
+    const { container } = render(<ContextWidget props={{ data, contextWindow: 200_000 }} />);
+    const meta = container.querySelector('[data-slot="widget-meta"]')?.textContent ?? '';
+    expect(meta).toContain('hybrid');
+  });
+
+  it("shows 'rough' for 'estimated'", () => {
+    const data = makeData({ totalTokens: 100, tokenTotalSource: 'estimated' });
+    const { container } = render(<ContextWidget props={{ data, contextWindow: 200_000 }} />);
+    const meta = container.querySelector('[data-slot="widget-meta"]')?.textContent ?? '';
+    expect(meta).toContain('rough');
+  });
+
+  it("shows 'exact' for 'exact'", () => {
+    const data = makeData({ totalTokens: 100, tokenTotalSource: 'exact' });
+    const { container } = render(<ContextWidget props={{ data, contextWindow: 200_000 }} />);
+    const meta = container.querySelector('[data-slot="widget-meta"]')?.textContent ?? '';
+    expect(meta).toContain('exact');
+  });
+});
+
 describe('ContextWidget — legend & arcs', () => {
   it('does not render compact_buffer or free_space in the legend', () => {
     const data = makeData({

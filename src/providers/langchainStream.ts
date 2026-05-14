@@ -109,13 +109,21 @@ interface ChunkWithMeta {
   };
 }
 
+export interface ToStreamEventsOptions {
+  // Maps wire-level (sanitized) tool names back to their original IDs.
+  // Used by AnthropicProvider to undo `.` → `_` encoding required by the
+  // Anthropic tools.<n>.custom.name regex.
+  readonly toolNameMap?: ReadonlyMap<string, string>;
+}
+
 export async function* toStreamEvents(
   source: AsyncIterable<AIMessageChunk>,
+  opts: ToStreamEventsOptions = {},
 ): AsyncIterable<StreamEvent> {
   const st = makeState();
   try {
     for await (const chunk of source) {
-      yield* processChunk(chunk, st);
+      yield* processChunk(chunk, st, opts);
     }
     yield* drain(st);
     yield { type: 'done' };
@@ -125,10 +133,14 @@ export async function* toStreamEvents(
   }
 }
 
-function* processChunk(chunk: AIMessageChunk, st: State): Iterable<StreamEvent> {
+function* processChunk(
+  chunk: AIMessageChunk,
+  st: State,
+  opts: ToStreamEventsOptions,
+): Iterable<StreamEvent> {
   yield* processThinkingParts(chunk, st);
   yield* emitTextDelta(chunk, st);
-  yield* emitToolCallDeltas(chunk, st);
+  yield* emitToolCallDeltas(chunk, st, opts);
   captureUsageMetadata(chunk, st);
 }
 
@@ -148,22 +160,29 @@ function* emitTextDelta(chunk: AIMessageChunk, st: State): Iterable<StreamEvent>
   };
 }
 
-function* emitToolCallDeltas(chunk: AIMessageChunk, st: State): Iterable<StreamEvent> {
+function* emitToolCallDeltas(
+  chunk: AIMessageChunk,
+  st: State,
+  opts: ToStreamEventsOptions,
+): Iterable<StreamEvent> {
   const meta = chunk as unknown as ChunkWithMeta;
   const tcChunks = meta.tool_call_chunks;
   if (tcChunks === undefined || tcChunks.length === 0) return;
   for (const c of tcChunks) {
-    yield* emitOneToolCallDelta(c, st);
+    yield* emitOneToolCallDelta(c, st, opts);
   }
 }
 
 function* emitOneToolCallDelta(
   c: NonNullable<ChunkWithMeta['tool_call_chunks']>[number],
   st: State,
+  opts: ToStreamEventsOptions,
 ): Iterable<StreamEvent> {
   const buf = resolveToolBuf(c, st);
   if (typeof c.id === 'string' && c.id.length > 0 && buf.id.length === 0) buf.id = c.id;
-  if (typeof c.name === 'string' && c.name.length > 0 && buf.name.length === 0) buf.name = c.name;
+  if (typeof c.name === 'string' && c.name.length > 0 && buf.name.length === 0) {
+    buf.name = opts.toolNameMap?.get(c.name) ?? c.name;
+  }
   const argsPart = typeof c.args === 'string' ? c.args : '';
 
   if (!buf.started && buf.id.length > 0 && buf.name.length > 0) {

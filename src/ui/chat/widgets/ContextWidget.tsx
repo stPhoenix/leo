@@ -49,7 +49,7 @@ function ContextWidgetBody({ data, contextWindow }: BodyProps): JSX.Element {
   const pct = Math.min(100, Math.round((totalTokens / window) * 100));
   const pctReserved = Math.min(100 - pct, Math.round((reserved / window) * 100));
   const pctLeft = Math.max(0, 100 - pct - pctReserved);
-  const source = data.tokenTotalSource === 'api' ? 'measured' : 'estimated';
+  const source = sourceLabel(data.tokenTotalSource);
   const legend = categories.filter(
     (c) => c.isFreeSpace !== true && c.isReserved !== true && c.tokens > 0,
   );
@@ -214,6 +214,19 @@ function buildCategories(data: ContextData, reserved: number, free: number): Con
 
 function fmt(n: number): string {
   return n.toLocaleString('en-US');
+}
+
+function sourceLabel(source: ContextData['tokenTotalSource']): string {
+  switch (source) {
+    case 'exact':
+      return 'exact';
+    case 'api':
+      return 'measured';
+    case 'hybrid':
+      return 'hybrid';
+    case 'estimated':
+      return 'rough';
+  }
 }
 
 interface MessagesSubLineProps {

@@ -8,6 +8,8 @@ import { createObsidianSinkFs } from '@/platform/obsidianSinkFs';
 import { createObsidianUserErrorChannel } from '@/platform/obsidianUserErrorChannel';
 import { ProviderManager } from '@/providers/providerManager';
 import { EmbeddingClient } from '@/providers/embeddingClient';
+import { resolveEmbeddingTarget } from '@/providers/embeddingResolver';
+import { ConnectionState } from '@/providers/connectionState';
 import { createProviderForKind } from '@/providers/registry';
 import {
   SafeStorage,
@@ -45,6 +47,7 @@ import {
   type ContextSnapshotStore,
 } from '@/agent/contextSnapshotStore';
 import { runManualCompaction, type CompactionResult } from '@/agent/autocompact';
+import { createExactTokenCounter, type ExactTokenCounter } from '@/agent/exactTokenCount';
 import { createTrackingState } from '@/agent/autocompactBreaker';
 import { roughTokenCountEstimation } from '@/agent/tokenEstimator';
 import type { TokenMessage } from '@/agent/tokenEstimator';
@@ -52,7 +55,7 @@ import { breakdownMessages } from '@/agent/messageBreakdown';
 import { countToolDescriptorTokens, type ToolDescriptor } from '@/agent/toolTokenCount';
 import { countSkillFrontmatterTokens } from '@/agent/skillTokenCount';
 import { LEO_PREAMBLE, PLAN_MODE_RULE } from '@/prompts/agent/leoPreamble';
-import type { ChatMessage } from '@/providers/types';
+import type { ChatMessage, OpenAITool } from '@/providers/types';
 import { ToolRegistry } from '@/tools/toolRegistry';
 import { createReadNoteTool } from '@/tools/builtin/readNote';
 import { createToolSearchTool } from '@/tools/toolSearch/toolSearchTool';
@@ -137,9 +140,9 @@ import { createWikiSandbox, restrictedVaultAdapter } from '@/agent/wiki/restrict
 import { generateWikiRunId } from '@/agent/wiki/runIdRegistry';
 import { WikiWidgetController, type WikiPickerDeps } from '@/agent/wiki/widgetController';
 import type { ProviderOverride } from '@/agent/wiki/ingest/types';
-import { PROVIDER_KINDS, type ProviderKind } from '@/settings/settingsStore';
+import { PROVIDER_KINDS, type ProviderKind, type ProviderSettings } from '@/settings/settingsStore';
 import { kindRequiresApiKey } from '@/providers/registry';
-import type { ProviderModel } from '@/providers/types';
+import type { AnthropicThinkingConfig, ProviderModel } from '@/providers/types';
 import { IndexerStatusTap } from '@/indexer/indexerStatusTap';
 import { createRagSnapshotCollector, type RagSnapshotCollector } from '@/rag/ragSnapshot';
 import { RAG_PALETTE_COMMAND_ID, RAG_PALETTE_COMMAND_NAME } from '@/ui/ragCommand';
@@ -229,7 +232,7 @@ import { createTaskTool } from '@/tools/builtin/task';
 import { createOrchestratorUrlFetcher } from '@/agent/wiki/ingest/orchestratorUrlFetcher';
 import type { RunHandle as ExternalAgentRunHandle } from '@/agent/externalAgent/subgraph';
 import { OpenfangAdapter } from '@/agent/externalAgent/adapters/openfang';
-import { createObsidianFetch } from '@/agent/externalAgent/adapters/openfang/obsidianHttpDriver';
+import { createObsidianFetch, adaptToWideFetch } from '@/platform/obsidianFetch';
 import {
   InlineAgentAdapter,
   inlineAgentConfigSchema,
@@ -265,6 +268,14 @@ import { defaultEndpointFor } from '@/providers/registry';
 import { SAFE_STORAGE_PREFIX } from '@/settings/externalAgentResolver';
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'heic']);
+
+function resolveAnthropicThinking(p: ProviderSettings): AnthropicThinkingConfig | undefined {
+  if (p.kind !== 'anthropic') return undefined;
+  const t = p.anthropicThinking;
+  if (t.mode === 'off') return undefined;
+  if (t.mode === 'adaptive') return { type: 'adaptive' };
+  return { type: 'enabled', budgetTokens: t.budgetTokens };
+}
 
 function classifyVaultFile(ext: string): 'image' | 'document' {
   return IMAGE_EXTS.has(ext.toLowerCase()) ? 'image' : 'document';
@@ -414,6 +425,8 @@ export default class LeoPlugin extends Plugin {
   safeStorage!: SafeStorage;
   tracer!: TracerService;
   mcp: McpWiring | null = null;
+  private exactCounter: ExactTokenCounter | null = null;
+  private exactCounterKey = '';
   private mcpStartupController: AbortController | null = null;
   threadsStore: ThreadsStore | null = null;
   skillEditor: SkillEditorController | null = null;
@@ -573,9 +586,11 @@ export default class LeoPlugin extends Plugin {
       return this.safeStorage.getCached(key) ?? '';
     };
 
+    const obsidianFetch = createObsidianFetch();
     const providerCtx = {
       endpoint: (): string => this.store.get().provider.endpoint,
       apiKey: currentApiKey,
+      fetch: obsidianFetch,
     };
     const provider = createProviderForKind(this.store.get().provider.kind, providerCtx);
     const initialTimeouts = this.store.get().providerTimeouts;
@@ -599,12 +614,17 @@ export default class LeoPlugin extends Plugin {
       }),
     );
     this.embeddingClient = new EmbeddingClient({
-      endpoint: () => this.store.get().provider.endpoint,
-      model: () => this.store.get().provider.embeddingModel,
-      kind: () => this.store.get().provider.kind,
-      apiKey: currentApiKey,
-      connection: this.providerManager.connection,
+      endpoint: () => resolveEmbeddingTarget(this.store.get()).endpoint,
+      model: () => resolveEmbeddingTarget(this.store.get()).model,
+      kind: () => resolveEmbeddingTarget(this.store.get()).kind,
+      apiKey: () =>
+        this.safeStorage.getCached(resolveEmbeddingTarget(this.store.get()).apiKeyName) ?? '',
+      // Independent of providerManager.connection so an embedding outage cannot
+      // mark the chat provider unreachable. RAG failure is already swallowed in
+      // agent/graph.ts; turn continues without context.
+      connection: new ConnectionState(),
       logger: this.logger,
+      fetch: adaptToWideFetch(obsidianFetch),
     });
 
     this.providerStatusEl = this.addStatusBarItem();
@@ -662,6 +682,7 @@ export default class LeoPlugin extends Plugin {
         providerId,
         model,
         ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+        maxTokens: this.store.get().provider.maxTokens,
         endpoint: resolveInlineEndpoint(providerId, this.store),
         apiKey: this.inlineProviderKeys[providerId] ?? '',
       });
@@ -1014,7 +1035,7 @@ export default class LeoPlugin extends Plugin {
         orchestrator: this.taskOrchestrator,
         confirmation: this.confirmationController,
         onHandle: (handle: TaskRunHandle) => {
-          registerTaskLiveController(handle.runId, handle.controller);
+          registerTaskLiveController(handle.runId, handle.controller, handle);
           try {
             this.chatMessageStore.append({
               id: `task-${handle.runId}`,
@@ -1196,6 +1217,7 @@ export default class LeoPlugin extends Plugin {
           endpoint: resolveInlineEndpoint(s.provider.kind, this.store),
           apiKey: this.inlineProviderKeys[s.provider.kind] ?? '',
           ...(s.provider.temperature !== undefined ? { temperature: s.provider.temperature } : {}),
+          maxTokens: s.provider.maxTokens,
         });
       },
     });
@@ -1223,6 +1245,7 @@ export default class LeoPlugin extends Plugin {
             ...(s.provider.temperature !== undefined
               ? { temperature: s.provider.temperature }
               : {}),
+            maxTokens: s.provider.maxTokens,
           });
         },
       });
@@ -1851,6 +1874,13 @@ export default class LeoPlugin extends Plugin {
         userOverride: () => this.store.get().contextWindowOverride,
         invokedSkills: () => this.invokedSkills.toAutocompactList(MAIN_AGENT_ID),
         replaceHistory: (thread, r) => replaceHistoryAfterCompact(thread, r),
+        exactCounter: async (messages, signal) => {
+          const model = this.store.get().provider.chatModel;
+          const tools = this.toolRegistry.toOpenAITools(this.getActiveThreadId());
+          const fn = this.resolveExactCounterFn(model, tools);
+          if (fn === undefined) throw new Error('exact_counter_not_available');
+          return fn(messages, signal);
+        },
         beginRun: ({ threadId }) => {
           const runId = generateCompactRunId();
           const { phaseSink } = beginCompactRun({
@@ -1897,6 +1927,8 @@ export default class LeoPlugin extends Plugin {
       toolSearch: toolSearchSession,
       maxToolRoundTrips: () => this.store.get().provider.maxToolRoundTrips,
       disableParallelToolCalls: () => this.store.get().provider.disableParallelToolCalls,
+      anthropicThinking: () => resolveAnthropicThinking(this.store.get().provider),
+      maxTokens: () => this.store.get().provider.maxTokens,
     });
 
     const confirmationController = this.confirmationController;
@@ -2074,6 +2106,7 @@ export default class LeoPlugin extends Plugin {
             provider: this.providerManager,
             model: () => this.store.get().provider.chatModel,
             temperature: () => this.store.get().provider.temperature,
+            maxTokens: () => this.store.get().provider.maxTokens,
             logger: this.logger,
           }),
           clearThreadReadState: (threadId) => readFileState.clearThread(threadId),
@@ -2351,6 +2384,30 @@ export default class LeoPlugin extends Plugin {
     }
   }
 
+  private resolveExactCounterFn(
+    model: string,
+    tools: readonly OpenAITool[],
+  ): ((messages: readonly ChatMessage[], signal?: AbortSignal) => Promise<number>) | undefined {
+    const settings = this.store.get();
+    const enabled =
+      settings.provider.useExactTokenCountAnthropic &&
+      this.providerManager.activeProviderId() === 'anthropic' &&
+      this.providerManager.supportsCountTokens();
+    if (!enabled) return undefined;
+    const key = `${this.providerManager.activeProviderId()}|${model}`;
+    if (this.exactCounter === null || this.exactCounterKey !== key) {
+      this.exactCounter = createExactTokenCounter({
+        provider: {
+          countTokens: (req, sig) => this.providerManager.countTokens(req, sig),
+        },
+      });
+      this.exactCounterKey = key;
+    }
+    const counter = this.exactCounter;
+    if (counter === null) return undefined;
+    return (messages, signal) => counter.count({ model, messages, tools }, signal);
+  }
+
   private async analyzeContextForChat(signal: AbortSignal): Promise<ContextData> {
     const thread = this.getActiveThreadId();
     const model = this.store.get().provider.chatModel;
@@ -2403,6 +2460,9 @@ export default class LeoPlugin extends Plugin {
       countSkillTokens: async () => skillTotal,
     };
 
+    const openAiTools = this.toolRegistry.toOpenAITools(thread);
+    const exactCounter = this.resolveExactCounterFn(model, openAiTools);
+
     return analyzeContextUsage({
       messages: messages as unknown as readonly ChatMessage[],
       originalMessages: originalMessages as unknown as readonly ChatMessage[],
@@ -2410,6 +2470,7 @@ export default class LeoPlugin extends Plugin {
       logger: this.logger,
       counters,
       ...(signal !== undefined ? { signal } : {}),
+      ...(exactCounter !== undefined ? { exactCounter } : {}),
     });
   }
 
@@ -2696,15 +2757,17 @@ interface BuildInlineChatModelInput {
   readonly endpoint: string;
   readonly apiKey: string;
   readonly temperature?: number;
+  readonly maxTokens?: number;
 }
 
 function buildInlineChatModel(input: BuildInlineChatModelInput): BaseChatModel {
-  const { providerId, model, endpoint, apiKey, temperature } = input;
+  const { providerId, model, endpoint, apiKey, temperature, maxTokens } = input;
   if (providerId === 'anthropic') {
     return new ChatAnthropic({
       model,
       apiKey,
       ...(temperature !== undefined ? { temperature } : {}),
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
       streaming: false,
       streamUsage: true,
       clientOptions: {
@@ -2719,6 +2782,7 @@ function buildInlineChatModel(input: BuildInlineChatModelInput): BaseChatModel {
     model,
     apiKey: apiKey.length > 0 ? apiKey : 'placeholder',
     ...(temperature !== undefined ? { temperature } : {}),
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
     streaming: false,
     streamUsage: true,
     configuration: {

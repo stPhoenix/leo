@@ -160,7 +160,12 @@ function wrapClient(client: Client, kind: 'stdio' | 'http'): McpTransportConnect
       }
       const result = await client.callTool(params, undefined, signalOpts(signal));
       if ((result as { isError?: unknown }).isError === true) {
-        throw new Error(extractErrorText(result as { content?: unknown }));
+        const err = new Error(extractErrorText(result as { content?: unknown })) as Error & {
+          data?: unknown;
+        };
+        const structured = (result as { structuredContent?: unknown }).structuredContent;
+        if (structured !== undefined) err.data = structured;
+        throw err;
       }
       return result;
     },

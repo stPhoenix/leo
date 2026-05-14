@@ -9,10 +9,12 @@ import {
 } from './openAICompatibleProvider';
 import { AnthropicProvider } from './anthropicProvider';
 import { GoogleProvider } from './googleProvider';
+import { adaptToWideFetch, type FetchLike as ObsidianFetchLike } from '@/platform/obsidianFetch';
 
 export interface ProviderFactoryContext {
   readonly endpoint: () => string;
   readonly apiKey: () => string;
+  readonly fetch?: ObsidianFetchLike;
 }
 
 export function createProviderForKind(kind: ProviderKind, ctx: ProviderFactoryContext): Provider {
@@ -22,13 +24,21 @@ export function createProviderForKind(kind: ProviderKind, ctx: ProviderFactoryCo
     case 'openai':
       return createOpenAIProvider({ apiKey: ctx.apiKey, endpoint: ctx.endpoint });
     case 'anthropic':
-      return new AnthropicProvider({ apiKey: ctx.apiKey, endpoint: ctx.endpoint });
+      return new AnthropicProvider({
+        apiKey: ctx.apiKey,
+        endpoint: ctx.endpoint,
+        ...(ctx.fetch !== undefined ? { fetch: ctx.fetch } : {}),
+      });
     case 'google':
       return new GoogleProvider({ apiKey: ctx.apiKey, endpoint: ctx.endpoint });
     case 'ollama':
       return createOllamaProvider({ endpoint: ctx.endpoint });
     case 'ollama-cloud':
-      return createOllamaCloudProvider({ apiKey: ctx.apiKey, endpoint: ctx.endpoint });
+      return createOllamaCloudProvider({
+        apiKey: ctx.apiKey,
+        endpoint: ctx.endpoint,
+        ...(ctx.fetch !== undefined ? { fetch: adaptToWideFetch(ctx.fetch) } : {}),
+      });
     case 'custom':
       return createCustomProvider({
         baseURL: ctx.endpoint,

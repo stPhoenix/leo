@@ -1,5 +1,8 @@
-import { memo, useSyncExternalStore } from 'react';
-import { lookupTaskLiveController } from '@/agent/task/liveControllerRegistry';
+import { memo, useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import {
+  lookupTaskLiveController,
+  type TaskLiveHandleLike,
+} from '@/agent/task/liveControllerRegistry';
 import { TaskWidgetController } from '@/agent/task/widgetController';
 import type { TaskErrorCode, TaskPhase, TaskViewModel } from '@/agent/task/widgetState';
 import type { WidgetComponentProps } from '../widgets/registry';
@@ -29,6 +32,9 @@ const ERROR_LABEL: Record<TaskErrorCode, string> = {
   denied: 'Denied by user',
 };
 
+const EXTEND_STEP_MS = 5 * 60_000;
+const EXTENDABLE_PHASES: ReadonlySet<TaskPhase> = new Set(['preparing', 'running', 'summarizing']);
+
 function SubagentLiveBlockImpl({ props }: WidgetComponentProps): JSX.Element | null {
   const raw = props as Partial<SubagentLiveProps> | null;
   if (raw === null || typeof raw !== 'object') return null;
@@ -36,24 +42,47 @@ function SubagentLiveBlockImpl({ props }: WidgetComponentProps): JSX.Element | n
   if (typeof runId !== 'string' || typeof threadId !== 'string' || typeof prompt !== 'string') {
     return null;
   }
-  const live = lookupTaskLiveController(runId);
-  if (live !== null && live instanceof TaskWidgetController) {
-    return <SubagentWidget controller={live} />;
+  const entry = lookupTaskLiveController(runId);
+  if (entry !== null && entry.controller instanceof TaskWidgetController) {
+    return <SubagentWidget controller={entry.controller} handle={entry.handle} />;
   }
   const synthetic = TaskWidgetController.reloadRehydrate({ runId, threadId, prompt });
-  return <SubagentWidget controller={synthetic} />;
+  return <SubagentWidget controller={synthetic} handle={null} />;
 }
 
-export function SubagentWidget({ controller }: { controller: TaskWidgetController }): JSX.Element {
+export function SubagentWidget({
+  controller,
+  handle,
+}: {
+  controller: TaskWidgetController;
+  handle: TaskLiveHandleLike | null;
+}): JSX.Element {
   const vm = useSyncExternalStore(
     (cb) => controller.subscribe(cb),
     () => controller.viewModel(),
     () => controller.viewModel(),
   );
-  return <SubagentWidgetView vm={vm} />;
+  return <SubagentWidgetView vm={vm} handle={handle} />;
 }
 
-function SubagentWidgetView({ vm }: { vm: TaskViewModel }): JSX.Element {
+function SubagentWidgetView({
+  vm,
+  handle,
+}: {
+  vm: TaskViewModel;
+  handle: TaskLiveHandleLike | null;
+}): JSX.Element {
+  const canExtend = handle !== null && EXTENDABLE_PHASES.has(vm.phase) && vm.deadlineMs !== null;
+  const [capReached, setCapReached] = useState(false);
+
+  const onExtend = useCallback(() => {
+    if (handle === null) return;
+    const res = handle.extendTimeout(EXTEND_STEP_MS);
+    if (!res.ok && res.reason === 'cap_reached') {
+      setCapReached(true);
+    }
+  }, [handle]);
+
   return (
     <section
       className={`leo-root leo-subagent-widget leo-subagent-${vm.phase}`}
@@ -69,6 +98,19 @@ function SubagentWidgetView({ vm }: { vm: TaskViewModel }): JSX.Element {
         <span className="leo-subagent-phase" data-phase-label>
           {PHASE_LABEL[vm.phase]}
         </span>
+        {canExtend ? <TimeoutCountdown deadlineMs={vm.deadlineMs as number} /> : null}
+        {canExtend ? (
+          <button
+            type="button"
+            className="leo-subagent-extend"
+            data-slot="subagent-extend"
+            onClick={onExtend}
+            disabled={capReached}
+            title={capReached ? 'Max 30 min reached' : 'Extend timeout by 5 minutes'}
+          >
+            +5m
+          </button>
+        ) : null}
       </header>
       <p className="leo-subagent-prompt" data-slot="subagent-prompt">
         {truncate(vm.prompt, 200)}
@@ -98,6 +140,29 @@ function SubagentWidgetView({ vm }: { vm: TaskViewModel }): JSX.Element {
       ) : null}
     </section>
   );
+}
+
+function TimeoutCountdown({ deadlineMs }: { deadlineMs: number }): JSX.Element {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return (): void => clearInterval(id);
+  }, []);
+  const remainingMs = Math.max(0, deadlineMs - now);
+  return (
+    <span className="leo-subagent-timeout" data-slot="subagent-timeout">
+      timeout in {formatRemaining(remainingMs)}
+    </span>
+  );
+}
+
+function formatRemaining(ms: number): string {
+  if (ms <= 0) return '0s';
+  const totalSec = Math.ceil(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return sec === 0 ? `${min}m` : `${min}m${sec}s`;
 }
 
 function truncate(s: string, n: number): string {

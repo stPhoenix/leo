@@ -77,6 +77,17 @@ export class ProviderManager {
     this.opts.logger?.info('provider.swap', { id: next.id });
   }
 
+  supportsCountTokens(): boolean {
+    return this.activeProvider.countTokens !== undefined;
+  }
+
+  countTokens(req: ProviderChatRequest, signal?: AbortSignal): Promise<number> {
+    if (this.activeProvider.countTokens === undefined) {
+      return Promise.reject(new Error('active provider does not support countTokens'));
+    }
+    return this.activeProvider.countTokens(req, signal);
+  }
+
   async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
     return this.activeProvider.listModels(signal);
   }

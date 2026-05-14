@@ -45,16 +45,22 @@ function recordContent(r: ChatMessageRecord): string | readonly TokenBlock[] {
   return r.content;
 }
 
-function toTokenBlock(b: ContentBlock): TokenBlock {
+export function toTokenBlock(b: ContentBlock): TokenBlock {
   switch (b.type) {
     case 'text':
       return { type: 'text', text: b.text };
     case 'thinking':
       return { type: 'thinking', thinking: b.thinking };
-    case 'image':
-      return { type: 'image' };
-    case 'document':
-      return { type: 'document' };
+    case 'image': {
+      const dims = inferImageDims(b);
+      return dims !== null
+        ? { type: 'image', width: dims.width, height: dims.height }
+        : { type: 'image' };
+    }
+    case 'document': {
+      const pages = inferDocumentPages(b);
+      return pages !== null ? { type: 'document', pages } : { type: 'document' };
+    }
     case 'tool_use':
       return { type: 'tool_use', name: b.name, input: b.input };
     case 'tool_result':
@@ -79,6 +85,24 @@ function toTokenBlock(b: ContentBlock): TokenBlock {
     case 'mcp_ui':
       return { type: 'text', text: `[MCP UI: ${b.uri}]` };
   }
+}
+
+function inferImageDims(b: ContentBlock): { width: number; height: number } | null {
+  if (b.type !== 'image') return null;
+  const raw = b as unknown as { width?: unknown; height?: unknown };
+  if (typeof raw.width === 'number' && typeof raw.height === 'number') {
+    if (raw.width > 0 && raw.height > 0) {
+      return { width: raw.width, height: raw.height };
+    }
+  }
+  return null;
+}
+
+function inferDocumentPages(b: ContentBlock): number | null {
+  if (b.type !== 'document') return null;
+  const raw = b as unknown as { pages?: unknown };
+  if (typeof raw.pages === 'number' && raw.pages > 0) return raw.pages;
+  return null;
 }
 
 function recordUsage(r: ChatMessageRecord): TokenUsage | null {

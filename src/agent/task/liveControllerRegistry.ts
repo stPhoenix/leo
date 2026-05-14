@@ -1,28 +1,46 @@
+import type { TaskExtendTimeoutResult } from './orchestrator';
+
 export interface TaskWidgetControllerLike {
   dispose?(): void;
 }
 
-const live = new Map<string, TaskWidgetControllerLike>();
+/**
+ * Structural subset of `TaskRunHandle` the UI needs to extend a live run.
+ * Defined here (not imported from orchestrator) so the registry stays a leaf
+ * module and the UI doesn't depend on orchestrator internals.
+ */
+export interface TaskLiveHandleLike {
+  extendTimeout(additionalMs: number): TaskExtendTimeoutResult;
+  currentDeadlineMs(): number | null;
+}
+
+export interface TaskLiveEntry {
+  readonly controller: TaskWidgetControllerLike;
+  readonly handle: TaskLiveHandleLike | null;
+}
+
+const live = new Map<string, TaskLiveEntry>();
 
 export function registerTaskLiveController(
   runId: string,
   controller: TaskWidgetControllerLike,
+  handle: TaskLiveHandleLike | null = null,
 ): void {
-  live.set(runId, controller);
+  live.set(runId, { controller, handle });
 }
 
 export function releaseTaskLiveController(runId: string): void {
-  const c = live.get(runId);
-  if (c === undefined) return;
+  const entry = live.get(runId);
+  if (entry === undefined) return;
   try {
-    c.dispose?.();
+    entry.controller.dispose?.();
   } catch {
     /* dispose failure non-fatal */
   }
   live.delete(runId);
 }
 
-export function lookupTaskLiveController(runId: string): TaskWidgetControllerLike | null {
+export function lookupTaskLiveController(runId: string): TaskLiveEntry | null {
   return live.get(runId) ?? null;
 }
 

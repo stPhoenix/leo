@@ -20,6 +20,7 @@ describe('TaskViewModel state helpers', () => {
     expect(vm.lastToolId).toBeNull();
     expect(vm.summary).toBeNull();
     expect(vm.error).toBeNull();
+    expect(vm.deadlineMs).toBeNull();
     expect(vm.runId).toBe('task-x');
     expect(vm.threadId).toBe('t-1');
     expect(vm.prompt).toBe('do the thing');

@@ -31,8 +31,10 @@ import {
   estimateMessageTokens,
   roughTokenCountEstimation,
   tokenCountWithEstimation,
+  type TokenBlock,
   type TokenMessage,
 } from './tokenEstimator';
+import { toTokenBlock } from '@/chat/contextBridge';
 
 export const COMPACT_BOUNDARY_MARKER = '[leo.compact.boundary]';
 export const SUMMARY_PREFIX = 'Summary:\n';
@@ -137,6 +139,10 @@ export interface AutocompactOptions {
   readonly tracking?: AutoCompactTrackingState;
   readonly breakerNotifications?: BreakerStatusChannel;
   readonly phaseSink?: CompactPhaseSink;
+  readonly exactCounter?: (
+    messages: readonly ChatMessage[],
+    signal?: AbortSignal,
+  ) => Promise<number>;
 }
 
 const DEFAULT_KEEP_ALIVE_MS = 30_000;
@@ -150,6 +156,17 @@ export interface ShouldAutoCompactInput {
   readonly maxOutputTokensForModel?: number;
   readonly querySource?: string;
   readonly snipTokensFreed?: number;
+}
+
+export const EXACT_GATE_FRACTION = 0.8;
+
+export interface ShouldAutoCompactExactInput extends ShouldAutoCompactInput {
+  readonly exactCounter?: (
+    messages: readonly ChatMessage[],
+    signal?: AbortSignal,
+  ) => Promise<number>;
+  readonly signal?: AbortSignal;
+  readonly logger?: Logger;
 }
 
 export function shouldAutoCompact(input: ShouldAutoCompactInput): boolean {
@@ -168,6 +185,35 @@ export function shouldAutoCompact(input: ShouldAutoCompactInput): boolean {
   const threshold = autoCompactThresholdFor(contextWindow, maxOutput);
   const snip = input.snipTokensFreed ?? 0;
   return tokens - snip >= threshold;
+}
+
+export async function shouldAutoCompactExact(input: ShouldAutoCompactExactInput): Promise<boolean> {
+  if (input.querySource === 'compact') return false;
+  const tokenMessages = toTokenMessages(input.messages);
+  const estimated = tokenCountWithEstimation(tokenMessages);
+  const heuristicTokens = estimated ?? estimateMessageTokens(tokenMessages);
+  const contextWindow = resolveContextWindow({
+    model: input.model,
+    ...(input.providerMaxInputTokens !== undefined
+      ? { providerMaxInputTokens: input.providerMaxInputTokens }
+      : {}),
+    ...(input.userOverride !== undefined ? { userOverride: input.userOverride } : {}),
+  });
+  const maxOutput = input.maxOutputTokensForModel ?? COMPACT_MAX_OUTPUT_TOKENS;
+  const threshold = autoCompactThresholdFor(contextWindow, maxOutput);
+  const snip = input.snipTokensFreed ?? 0;
+  const heuristicNet = heuristicTokens - snip;
+  if (input.exactCounter === undefined) return heuristicNet >= threshold;
+  if (heuristicNet < threshold * EXACT_GATE_FRACTION) return false;
+  try {
+    const exact = await input.exactCounter(input.messages, input.signal);
+    return exact - snip >= threshold;
+  } catch (err) {
+    input.logger?.warn('autocompact.exact_counter_failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return heuristicNet >= threshold;
+  }
 }
 
 export function autoCompactThresholdForInput(
@@ -199,23 +245,23 @@ export async function autoCompactIfNeeded(
     );
     return null;
   }
-  if (
-    !shouldAutoCompact({
-      messages,
-      model: opts.model,
-      ...(opts.providerMaxInputTokens !== undefined
-        ? { providerMaxInputTokens: opts.providerMaxInputTokens }
-        : {}),
-      ...(opts.userOverride !== undefined ? { userOverride: opts.userOverride } : {}),
-      ...(opts.maxOutputTokensForModel !== undefined
-        ? { maxOutputTokensForModel: opts.maxOutputTokensForModel }
-        : {}),
-      ...(opts.querySource !== undefined ? { querySource: opts.querySource } : {}),
-      ...(opts.snipTokensFreed !== undefined ? { snipTokensFreed: opts.snipTokensFreed } : {}),
-    })
-  ) {
-    return null;
-  }
+  const decision = await shouldAutoCompactExact({
+    messages,
+    model: opts.model,
+    ...(opts.providerMaxInputTokens !== undefined
+      ? { providerMaxInputTokens: opts.providerMaxInputTokens }
+      : {}),
+    ...(opts.userOverride !== undefined ? { userOverride: opts.userOverride } : {}),
+    ...(opts.maxOutputTokensForModel !== undefined
+      ? { maxOutputTokensForModel: opts.maxOutputTokensForModel }
+      : {}),
+    ...(opts.querySource !== undefined ? { querySource: opts.querySource } : {}),
+    ...(opts.snipTokensFreed !== undefined ? { snipTokensFreed: opts.snipTokensFreed } : {}),
+    ...(opts.exactCounter !== undefined ? { exactCounter: opts.exactCounter } : {}),
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    logger: opts.logger,
+  });
+  if (!decision) return null;
   return runCompaction(messages, opts);
 }
 
@@ -762,10 +808,11 @@ function truncateToTokens(text: string, tokenCap: number): string {
 }
 
 function toTokenMessages(messages: readonly ChatMessage[]): TokenMessage[] {
-  return messages.map((m) => ({
-    role: m.role,
-    content: typeof m.content === 'string' ? m.content : chatContentText(m.content),
-  }));
+  return messages.map((m) => {
+    const content: string | readonly TokenBlock[] =
+      typeof m.content === 'string' ? m.content : m.content.map(toTokenBlock);
+    return { role: m.role, content };
+  });
 }
 
 function recordFailureIfTracked(opts: AutocompactOptions): void {

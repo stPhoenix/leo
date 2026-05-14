@@ -233,7 +233,39 @@ function parseSingleBlock(obj: Record<string, unknown>): ContentBlock | null {
       expandedBody: obj.expandedBody,
     };
   }
+  if (type === 'image') {
+    const source = parseBase64Source(obj.source);
+    if (source !== null) {
+      return {
+        type: 'image',
+        source,
+        ...(typeof obj.name === 'string' ? { name: obj.name } : {}),
+        ...(typeof obj.size === 'number' ? { size: obj.size } : {}),
+      };
+    }
+  }
+  if (type === 'document') {
+    const source = parseBase64Source(obj.source);
+    if (source !== null) {
+      return {
+        type: 'document',
+        source,
+        ...(typeof obj.name === 'string' ? { name: obj.name } : {}),
+        ...(typeof obj.size === 'number' ? { size: obj.size } : {}),
+      };
+    }
+  }
   return null;
+}
+
+function parseBase64Source(
+  raw: unknown,
+): { readonly type: 'base64'; readonly media_type: string; readonly data: string } | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  if (o.type !== 'base64') return null;
+  if (typeof o.media_type !== 'string' || typeof o.data !== 'string') return null;
+  return { type: 'base64', media_type: o.media_type, data: o.data };
 }
 
 function parseToolUseBlock(obj: Record<string, unknown>): ContentBlock {

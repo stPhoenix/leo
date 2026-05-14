@@ -79,6 +79,10 @@ export class TaskWidgetController {
     this.update({ ...extra, phase, startedAt, endedAt });
   }
 
+  setDeadline(deadlineMs: number | null): void {
+    this.update({ deadlineMs });
+  }
+
   noteToolCall(toolId: string): void {
     this.update({
       toolCallsCount: this.vm.toolCallsCount + 1,

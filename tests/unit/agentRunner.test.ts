@@ -1092,4 +1092,39 @@ describe('AgentRunner', () => {
     expect(trace?.callbacks).toEqual(['CB']);
     expect(end).toHaveBeenCalled();
   });
+
+  it('forwards maxTokens accessor onto every ProviderChatRequest', async () => {
+    const provider = new FakeProvider();
+    const { logger } = makeLogger();
+    let setting = 256;
+    const runner = new AgentRunner({
+      provider,
+      focusedContext: new MutableFocus(),
+      logger,
+      model: () => 'm',
+      maxTokens: () => setting,
+    });
+    provider.plan({ events: [{ type: 'token', text: 'a' }, { type: 'done' }] });
+    await collect(runner.send({ role: 'user', content: 'q1' }, 't-mt'));
+    expect(provider.calls[0]?.maxTokens).toBe(256);
+
+    setting = 4096;
+    provider.plan({ events: [{ type: 'token', text: 'b' }, { type: 'done' }] });
+    await collect(runner.send({ role: 'user', content: 'q2' }, 't-mt'));
+    expect(provider.calls[1]?.maxTokens).toBe(4096);
+  });
+
+  it('omits maxTokens from the request when no accessor is provided', async () => {
+    const provider = new FakeProvider();
+    const { logger } = makeLogger();
+    const runner = new AgentRunner({
+      provider,
+      focusedContext: new MutableFocus(),
+      logger,
+      model: () => 'm',
+    });
+    provider.plan({ events: [{ type: 'token', text: 'a' }, { type: 'done' }] });
+    await collect(runner.send({ role: 'user', content: 'q' }, 't-mt2'));
+    expect(provider.calls[0]?.maxTokens).toBeUndefined();
+  });
 });

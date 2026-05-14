@@ -55,7 +55,7 @@ describe('recordsToAnalyzerInputs', () => {
     expect(tokens).toBeGreaterThan(1300);
   });
 
-  it('counts image and document blocks via IMAGE_DOCUMENT_TOKENS', () => {
+  it('counts image and document blocks via per-type fallback constants', () => {
     const records: ChatMessageRecord[] = [
       rec({
         role: 'user',
@@ -73,7 +73,8 @@ describe('recordsToAnalyzerInputs', () => {
       }),
     ];
     const { messages } = recordsToAnalyzerInputs(records);
-    expect(estimateMessageTokens(messages)).toBe(4000);
+    // image fallback (no dims) + document fallback (no pages)
+    expect(estimateMessageTokens(messages)).toBe(1500 + 2200);
   });
 
   it('mirrors record.tokens onto originalMessages.usage so apiUsageTokens reads it', () => {

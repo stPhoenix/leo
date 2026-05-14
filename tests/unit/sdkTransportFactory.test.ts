@@ -302,6 +302,27 @@ describe('createSdkTransportFactory', () => {
     expect(currentClient().callToolCalls[0]!.params).toEqual({ name: 't', arguments: { a: 1 } });
   });
 
+  it('callTool preserves structuredContent on the thrown Error when isError true', async () => {
+    const factory = createSdkTransportFactory({ fetchImpl: fakeFetch });
+    const cfg: McpHttpConfig = { id: 's', enabled: true, transport: 'http', url: 'http://h/' };
+    const conn = await factory.connect(cfg);
+    const structured = { reason: 'invalid_args', details: 'field "name" is required' };
+    currentClient().callToolResult = {
+      isError: true,
+      content: [{ type: 'text', text: 'tool failed' }],
+      structuredContent: structured,
+    };
+    let caught: unknown;
+    try {
+      await conn.callTool('t', { a: 1 });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe('tool failed');
+    expect((caught as Error & { data?: unknown }).data).toEqual(structured);
+  });
+
   it('callTool returns raw result when not error', async () => {
     const factory = createSdkTransportFactory({ fetchImpl: fakeFetch });
     const cfg: McpHttpConfig = { id: 's', enabled: true, transport: 'http', url: 'http://h/' };

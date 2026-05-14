@@ -17,9 +17,22 @@ import { TaskWidgetController } from './widgetController';
 import type { TaskTerminalSnapshot } from './terminalSnapshot';
 import type { TaskErrorCode } from './widgetState';
 
-export const DEFAULT_TASK_TIMEOUT_MS = 600_000; // 10 min
+export const DEFAULT_TASK_TIMEOUT_MS = 300_000; // 5 min
+export const TIMEOUT_HARD_LIMIT_MS = 30 * 60_000; // 30 min — extension cap
 export const DEFAULT_MAX_CONCURRENT_TASKS = 4;
 export const TASK_SUBAGENT_ID_PREFIX = 'task:';
+
+export type TaskExtendTimeoutResult =
+  | { readonly ok: true; readonly newDeadlineMs: number; readonly newTotalMs: number }
+  | { readonly ok: false; readonly reason: 'cap_reached' | 'terminated' };
+
+interface TimerState {
+  timer: ReturnType<typeof setTimeout> | null;
+  totalMs: number;
+  readonly startedAt: number;
+  deadlineMs: number;
+  terminated: boolean;
+}
 
 export interface TaskToolErrorPayload {
   readonly code: TaskErrorCode;
@@ -45,6 +58,14 @@ export interface TaskRunHandle {
   readonly terminal: Promise<TaskToolResult>;
   state(): TaskWidgetController;
   cancel(): void;
+  /**
+   * Extend the wall-clock budget while the run is still live. Adds `additionalMs`
+   * to the total budget, clamped to `TIMEOUT_HARD_LIMIT_MS`. Re-arms the internal
+   * timer accounting for already-elapsed time.
+   */
+  extendTimeout(additionalMs: number): TaskExtendTimeoutResult;
+  /** Absolute epoch ms at which the run will be aborted by timeout. */
+  currentDeadlineMs(): number | null;
 }
 
 export type TaskOrchestratorStartResult =
@@ -160,20 +181,33 @@ export class TaskOrchestrator {
     } else {
       input.signal.addEventListener('abort', onParentAbort, { once: true });
     }
-    const timeoutMs = input.timeoutMs ?? this.defaultTimeoutMs;
-    const timer = setTimeout(() => {
-      this.logger?.warn(TASK_LOG.error, {
-        runId,
-        thread: input.parentThreadId,
-        error: 'timeout',
-        timeoutMs,
-      });
-      internalAbort.abort();
-    }, timeoutMs);
-    // Don't keep the Node process alive in tests / SSR.
-    if (typeof (timer as NodeJS.Timeout).unref === 'function') {
-      (timer as NodeJS.Timeout).unref();
-    }
+    const initialTimeoutMs = input.timeoutMs ?? this.defaultTimeoutMs;
+    const timerState: TimerState = {
+      timer: null,
+      totalMs: initialTimeoutMs,
+      startedAt,
+      deadlineMs: startedAt + initialTimeoutMs,
+      terminated: false,
+    };
+    const armTimer = (remainingMs: number): void => {
+      if (timerState.timer !== null) clearTimeout(timerState.timer);
+      timerState.timer = setTimeout(
+        () => {
+          this.logger?.warn(TASK_LOG.error, {
+            runId,
+            thread: input.parentThreadId,
+            error: 'timeout',
+            timeoutMs: timerState.totalMs,
+          });
+          internalAbort.abort();
+        },
+        Math.max(0, remainingMs),
+      );
+      if (typeof (timerState.timer as NodeJS.Timeout).unref === 'function') {
+        (timerState.timer as NodeJS.Timeout).unref();
+      }
+    };
+    armTimer(initialTimeoutMs);
 
     const events = new EventChannel<StreamEvent>();
     const turn: TurnBinding = {
@@ -192,11 +226,43 @@ export class TaskOrchestrator {
       prompt: input.prompt,
     });
     controller.setPhase('preparing');
+    controller.setDeadline(timerState.deadlineMs);
 
     let resolveTerminal!: (r: TaskToolResult) => void;
     const terminal = new Promise<TaskToolResult>((resolve) => {
       resolveTerminal = resolve;
     });
+
+    const extendTimeout = (additionalMs: number): TaskExtendTimeoutResult => {
+      if (timerState.terminated || !this.liveHandles.has(runId)) {
+        return { ok: false, reason: 'terminated' };
+      }
+      if (!Number.isFinite(additionalMs) || additionalMs <= 0) {
+        return { ok: false, reason: 'terminated' };
+      }
+      const proposedTotal = timerState.totalMs + additionalMs;
+      const clampedTotal = Math.min(proposedTotal, TIMEOUT_HARD_LIMIT_MS);
+      if (clampedTotal <= timerState.totalMs) {
+        return { ok: false, reason: 'cap_reached' };
+      }
+      timerState.totalMs = clampedTotal;
+      timerState.deadlineMs = timerState.startedAt + clampedTotal;
+      const remaining = timerState.deadlineMs - this.now();
+      armTimer(remaining);
+      controller.setDeadline(timerState.deadlineMs);
+      this.logger?.info(TASK_LOG.extend, {
+        runId,
+        thread: input.parentThreadId,
+        addedMs: additionalMs,
+        newTotalMs: clampedTotal,
+        newDeadlineMs: timerState.deadlineMs,
+      });
+      return {
+        ok: true,
+        newDeadlineMs: timerState.deadlineMs,
+        newTotalMs: clampedTotal,
+      };
+    };
 
     const handle: TaskRunHandle = {
       runId,
@@ -206,6 +272,8 @@ export class TaskOrchestrator {
       terminal,
       state: () => controller,
       cancel: () => internalAbort.abort(),
+      extendTimeout,
+      currentDeadlineMs: () => (timerState.terminated ? null : timerState.deadlineMs),
     };
     this.liveHandles.set(runId, handle);
 
@@ -213,7 +281,7 @@ export class TaskOrchestrator {
       runId,
       thread: input.parentThreadId,
       subThread: subThreadId,
-      timeoutMs,
+      timeoutMs: initialTimeoutMs,
       promptChars: input.prompt.length,
     });
     try {
@@ -230,7 +298,7 @@ export class TaskOrchestrator {
       graphDeps,
       turn,
       internalAbort,
-      timer,
+      timerState,
       startedAt,
       onParentAbort,
       parentSignal: input.signal,
@@ -245,7 +313,7 @@ export class TaskOrchestrator {
     readonly graphDeps: GraphDeps;
     readonly turn: TurnBinding;
     readonly internalAbort: AbortController;
-    readonly timer: ReturnType<typeof setTimeout>;
+    readonly timerState: TimerState;
     readonly startedAt: number;
     readonly onParentAbort: () => void;
     readonly parentSignal: AbortSignal;
@@ -256,7 +324,7 @@ export class TaskOrchestrator {
       graphDeps,
       turn,
       internalAbort,
-      timer,
+      timerState,
       startedAt,
       onParentAbort,
       parentSignal,
@@ -331,9 +399,12 @@ export class TaskOrchestrator {
       handle.controller.recordError('graph_throw', msg);
       result = this.buildResult(handle, startedAt, 'graph_throw', msg);
     } finally {
-      clearTimeout(timer);
+      if (timerState.timer !== null) clearTimeout(timerState.timer);
+      timerState.timer = null;
+      timerState.terminated = true;
       parentSignal.removeEventListener('abort', onParentAbort);
       this.liveHandles.delete(handle.runId);
+      handle.controller.setDeadline(null);
     }
 
     try {

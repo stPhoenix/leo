@@ -35,6 +35,8 @@ function stubHandle(
     terminal,
     state: () => controller,
     cancel: () => undefined,
+    extendTimeout: () => ({ ok: false, reason: 'terminated' }),
+    currentDeadlineMs: () => null,
   };
 }
 

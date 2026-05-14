@@ -1,7 +1,11 @@
 import type { Logger } from '@/platform/Logger';
 import type { FocusedContext } from '@/editor/types';
 import { NULL_FOCUSED_CONTEXT } from '@/editor/types';
-import type { ProviderChatRequest, StreamEvent as ProviderStreamEvent } from '@/providers/types';
+import type {
+  AnthropicThinkingConfig,
+  ProviderChatRequest,
+  StreamEvent as ProviderStreamEvent,
+} from '@/providers/types';
 import type { StreamEvent } from './streamEvents';
 import type { ToolRegistry } from '@/tools/toolRegistry';
 import type { EditNoteBridge } from '@/tools/types';
@@ -109,6 +113,8 @@ export interface AgentRunnerOptions {
   readonly tracer?: AgentTracer;
   readonly toolSearch?: ToolSearchSession;
   readonly disableParallelToolCalls?: () => boolean;
+  readonly anthropicThinking?: () => AnthropicThinkingConfig | undefined;
+  readonly maxTokens?: () => number;
 }
 
 export interface MicrocompactAgentOptions {
@@ -165,6 +171,8 @@ export class AgentRunner {
   private readonly tracer: AgentTracer | undefined;
   private readonly toolSearch: ToolSearchSession | undefined;
   private readonly disableParallelToolCalls: (() => boolean) | undefined;
+  private readonly anthropicThinking: (() => AnthropicThinkingConfig | undefined) | undefined;
+  private readonly maxTokens: (() => number) | undefined;
   private readonly slots: TurnSlot[] = [];
   private inflight: TurnSlot | null = null;
   private tail: Promise<void> = Promise.resolve();
@@ -209,6 +217,8 @@ export class AgentRunner {
     this.tracer = opts.tracer;
     this.toolSearch = opts.toolSearch;
     this.disableParallelToolCalls = opts.disableParallelToolCalls;
+    this.anthropicThinking = opts.anthropicThinking;
+    this.maxTokens = opts.maxTokens;
   }
 
   send(msg: AgentUserMessage, thread: ThreadId): AsyncIterable<StreamEvent> {
@@ -392,6 +402,10 @@ export class AgentRunner {
       ...(this.disableParallelToolCalls !== undefined
         ? { disableParallelToolCalls: this.disableParallelToolCalls }
         : {}),
+      ...(this.anthropicThinking !== undefined
+        ? { anthropicThinking: this.anthropicThinking }
+        : {}),
+      ...(this.maxTokens !== undefined ? { maxTokens: this.maxTokens } : {}),
     };
   }
 

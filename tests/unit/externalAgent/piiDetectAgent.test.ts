@@ -260,6 +260,31 @@ describe('createPiiDetectAgent', () => {
     await agent.detect('hello', ac.signal);
     expect(seenSignals[0]).toBe(ac.signal);
   });
+
+  it('forwards maxTokens accessor onto each ProviderChatRequest', async () => {
+    const seenReqs: ProviderChatRequest[] = [];
+    const agent = createPiiDetectAgent({
+      provider: fakeProvider([{ findings: [] }], (req) => {
+        seenReqs.push(req);
+      }),
+      model: () => 'm',
+      maxTokens: () => 512,
+    });
+    await agent.detect('hello', new AbortController().signal);
+    expect(seenReqs[0]?.maxTokens).toBe(512);
+  });
+
+  it('omits maxTokens when no accessor is provided', async () => {
+    const seenReqs: ProviderChatRequest[] = [];
+    const agent = createPiiDetectAgent({
+      provider: fakeProvider([{ findings: [] }], (req) => {
+        seenReqs.push(req);
+      }),
+      model: () => 'm',
+    });
+    await agent.detect('hello', new AbortController().signal);
+    expect(seenReqs[0]?.maxTokens).toBeUndefined();
+  });
 });
 
 describe('chunkText', () => {

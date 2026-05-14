@@ -11,4 +11,5 @@ export const TASK_LOG = {
   reload: 'task.reload',
   ctxSignalAborted: 'task.ctxSignal.aborted',
   forbiddenToolBlocked: 'task.forbidden_tool_blocked',
+  extend: 'task.extend',
 } as const;

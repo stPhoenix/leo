@@ -2,6 +2,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { SubagentWidget } from './SubagentLiveBlock';
 import { TaskWidgetController } from '@/agent/task/widgetController';
 import type { TaskErrorCode, TaskPhase, TaskViewModel } from '@/agent/task/widgetState';
+import type { TaskLiveHandleLike } from '@/agent/task/liveControllerRegistry';
+import type { TaskExtendTimeoutResult } from '@/agent/task/orchestrator';
 
 function ctrl(patch: Partial<TaskViewModel>): TaskWidgetController {
   const c = new TaskWidgetController({
@@ -11,6 +13,18 @@ function ctrl(patch: Partial<TaskViewModel>): TaskWidgetController {
   });
   c.update(patch);
   return c;
+}
+
+function liveHandle(deadlineMs: number, capReached = false): TaskLiveHandleLike {
+  let current = deadlineMs;
+  return {
+    extendTimeout(addMs: number): TaskExtendTimeoutResult {
+      if (capReached) return { ok: false, reason: 'cap_reached' };
+      current += addMs;
+      return { ok: true, newDeadlineMs: current, newTotalMs: addMs };
+    },
+    currentDeadlineMs: (): number | null => current,
+  };
 }
 
 const meta: Meta<typeof SubagentWidget> = {
@@ -27,6 +41,7 @@ const NOW = Date.now();
 export const Preparing: Story = {
   args: {
     controller: ctrl({ phase: 'preparing', startedAt: NOW - 120 }),
+    handle: null,
   },
 };
 
@@ -38,6 +53,33 @@ export const Running: Story = {
       toolCallsCount: 3,
       lastToolId: 'grep_vault',
     }),
+    handle: null,
+  },
+};
+
+export const RunningWithDeadline: Story = {
+  args: {
+    controller: ctrl({
+      phase: 'running',
+      startedAt: NOW - 30_000,
+      toolCallsCount: 5,
+      lastToolId: 'read_note',
+      deadlineMs: NOW + 270_000,
+    }),
+    handle: liveHandle(NOW + 270_000),
+  },
+};
+
+export const RunningNearCap: Story = {
+  args: {
+    controller: ctrl({
+      phase: 'running',
+      startedAt: NOW - 1_800_000 + 5_000,
+      toolCallsCount: 12,
+      lastToolId: 'search_vault',
+      deadlineMs: NOW + 5_000,
+    }),
+    handle: liveHandle(NOW + 5_000, true),
   },
 };
 
@@ -49,6 +91,7 @@ export const Summarizing: Story = {
       toolCallsCount: 7,
       lastToolId: 'read_note',
     }),
+    handle: null,
   },
 };
 
@@ -62,6 +105,7 @@ export const Done: Story = {
       lastToolId: 'read_note',
       summary: '17',
     }),
+    handle: null,
   },
 };
 
@@ -74,6 +118,7 @@ export const Cancelled: Story = {
       toolCallsCount: 2,
       error: { code: 'cancelled', message: 'Task subagent run cancelled' },
     }),
+    handle: null,
   },
 };
 
@@ -86,6 +131,7 @@ function err(code: TaskErrorCode, message: string, phase: TaskPhase = 'error'): 
         endedAt: NOW,
         error: { code, message },
       }),
+      handle: null,
     },
   };
 }

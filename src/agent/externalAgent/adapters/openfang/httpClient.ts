@@ -1,7 +1,7 @@
 import type { OpenfangConfig } from './configSchema';
-import type { FetchLike } from './obsidianHttpDriver';
 
-export type { FetchLike } from './obsidianHttpDriver';
+export type FetchLikeInit = Pick<RequestInit, 'method' | 'headers' | 'body' | 'signal'>;
+export type FetchLike = (url: string, init: FetchLikeInit) => Promise<Response>;
 
 export interface OpenfangHttpDeps {
   readonly fetchImpl?: FetchLike;

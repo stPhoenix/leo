@@ -139,4 +139,60 @@ describe('conversation schema round-trip', () => {
     expect(paths).toContain('messages[0].extraFuture');
     expect(paths).toContain('extraRoot');
   });
+
+  it('round-trips user message with image + document attachment blocks', () => {
+    const original: StoredThread = {
+      id: 'default',
+      schemaVersion: CONVERSATION_SCHEMA_VERSION,
+      createdAt: '2026-04-21T00:00:00.000Z',
+      updatedAt: '2026-04-21T00:00:01.000Z',
+      metadata: { allowedTools: [] },
+      messages: [
+        {
+          id: 'u1',
+          role: 'user',
+          content: 'see attached',
+          createdAt: '2026-04-21T00:00:30.000Z',
+          blocks: [
+            { type: 'text', text: 'see attached' },
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+              name: 'shot.png',
+              size: 4,
+            },
+            {
+              type: 'document',
+              source: { type: 'base64', media_type: 'application/pdf', data: 'BBBB' },
+              name: 'doc.pdf',
+              size: 4,
+            },
+          ],
+        },
+      ],
+    };
+    const parsed = parseThread(JSON.parse(serializeThread(original)), ctx);
+    expect(parsed).toEqual(original);
+  });
+
+  it('drops image/document block with invalid source', () => {
+    const raw = {
+      id: 'default',
+      schemaVersion: CONVERSATION_SCHEMA_VERSION,
+      createdAt: '2026-04-21T00:00:00.000Z',
+      updatedAt: '2026-04-21T00:00:01.000Z',
+      metadata: { allowedTools: [] },
+      messages: [
+        {
+          id: 'u1',
+          role: 'user',
+          content: '',
+          createdAt: 'c',
+          blocks: [{ type: 'image', source: { type: 'base64' /* missing fields */ } }],
+        },
+      ],
+    };
+    const parsed = parseThread(raw, ctx);
+    expect(parsed.messages[0]?.blocks).toEqual([]);
+  });
 });

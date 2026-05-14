@@ -112,6 +112,28 @@ describe('migrate()', () => {
     expect(partial.langfuse.host).toBe('https://cloud.langfuse.com');
   });
 
+  it('defaults anthropicThinking to adaptive when absent', () => {
+    const m = migrate({});
+    expect(m.provider.anthropicThinking).toEqual({ mode: 'adaptive', budgetTokens: 4096 });
+  });
+
+  it('preserves a valid anthropicThinking mode and clamps the budget', () => {
+    const m = migrate({
+      provider: { anthropicThinking: { mode: 'enabled', budgetTokens: 8192 } },
+    });
+    expect(m.provider.anthropicThinking).toEqual({ mode: 'enabled', budgetTokens: 8192 });
+
+    const tooSmall = migrate({
+      provider: { anthropicThinking: { mode: 'enabled', budgetTokens: 100 } },
+    });
+    expect(tooSmall.provider.anthropicThinking.budgetTokens).toBe(1024);
+  });
+
+  it('rejects an unknown anthropicThinking mode', () => {
+    const m = migrate({ provider: { anthropicThinking: { mode: 'turbo' } } });
+    expect(m.provider.anthropicThinking.mode).toBe('adaptive');
+  });
+
   it('defaults ragMode to no-focus when absent', () => {
     expect(migrate({}).ragMode).toBe(DEFAULT_RAG_MODE);
     expect(DEFAULT_RAG_MODE).toBe('no-focus');
@@ -123,6 +145,51 @@ describe('migrate()', () => {
     expect(migrate({ ragMode: 'no-focus' }).ragMode).toBe('no-focus');
     expect(migrate({ ragMode: 'bogus' }).ragMode).toBe(DEFAULT_RAG_MODE);
     expect(migrate({ ragMode: 42 }).ragMode).toBe(DEFAULT_RAG_MODE);
+  });
+
+  it('legacy config (no embeddingProvider) defaults to inheriting from chat', () => {
+    const m = migrate({
+      provider: {
+        kind: 'ollama',
+        endpoint: 'http://localhost:11434',
+        embeddingModel: 'nomic-embed-text',
+      },
+    });
+    expect(m.embeddingProvider).toEqual({
+      inheritFromChat: true,
+      kind: 'ollama',
+      endpoint: 'http://localhost:11434',
+      model: 'nomic-embed-text',
+    });
+  });
+
+  it('preserves explicit embeddingProvider override', () => {
+    const m = migrate({
+      provider: { kind: 'ollama-cloud', endpoint: 'https://ollama.com' },
+      embeddingProvider: {
+        inheritFromChat: false,
+        kind: 'ollama',
+        endpoint: 'http://localhost:11434',
+        model: 'nomic-embed-text',
+      },
+    });
+    expect(m.embeddingProvider).toEqual({
+      inheritFromChat: false,
+      kind: 'ollama',
+      endpoint: 'http://localhost:11434',
+      model: 'nomic-embed-text',
+    });
+  });
+
+  it('falls back per-field on partial embeddingProvider, mirroring chat where missing', () => {
+    const m = migrate({
+      provider: { kind: 'openai', endpoint: 'https://api.openai.com', embeddingModel: 'e' },
+      embeddingProvider: { inheritFromChat: false, kind: 'bogus-kind' },
+    });
+    expect(m.embeddingProvider.inheritFromChat).toBe(false);
+    expect(m.embeddingProvider.kind).toBe('openai');
+    expect(m.embeddingProvider.endpoint).toBe('https://api.openai.com');
+    expect(m.embeddingProvider.model).toBe('e');
   });
 });
 

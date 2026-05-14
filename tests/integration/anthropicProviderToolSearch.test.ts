@@ -115,7 +115,8 @@ describe('AnthropicProvider + ToolSearch wire shape', () => {
     };
     expect(body.tools).toBeDefined();
     const deferred = body.tools!.filter((t) => t.defer_loading === true).map((t) => t.name);
-    expect(deferred).toContain('mcp.deferred.thing');
+    // Anthropic rejects dots in tool names; sanitizeToolNames rewrites them.
+    expect(deferred).toContain('mcp_deferred_thing');
     expect(deferred).not.toContain('Read');
   });
 

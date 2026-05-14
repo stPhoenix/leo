@@ -1,6 +1,5 @@
 import {
   estimateBlockTokens,
-  IMAGE_DOCUMENT_TOKENS,
   roughTokenCountEstimation,
   type TokenBlock,
   type TokenMessage,
@@ -80,7 +79,7 @@ function tallyBlock(block: TokenBlock): { bucket: Bucket; tokens: number } {
       return { bucket: 'tool_result', tokens: estimateBlockTokens(block) };
     case 'image':
     case 'document':
-      return { bucket: 'attachment', tokens: IMAGE_DOCUMENT_TOKENS };
+      return { bucket: 'attachment', tokens: estimateBlockTokens(block) };
     case 'text':
     case 'thinking':
       return { bucket: 'text', tokens: estimateBlockTokens(block) };

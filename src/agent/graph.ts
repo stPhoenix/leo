@@ -1,5 +1,6 @@
 import type { Logger } from '@/platform/Logger';
 import type {
+  AnthropicThinkingConfig,
   ChatMessage,
   OpenAITool,
   ProviderChatRequest,
@@ -36,7 +37,7 @@ import {
 import {
   autoCompactIfNeeded,
   buildPostCompactMessages,
-  shouldAutoCompact,
+  shouldAutoCompactExact,
   type AutocompactProvider,
   type CompactionResult,
   type InvokedSkill,
@@ -171,6 +172,10 @@ export interface GraphAutocompactOptions {
    * widget's phase transitions.
    */
   readonly beginRun?: (input: { trigger: 'auto'; threadId: ThreadId }) => CompactPhaseSink;
+  readonly exactCounter?: (
+    messages: readonly ChatMessage[],
+    signal?: AbortSignal,
+  ) => Promise<number>;
 }
 
 export type ConfirmationDecision = 'allow-once' | 'allow-thread' | 'deny';
@@ -211,6 +216,8 @@ export interface GraphDeps {
   readonly appendHistory: (thread: ThreadId, msg: AgentHistoryMessage) => void;
   readonly toolSearch?: ToolSearchSession;
   readonly disableParallelToolCalls?: () => boolean;
+  readonly anthropicThinking?: () => AnthropicThinkingConfig | undefined;
+  readonly maxTokens?: () => number;
 }
 
 export interface GraphTraceContext {
@@ -549,9 +556,11 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     if (state.workingMessages.length === 0) return {};
     const userOverride = ac.userOverride?.();
     const breakerTripped = ac.tracking !== undefined && shouldSkipForCircuitBreaker(ac.tracking);
-    const willRun = shouldAutoCompact({
+    const willRun = await shouldAutoCompactExact({
       messages: state.workingMessages,
       model: state.effectiveModel,
+      logger: deps.logger,
+      signal: turn.signal,
       ...(ac.providerMaxInputTokens !== undefined
         ? { providerMaxInputTokens: ac.providerMaxInputTokens }
         : {}),
@@ -559,6 +568,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       ...(ac.maxOutputTokensForModel !== undefined
         ? { maxOutputTokensForModel: ac.maxOutputTokensForModel }
         : {}),
+      ...(ac.exactCounter !== undefined ? { exactCounter: ac.exactCounter } : {}),
     });
     if (!willRun && !breakerTripped) return {};
     const phaseSink = ac.beginRun?.({ trigger: 'auto', threadId: turn.thread });
@@ -587,6 +597,7 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
         ...(ac.plan !== undefined ? { plan: ac.plan } : {}),
         ...(ac.planMode !== undefined ? { planMode: ac.planMode } : {}),
         ...(phaseSink !== undefined ? { phaseSink } : {}),
+        ...(ac.exactCounter !== undefined ? { exactCounter: ac.exactCounter } : {}),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -672,10 +683,12 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     providerHints: ProviderHints | undefined,
   ): ProviderHints | undefined => {
     const disableParallel = deps.disableParallelToolCalls?.() === true;
-    if (!disableParallel && providerHints === undefined) return undefined;
+    const thinking = deps.anthropicThinking?.();
+    if (!disableParallel && thinking === undefined && providerHints === undefined) return undefined;
     return {
       ...(providerHints ?? {}),
       ...(disableParallel ? { disableParallelToolCalls: true } : {}),
+      ...(thinking !== undefined ? { thinking } : {}),
     };
   };
 
@@ -686,9 +699,11 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     mergedHints: ProviderHints | undefined,
   ): ProviderChatRequest => {
     const traceCtx = turn.traceContext;
+    const maxTokens = deps.maxTokens?.();
     return {
       model: state.effectiveModel,
       messages: [...turnMessages],
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
       ...(activeTools.length > 0 ? { tools: activeTools } : {}),
       ...(mergedHints !== undefined ? { providerHints: mergedHints } : {}),
       ...(traceCtx !== undefined

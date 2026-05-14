@@ -56,7 +56,8 @@ describe('breakdownMessages', () => {
       },
     ];
     const r = breakdownMessages(msgs);
-    expect(r.toolResultTokens).toBe(1000);
+    // text body 4000/4 = 1000 + per-child overhead 4 = 1004
+    expect(r.toolResultTokens).toBe(1004);
     expect(r.userTextTokens).toBe(0);
   });
 
@@ -68,7 +69,8 @@ describe('breakdownMessages', () => {
       },
     ];
     const r = breakdownMessages(msgs);
-    expect(r.attachmentTokens).toBe(4000);
+    // image fallback 1500 + document fallback 2200
+    expect(r.attachmentTokens).toBe(1500 + 2200);
   });
 
   it('total equals sum of buckets', () => {
