@@ -12,6 +12,22 @@ export type LayoutTreeResult =
 
 export function layoutTree(entities: readonly Entity[], edges: readonly Edge[]): LayoutTreeResult {
   if (entities.length === 0) return { kind: 'ok', canvas: { nodes: [], edges: [] } };
+  const { inEdges, outEdges } = buildAdjacency(entities, edges);
+  if (hasCycle(entities, outEdges)) return { kind: 'cycle' };
+
+  const roots = entities.filter((e) => (inEdges.get(e.id) ?? []).length === 0);
+  if (roots.length === 0) return { kind: 'cycle' };
+
+  const depth = computeDepths(roots, outEdges);
+  const byDepth = groupByDepth(entities, depth);
+  const nodes = layoutRows(byDepth);
+  return { kind: 'ok', canvas: { nodes, edges: [] } };
+}
+
+function buildAdjacency(
+  entities: readonly Entity[],
+  edges: readonly Edge[],
+): { inEdges: Map<string, string[]>; outEdges: Map<string, string[]> } {
   const inEdges = new Map<string, string[]>();
   const outEdges = new Map<string, string[]>();
   for (const e of entities) {
@@ -23,11 +39,13 @@ export function layoutTree(entities: readonly Entity[], edges: readonly Edge[]):
     inEdges.get(ed.to)!.push(ed.from);
     outEdges.get(ed.from)!.push(ed.to);
   }
-  if (hasCycle(entities, outEdges)) return { kind: 'cycle' };
+  return { inEdges, outEdges };
+}
 
-  const roots = entities.filter((e) => (inEdges.get(e.id) ?? []).length === 0);
-  if (roots.length === 0) return { kind: 'cycle' };
-
+function computeDepths(
+  roots: readonly Entity[],
+  outEdges: ReadonlyMap<string, readonly string[]>,
+): Map<string, number> {
   const depth = new Map<string, number>();
   const queue: string[] = [];
   for (const r of roots) {
@@ -45,7 +63,13 @@ export function layoutTree(entities: readonly Entity[], edges: readonly Edge[]):
       }
     }
   }
+  return depth;
+}
 
+function groupByDepth(
+  entities: readonly Entity[],
+  depth: ReadonlyMap<string, number>,
+): Map<number, Entity[]> {
   const byDepth = new Map<number, Entity[]>();
   for (const e of entities) {
     const d = depth.get(e.id) ?? 0;
@@ -54,7 +78,10 @@ export function layoutTree(entities: readonly Entity[], edges: readonly Edge[]):
     else list.push(e);
   }
   for (const list of byDepth.values()) list.sort((a, b) => a.id.localeCompare(b.id));
+  return byDepth;
+}
 
+function layoutRows(byDepth: ReadonlyMap<number, readonly Entity[]>): CanvasNode[] {
   const nodes: CanvasNode[] = [];
   const sortedDepths = [...byDepth.keys()].sort((a, b) => a - b);
   for (const d of sortedDepths) {
@@ -67,7 +94,7 @@ export function layoutTree(entities: readonly Entity[], edges: readonly Edge[]):
       cursorX += s.width + SIBLING_GAP;
     });
   }
-  return { kind: 'ok', canvas: { nodes, edges: [] } };
+  return nodes;
 }
 
 function hasCycle(

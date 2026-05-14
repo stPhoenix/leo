@@ -1,9 +1,19 @@
 import { z } from 'zod';
 import type { AcceptRejectController, EditNoteProposal } from '@/agent/acceptRejectController';
 import type { Logger } from '@/platform/Logger';
-import type { ToolSpec } from '../types';
+import type { ToolCtx, ToolSpec } from '../types';
 import { isSafeVaultPath } from './readNote';
 import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
+import { presentDecision } from './_toolGuards';
+
+async function performCopy(ctx: ToolCtx, src: string, dst: string): Promise<void> {
+  if (ctx.vault.copy !== undefined) {
+    await ctx.vault.copy(src, dst);
+    return;
+  }
+  const data = await ctx.vault.read(src);
+  await ctx.vault.write(dst, data);
+}
 
 export interface CopyNoteArgs {
   readonly path: string;
@@ -59,12 +69,7 @@ export function createCopyNoteTool(
         if (await ctx.vault.exists(args.new_path)) {
           return { ok: false, error: `destination exists: ${args.new_path}` };
         }
-        if (ctx.vault.copy !== undefined) {
-          await ctx.vault.copy(args.path, args.new_path);
-        } else {
-          const data = await ctx.vault.read(args.path);
-          await ctx.vault.write(args.new_path, data);
-        }
+        await performCopy(ctx, args.path, args.new_path);
 
         const proposal: EditNoteProposal = {
           toolId: 'copy_note',
@@ -75,33 +80,19 @@ export function createCopyNoteTool(
           lineEnd: 0,
           routedVia: 'vault',
         };
-        const decision = await opts.acceptReject.present(proposal);
-        let reverted = false;
-        if (decision === 'reject') {
-          try {
-            await ctx.vault.remove(args.new_path);
-            reverted = true;
-            opts.logger?.info('copy_note.reject', {
-              toolId: 'copy_note',
-              thread: ctx.thread,
-              from: args.path,
-              to: args.new_path,
-            });
-          } catch (err) {
-            opts.logger?.error('copy_note.reject.failed', {
-              from: args.path,
-              to: args.new_path,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        } else {
-          opts.logger?.info('copy_note.accept', {
+        const { reverted } = await presentDecision({
+          acceptReject: opts.acceptReject,
+          proposal,
+          logger: opts.logger,
+          logKey: 'copy_note',
+          logFields: {
             toolId: 'copy_note',
             thread: ctx.thread,
             from: args.path,
             to: args.new_path,
-          });
-        }
+          },
+          revert: () => ctx.vault.remove(args.new_path),
+        });
 
         return {
           ok: true,

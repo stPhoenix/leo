@@ -67,11 +67,10 @@ export function createNodeFetch(deps: NodeFetchDeps = REAL_DEPS): typeof fetch {
             resolve(new Response(null, init));
             return;
           }
-          const responseStream = nodeReadableToWeb(msg as unknown as Readable, {
-            onEnd: () => log?.info('nodeFetch.end', { url: url.href, durationMs: Date.now() - t0 }),
-            onClose: () =>
-              log?.info('nodeFetch.close', { url: url.href, durationMs: Date.now() - t0 }),
-          });
+          const responseStream = nodeReadableToWeb(
+            msg as unknown as Readable,
+            buildStreamHooks(url, t0, log),
+          );
           resolve(new Response(responseStream, init));
         },
       );
@@ -99,6 +98,13 @@ export function createNodeFetch(deps: NodeFetchDeps = REAL_DEPS): typeof fetch {
       if (body !== undefined) req.write(body);
       req.end();
     });
+  };
+}
+
+function buildStreamHooks(url: URL, t0: number, log: NodeFetchLogger | undefined): StreamHooks {
+  return {
+    onEnd: () => log?.info('nodeFetch.end', { url: url.href, durationMs: Date.now() - t0 }),
+    onClose: () => log?.info('nodeFetch.close', { url: url.href, durationMs: Date.now() - t0 }),
   };
 }
 
@@ -182,6 +188,27 @@ function nodeReadableToWeb(msg: Readable, hooks: StreamHooks = {}): ReadableStre
   });
 }
 
+async function drainReadableStream(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value !== undefined) {
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.byteLength;
+  }
+  return merged;
+}
+
 async function encodeBody(body: BodyInit | null | undefined): Promise<Uint8Array | undefined> {
   if (body === undefined || body === null) return undefined;
   if (typeof body === 'string') return new TextEncoder().encode(body);
@@ -194,24 +221,7 @@ async function encodeBody(body: BodyInit | null | undefined): Promise<Uint8Array
     return new Uint8Array(await body.arrayBuffer());
   }
   if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
-    const reader = (body as ReadableStream<Uint8Array>).getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value !== undefined) {
-        chunks.push(value);
-        total += value.byteLength;
-      }
-    }
-    const merged = new Uint8Array(total);
-    let offset = 0;
-    for (const c of chunks) {
-      merged.set(c, offset);
-      offset += c.byteLength;
-    }
-    return merged;
+    return drainReadableStream(body as ReadableStream<Uint8Array>);
   }
   return new TextEncoder().encode(String(body));
 }

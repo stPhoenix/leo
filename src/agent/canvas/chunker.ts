@@ -39,50 +39,68 @@ export function chunkCanvasBody(input: ChunkCanvasBodyInput): readonly CanvasChu
     return [{ index: 0, text: body, headingPath: [] }];
   }
 
-  const isMarkdown =
-    (contentType !== undefined && MARKDOWN_CONTENT_TYPE_RE.test(contentType)) ||
-    HAS_HEADING_RE.test(body);
-
   const lines = body.split('\n');
-  const sections: readonly SectionRange[] = isMarkdown
-    ? splitByHeadings(lines)
-    : [{ headingPath: [], startLine: 0, endLine: lines.length - 1 }];
+  const sections = splitSections(lines, body, contentType);
 
   const chunks: CanvasChunk[] = [];
   for (const section of sections) {
     if (section.startLine > section.endLine) continue;
-    const sectionText = lines.slice(section.startLine, section.endLine + 1).join('\n');
-    if (sectionText.trim().length === 0) continue;
-
-    if (estimateTokens(sectionText) <= targetTokens) {
-      chunks.push({
-        index: chunks.length,
-        text: sectionText,
-        headingPath: section.headingPath,
-      });
-      if (chunks.length >= maxChunks) return chunks;
-      continue;
-    }
-
-    const windows = slideWindows(
+    const reached = appendSectionChunks(
+      chunks,
       lines,
-      section.startLine,
-      section.endLine,
+      section,
       targetTokens,
       overlapTokens,
+      maxChunks,
     );
-    for (const w of windows) {
-      const text = lines.slice(w.startLine, w.endLine + 1).join('\n');
-      chunks.push({
-        index: chunks.length,
-        text,
-        headingPath: section.headingPath,
-      });
-      if (chunks.length >= maxChunks) return chunks;
-    }
+    if (reached) return chunks;
   }
 
   return chunks;
+}
+
+function splitSections(
+  lines: readonly string[],
+  body: string,
+  contentType: string | undefined,
+): readonly SectionRange[] {
+  const isMarkdown =
+    (contentType !== undefined && MARKDOWN_CONTENT_TYPE_RE.test(contentType)) ||
+    HAS_HEADING_RE.test(body);
+  return isMarkdown
+    ? splitByHeadings(lines)
+    : [{ headingPath: [], startLine: 0, endLine: lines.length - 1 }];
+}
+
+function appendSectionChunks(
+  chunks: CanvasChunk[],
+  lines: readonly string[],
+  section: SectionRange,
+  targetTokens: number,
+  overlapTokens: number,
+  maxChunks: number,
+): boolean {
+  const sectionText = lines.slice(section.startLine, section.endLine + 1).join('\n');
+  if (sectionText.trim().length === 0) return false;
+
+  if (estimateTokens(sectionText) <= targetTokens) {
+    chunks.push({ index: chunks.length, text: sectionText, headingPath: section.headingPath });
+    return chunks.length >= maxChunks;
+  }
+
+  const windows = slideWindows(
+    lines,
+    section.startLine,
+    section.endLine,
+    targetTokens,
+    overlapTokens,
+  );
+  for (const w of windows) {
+    const text = lines.slice(w.startLine, w.endLine + 1).join('\n');
+    chunks.push({ index: chunks.length, text, headingPath: section.headingPath });
+    if (chunks.length >= maxChunks) return true;
+  }
+  return false;
 }
 
 interface SectionRange {

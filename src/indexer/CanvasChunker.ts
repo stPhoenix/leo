@@ -57,29 +57,27 @@ interface EmittedBody {
   readonly inlineTags: readonly string[];
 }
 
+function readTrimmedField(record: Record<string, unknown>, key: string): string {
+  const v = record[key];
+  return typeof v === 'string' ? v.trim() : '';
+}
+
 function buildChunkText(nodeType: string, record: Record<string, unknown>): EmittedBody | null {
-  switch (nodeType) {
-    case 'text': {
-      const text = typeof record.text === 'string' ? record.text.trim() : '';
-      if (text.length === 0) return null;
-      return { text, inlineTags: extractInlineTagsFromText(text) };
-    }
-    case 'file': {
-      const fileRef = typeof record.file === 'string' ? record.file.trim() : '';
-      if (fileRef.length === 0) return null;
-      return { text: `file: ${fileRef}`, inlineTags: [] };
-    }
-    case 'link': {
-      const url = typeof record.url === 'string' ? record.url.trim() : '';
-      if (url.length === 0) return null;
-      return { text: `link: ${url}`, inlineTags: [] };
-    }
-    default: {
-      const label = typeof record.label === 'string' ? record.label.trim() : '';
-      if (label.length === 0) return null;
-      return { text: `label: ${label}`, inlineTags: [] };
-    }
+  if (nodeType === 'text') {
+    const text = readTrimmedField(record, 'text');
+    if (text.length === 0) return null;
+    return { text, inlineTags: extractInlineTagsFromText(text) };
   }
+  if (nodeType === 'file') {
+    const fileRef = readTrimmedField(record, 'file');
+    return fileRef.length === 0 ? null : { text: `file: ${fileRef}`, inlineTags: [] };
+  }
+  if (nodeType === 'link') {
+    const url = readTrimmedField(record, 'url');
+    return url.length === 0 ? null : { text: `link: ${url}`, inlineTags: [] };
+  }
+  const label = readTrimmedField(record, 'label');
+  return label.length === 0 ? null : { text: `label: ${label}`, inlineTags: [] };
 }
 
 interface ParsedCanvas {

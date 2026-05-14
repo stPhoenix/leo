@@ -29,66 +29,86 @@ export interface DiffInput {
   readonly moveDriftPx?: number;
 }
 
+type Coord = { x: number; y: number; w: number; h: number };
+
 export function diffAgainstSidecar(input: DiffInput): DiffResult {
   const driftThreshold = input.moveDriftPx ?? CANVAS_BUDGETS.MOVE_DRIFT_PX;
   const newIds = new Set(input.newGraph.entities.map((e) => e.id));
   const sidecarIds = new Set(Object.keys(input.sidecar.coordMap));
+  const { currentIds, currentCoords } = indexCurrent(input.currentCanvasJson);
 
+  const { kept, lockedCoords } = computeKept(
+    newIds,
+    sidecarIds,
+    input.sidecar.coordMap,
+    currentCoords,
+    driftThreshold,
+  );
+  const added = sortedDiff(newIds, sidecarIds);
+  const removed = sortedDiff(sidecarIds, currentIds);
+  const edgesRemoved = computeEdgesRemoved(input.sidecar, input.currentCanvasJson);
+
+  return { kept, added, removed, edgesRemoved, lockedCoords };
+}
+
+function indexCurrent(canvas: CanvasJson): {
+  currentIds: Set<string>;
+  currentCoords: Map<string, Coord>;
+} {
   const currentIds = new Set<string>();
-  const currentCoords = new Map<string, { x: number; y: number; w: number; h: number }>();
-  for (const node of input.currentCanvasJson.nodes) {
+  const currentCoords = new Map<string, Coord>();
+  for (const node of canvas.nodes) {
     currentIds.add(node.id);
     currentCoords.set(node.id, { x: node.x, y: node.y, w: node.width, h: node.height });
   }
+  return { currentIds, currentCoords };
+}
 
+function computeKept(
+  newIds: ReadonlySet<string>,
+  sidecarIds: ReadonlySet<string>,
+  coordMap: Readonly<Record<string, Coord>>,
+  currentCoords: ReadonlyMap<string, Coord>,
+  driftThreshold: number,
+): { kept: DiffKeptEntry[]; lockedCoords: Record<string, Coord> } {
   const kept: DiffKeptEntry[] = [];
-  const lockedCoords: Record<string, { x: number; y: number; w: number; h: number }> = {};
+  const lockedCoords: Record<string, Coord> = {};
   for (const id of newIds) {
     if (!sidecarIds.has(id)) continue;
-    const sideC = input.sidecar.coordMap[id];
+    const sideC = coordMap[id];
     const curC = currentCoords.get(id);
-    let locked = false;
-    if (sideC !== undefined && curC !== undefined) {
-      const drift = Math.max(Math.abs(curC.x - sideC.x), Math.abs(curC.y - sideC.y));
-      if (drift > driftThreshold) {
-        locked = true;
-        lockedCoords[id] = curC;
-      }
-    }
+    const locked =
+      sideC !== undefined &&
+      curC !== undefined &&
+      Math.max(Math.abs(curC.x - sideC.x), Math.abs(curC.y - sideC.y)) > driftThreshold;
+    if (locked && curC !== undefined) lockedCoords[id] = curC;
     kept.push({ id, locked });
   }
+  return { kept, lockedCoords };
+}
 
-  const added: string[] = [];
-  for (const id of newIds) {
-    if (!sidecarIds.has(id)) added.push(id);
-  }
-  added.sort((a, b) => a.localeCompare(b));
+function sortedDiff(source: ReadonlySet<string>, exclude: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  for (const id of source) if (!exclude.has(id)) out.push(id);
+  out.sort((a, b) => a.localeCompare(b));
+  return out;
+}
 
-  const removed: string[] = [];
-  for (const id of sidecarIds) {
-    if (!currentIds.has(id)) removed.push(id);
-  }
-  removed.sort((a, b) => a.localeCompare(b));
-
-  const sidecarEdgeKeys = new Set<string>();
-  for (const e of input.sidecar.entityGraph.edges) {
-    sidecarEdgeKeys.add(`${e.from}|${e.to}|${e.type}`);
-  }
+function computeEdgesRemoved(sidecar: SidecarV1, canvas: CanvasJson): DiffEdgeTombstone[] {
   const currentEdgeKeys = new Set<string>();
-  for (const e of input.currentCanvasJson.edges) {
+  for (const e of canvas.edges) {
     if (e.label !== undefined) currentEdgeKeys.add(`${e.fromNode}|${e.toNode}|${e.label}`);
     currentEdgeKeys.add(`${e.fromNode}|${e.toNode}|*`);
   }
   const edgesRemoved: DiffEdgeTombstone[] = [];
-  for (const e of input.sidecar.entityGraph.edges) {
+  for (const e of sidecar.entityGraph.edges) {
     const labelKey = `${e.from}|${e.to}|${e.type}`;
     const wildcardKey = `${e.from}|${e.to}|*`;
     if (!currentEdgeKeys.has(labelKey) && !currentEdgeKeys.has(wildcardKey)) {
       edgesRemoved.push({ from: e.from, to: e.to, type: e.type });
     }
   }
-
-  return { kept, added, removed, edgesRemoved, lockedCoords };
+  return edgesRemoved;
 }
 
 const TOMBSTONE_HEADER =

@@ -58,33 +58,17 @@ export interface ClassifyTaskNodeResult {
 }
 
 export async function classifyTask(input: ClassifyTaskInput): Promise<ClassifyTaskNodeResult> {
-  const mode = input.config.routing.mode;
-  if (mode === 'simple') {
-    setRoute(input.runState, 'simple');
-    input.emit?.({
-      kind: 'node_complete',
-      node: 'classify_task',
-      durationMs: 0,
-      route: 'simple',
-    });
-    return { route: 'simple', reasoning: 'override:simple' };
-  }
-  if (mode === 'deep') {
-    setRoute(input.runState, 'multistep');
-    input.emit?.({
-      kind: 'node_complete',
-      node: 'classify_task',
-      durationMs: 0,
-      route: 'multistep',
-    });
-    return { route: 'multistep', reasoning: 'override:deep' };
-  }
+  const override = handleRoutingOverride(input);
+  if (override !== null) return override;
 
   const now = input.now ?? ((): number => Date.now());
   const start = now();
   const planMaxSteps = input.config.planner.planMaxSteps;
-  const inventory = buildToolInventory(input.config);
-  const userPrompt = buildClassifierUserPrompt(input.refinedAsk, inventory, planMaxSteps);
+  const userPrompt = buildClassifierUserPrompt(
+    input.refinedAsk,
+    buildToolInventory(input.config),
+    planMaxSteps,
+  );
 
   const baseModel =
     input.chatModel ??
@@ -93,35 +77,29 @@ export async function classifyTask(input: ClassifyTaskInput): Promise<ClassifyTa
       signal: input.signal,
     });
 
-  const attempt = async (model: BaseChatModel): Promise<ClassifyTaskOutput> => {
-    const binder = (model as unknown as { bindTools?: (defs: unknown[]) => BaseChatModel })
-      .bindTools;
-    if (typeof binder !== 'function') {
-      throw new Error('chat model does not support bindTools');
-    }
-    const bound = binder.call(model, [
-      {
-        name: 'classify_task',
-        description:
-          "Decide whether the task is 'simple' (one tool round-trip) or 'multistep' (plan + multiple sources + synthesis). Optionally include initialPlan with 1..planMaxSteps short sub-questions.",
-        schema: classifyTaskOutputSchema,
-      },
-    ]);
-    const result = (await bound.invoke(
-      [new SystemMessage(CLASSIFIER_SYSTEM_PROMPT), new HumanMessage(userPrompt)],
-      mergeInvokeConfig({ signal: input.signal }, input.traceConfig) as Record<string, unknown>,
-    )) as AIMessage;
-    const calls =
-      (result as unknown as { tool_calls?: ReadonlyArray<{ name?: string; args?: unknown }> })
-        .tool_calls ?? [];
-    const classifyCall = calls.find((c) => c.name === 'classify_task') ?? calls[0];
-    if (classifyCall?.args === undefined) {
-      throw new Error('classifier emitted no tool call');
-    }
-    return classifyTaskOutputSchema.parse(classifyCall.args);
-  };
+  const parsed = await runClassifierWithRetry(input, baseModel, userPrompt, now);
+  if (parsed === null) return emitFallback(input, start, now);
 
-  let parsed: ClassifyTaskOutput | null = null;
+  return emitClassified(input, parsed, planMaxSteps, start, now);
+}
+
+function handleRoutingOverride(input: ClassifyTaskInput): ClassifyTaskNodeResult | null {
+  const mode = input.config.routing.mode;
+  if (mode === 'simple' || mode === 'deep') {
+    const route: 'simple' | 'multistep' = mode === 'simple' ? 'simple' : 'multistep';
+    setRoute(input.runState, route);
+    input.emit?.({ kind: 'node_complete', node: 'classify_task', durationMs: 0, route });
+    return { route, reasoning: `override:${mode}` };
+  }
+  return null;
+}
+
+async function runClassifierWithRetry(
+  input: ClassifyTaskInput,
+  baseModel: BaseChatModel,
+  userPrompt: string,
+  now: () => number,
+): Promise<ClassifyTaskOutput | null> {
   let lastError: unknown = null;
   const classifyStartedAt = now();
   for (let i = 0; i < 2; i += 1) {
@@ -142,45 +120,82 @@ export async function classifyTask(input: ClassifyTaskInput): Promise<ClassifyTa
         signalAborted: input.signal.aborted,
         sinceClassifyStartMs: now() - classifyStartedAt,
       });
-      parsed = await attempt(model);
+      const parsed = await attemptClassify(model, userPrompt, input);
       input.logger.info('externalAgent.adapter.inlineAgent.router.attempt.ok', {
         attempt: i + 1,
         durationMs: now() - attemptStart,
         route: parsed.route,
       });
-      break;
+      return parsed;
     } catch (err) {
       lastError = err;
-      const errName = err instanceof Error ? err.constructor.name : typeof err;
-      const errMsg = err instanceof Error ? err.message : String(err);
       input.logger.warn('externalAgent.adapter.inlineAgent.router.attempt.fail', {
         attempt: i + 1,
         durationMs: now() - attemptStart,
         signalAborted: input.signal.aborted,
-        errName,
-        errMsg,
+        errName: err instanceof Error ? err.constructor.name : typeof err,
+        errMsg: err instanceof Error ? err.message : String(err),
       });
       if (input.signal.aborted) break;
     }
   }
+  input.logger.warn('externalAgent.adapter.inlineAgent.router.classify-fallback', {
+    reason: lastError instanceof Error ? lastError.message : String(lastError),
+  });
+  return null;
+}
 
-  if (parsed === null) {
-    setRoute(input.runState, 'simple');
-    const reason = lastError instanceof Error ? lastError.message : String(lastError);
-    input.logger.warn('externalAgent.adapter.inlineAgent.router.classify-fallback', { reason });
-    input.emit?.({
-      kind: 'node_complete',
-      node: 'classify_task',
-      durationMs: now() - start,
-      route: 'simple',
-    });
-    return {
-      route: 'simple',
-      reasoning: 'classifier_fallback',
-      fallback: true,
-    };
+async function attemptClassify(
+  model: BaseChatModel,
+  userPrompt: string,
+  input: ClassifyTaskInput,
+): Promise<ClassifyTaskOutput> {
+  const binder = (model as unknown as { bindTools?: (defs: unknown[]) => BaseChatModel }).bindTools;
+  if (typeof binder !== 'function') {
+    throw new Error('chat model does not support bindTools');
   }
+  const bound = binder.call(model, [
+    {
+      name: 'classify_task',
+      description:
+        "Decide whether the task is 'simple' (one tool round-trip) or 'multistep' (plan + multiple sources + synthesis). Optionally include initialPlan with 1..planMaxSteps short sub-questions.",
+      schema: classifyTaskOutputSchema,
+    },
+  ]);
+  const result = (await bound.invoke(
+    [new SystemMessage(CLASSIFIER_SYSTEM_PROMPT), new HumanMessage(userPrompt)],
+    mergeInvokeConfig({ signal: input.signal }, input.traceConfig) as Record<string, unknown>,
+  )) as AIMessage;
+  const calls =
+    (result as unknown as { tool_calls?: ReadonlyArray<{ name?: string; args?: unknown }> })
+      .tool_calls ?? [];
+  const classifyCall = calls.find((c) => c.name === 'classify_task') ?? calls[0];
+  if (classifyCall?.args === undefined) throw new Error('classifier emitted no tool call');
+  return classifyTaskOutputSchema.parse(classifyCall.args);
+}
 
+function emitFallback(
+  input: ClassifyTaskInput,
+  start: number,
+  now: () => number,
+): ClassifyTaskNodeResult {
+  setRoute(input.runState, 'simple');
+  input.emit?.({
+    kind: 'node_complete',
+    node: 'classify_task',
+    durationMs: now() - start,
+    route: 'simple',
+  });
+  return { route: 'simple', reasoning: 'classifier_fallback', fallback: true };
+}
+
+function emitClassified(
+  input: ClassifyTaskInput,
+  parsed: ClassifyTaskOutput,
+  planMaxSteps: number,
+  start: number,
+  now: () => number,
+): ClassifyTaskNodeResult {
   const clampedPlan = parsed.initialPlan?.slice(0, planMaxSteps);
   setRoute(input.runState, parsed.route);
   input.emit?.({

@@ -533,6 +533,25 @@ export default class LeoPlugin extends Plugin {
     }
   }
 
+  private subscribeProviderRefresh(providerCtx: {
+    endpoint: () => string;
+    apiKey: () => string;
+    fetch: ReturnType<typeof createObsidianFetch>;
+  }): void {
+    this.register(
+      this.store.on((next) => {
+        const nextKind = next.provider.kind;
+        if (nextKind !== this.providerManager.activeProviderId()) {
+          this.providerManager.setProvider(createProviderForKind(nextKind, providerCtx));
+        }
+        this.providerManager.setTimeouts({
+          firstEventMs: next.providerTimeouts.firstEventMs,
+          idleMs: next.providerTimeouts.idleMs,
+        });
+      }),
+    );
+  }
+
   override async onload(): Promise<void> {
     this.store = new SettingsStore(this);
     const settings = await this.store.load();
@@ -600,19 +619,7 @@ export default class LeoPlugin extends Plugin {
       firstEventTimeoutMs: initialTimeouts.firstEventMs,
       idleTimeoutMs: initialTimeouts.idleMs,
     });
-    this.register(
-      this.store.on((next) => {
-        const nextKind = next.provider.kind;
-        if (nextKind !== this.providerManager.activeProviderId()) {
-          const nextProvider = createProviderForKind(nextKind, providerCtx);
-          this.providerManager.setProvider(nextProvider);
-        }
-        this.providerManager.setTimeouts({
-          firstEventMs: next.providerTimeouts.firstEventMs,
-          idleMs: next.providerTimeouts.idleMs,
-        });
-      }),
-    );
+    this.subscribeProviderRefresh(providerCtx);
     this.embeddingClient = new EmbeddingClient({
       endpoint: () => resolveEmbeddingTarget(this.store.get()).endpoint,
       model: () => resolveEmbeddingTarget(this.store.get()).model,
@@ -2542,6 +2549,32 @@ function resolveBannerKind(kind: string): BannerKind {
   return 'cancelled';
 }
 
+function recordOptionalsFromStored(
+  m: StoredMessage,
+): Partial<Pick<ChatMessageRecord, 'tokens' | 'banner' | 'widget'>> {
+  return {
+    ...(m.tokens !== undefined
+      ? {
+          tokens: {
+            input: m.tokens.input,
+            output: m.tokens.output,
+            total: m.tokens.total,
+          },
+        }
+      : {}),
+    ...(m.banner !== undefined
+      ? {
+          banner: {
+            kind: resolveBannerKind(m.banner.kind),
+            ...(m.banner.toolCount !== undefined ? { toolCount: m.banner.toolCount } : {}),
+            ...(m.banner.message !== undefined ? { message: m.banner.message } : {}),
+          },
+        }
+      : {}),
+    ...(m.widget !== undefined ? { widget: { kind: m.widget.kind, props: m.widget.props } } : {}),
+  };
+}
+
 function storedToRecords(messages: readonly StoredMessage[]): ChatMessageRecord[] {
   const out: ChatMessageRecord[] = [];
   for (const m of messages) {
@@ -2549,33 +2582,14 @@ function storedToRecords(messages: readonly StoredMessage[]): ChatMessageRecord[
     const role: ChatMessageRecord['role'] =
       m.role === 'banner' || m.role === 'widget' || m.role === 'assistant' ? m.role : 'user';
     const status = isAssistantStatus(m.status) ? m.status : undefined;
-    const record: ChatMessageRecord = {
+    out.push({
       id: m.id,
       role,
       content: m.content,
       createdAt: m.createdAt,
       ...(status !== undefined ? { status } : {}),
-      ...(m.tokens !== undefined
-        ? {
-            tokens: {
-              input: m.tokens.input,
-              output: m.tokens.output,
-              total: m.tokens.total,
-            },
-          }
-        : {}),
-      ...(m.banner !== undefined
-        ? {
-            banner: {
-              kind: resolveBannerKind(m.banner.kind),
-              ...(m.banner.toolCount !== undefined ? { toolCount: m.banner.toolCount } : {}),
-              ...(m.banner.message !== undefined ? { message: m.banner.message } : {}),
-            },
-          }
-        : {}),
-      ...(m.widget !== undefined ? { widget: { kind: m.widget.kind, props: m.widget.props } } : {}),
-    };
-    out.push(record);
+      ...recordOptionalsFromStored(m),
+    });
   }
   return out;
 }

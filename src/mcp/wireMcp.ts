@@ -143,22 +143,25 @@ export async function wireMcp(opts: WireMcpOptions): Promise<McpWiring> {
     const signal = retryOpts?.signal;
 
     const sleepWithSignal = (ms: number): Promise<boolean> =>
-      new Promise<boolean>((resolve) => {
-        if (signal?.aborted === true) {
-          resolve(false);
-          return;
-        }
-        let timer: ReturnType<typeof setTimeoutFn> | null = null;
-        const onAbort = (): void => {
-          if (timer !== null) clearTimeoutFn(timer);
-          resolve(false);
-        };
-        timer = setTimeoutFn(() => {
-          if (signal !== undefined) signal.removeEventListener('abort', onAbort);
-          resolve(true);
-        }, ms);
-        if (signal !== undefined) signal.addEventListener('abort', onAbort, { once: true });
+      abortableSleep(ms, signal, setTimeoutFn, clearTimeoutFn);
+
+    const reportGiveUp = (cfg: McpServerConfig, last: ServerRuntime): void => {
+      const error = last.error ?? 'unknown error';
+      opts.logger.warn('mcp.startup.gaveUp', {
+        serverId: cfg.id,
+        transport: cfg.transport,
+        attempts: maxAttempts,
+        error,
       });
+      try {
+        retryOpts?.notifier?.({ serverId: cfg.id, error, attempts: maxAttempts });
+      } catch (notifyErr) {
+        opts.logger.warn('mcp.startup.notifier.fail', {
+          serverId: cfg.id,
+          error: notifyErr instanceof Error ? notifyErr.message : String(notifyErr),
+        });
+      }
+    };
 
     const connectWithRetry = async (cfg: McpServerConfig): Promise<ServerRuntime> => {
       let last: ServerRuntime | undefined;
@@ -172,28 +175,13 @@ export async function wireMcp(opts: WireMcpOptions): Promise<McpWiring> {
             attempt,
             delayMs,
           });
-          const slept = await sleepWithSignal(delayMs);
-          if (!slept) break;
+          if (!(await sleepWithSignal(delayMs))) break;
         }
         last = await client.connectOne(cfg, signal);
         if (last.status === 'connected') return last;
       }
       if (last !== undefined && last.status === 'failed' && signal?.aborted !== true) {
-        const error = last.error ?? 'unknown error';
-        opts.logger.warn('mcp.startup.gaveUp', {
-          serverId: cfg.id,
-          transport: cfg.transport,
-          attempts: maxAttempts,
-          error,
-        });
-        try {
-          retryOpts?.notifier?.({ serverId: cfg.id, error, attempts: maxAttempts });
-        } catch (notifyErr) {
-          opts.logger.warn('mcp.startup.notifier.fail', {
-            serverId: cfg.id,
-            error: notifyErr instanceof Error ? notifyErr.message : String(notifyErr),
-          });
-        }
+        reportGiveUp(cfg, last);
       }
       return (
         last ?? {
@@ -235,4 +223,28 @@ export async function wireMcp(opts: WireMcpOptions): Promise<McpWiring> {
       MAX_RECONNECT_ATTEMPTS,
     },
   };
+}
+
+function abortableSleep(
+  ms: number,
+  signal: AbortSignal | undefined,
+  setTimeoutFn: typeof setTimeout,
+  clearTimeoutFn: typeof clearTimeout,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    if (signal?.aborted === true) {
+      resolve(false);
+      return;
+    }
+    let timer: ReturnType<typeof setTimeoutFn> | null = null;
+    const onAbort = (): void => {
+      if (timer !== null) clearTimeoutFn(timer);
+      resolve(false);
+    };
+    timer = setTimeoutFn(() => {
+      if (signal !== undefined) signal.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, ms);
+    if (signal !== undefined) signal.addEventListener('abort', onAbort, { once: true });
+  });
 }

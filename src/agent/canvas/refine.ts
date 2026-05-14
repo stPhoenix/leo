@@ -213,56 +213,68 @@ async function classify(
     });
     return { kind: 'error', code: 'refine_invalid_tool' };
   }
-  if (planCall !== undefined) {
-    const parsed = tryParseJson(planCall.argsJson);
-    if (parsed === null) {
-      logger?.debug(CANVAS_LOG.create.refine.failed, {
-        stage: 'invalid_plan_candidate',
-        error: 'arg_json_unparseable',
-        candidateJson: safeStringify(planCall.argsJson, 4096),
-      });
-      return { kind: 'invalid_plan_retry', error: 'arg_json_unparseable' };
-    }
-    const candidate = (parsed as { plan?: unknown }).plan ?? parsed;
-    const validation = RunPlan.safeParse(coerceRunPlan(candidate, input.targetPath));
-    if (!validation.success) {
-      const error = validation.error.issues
-        .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
-        .join('; ');
-      logger?.debug(CANVAS_LOG.create.refine.failed, {
-        stage: 'invalid_plan_candidate',
-        error,
-        candidateJson: safeStringify(candidate, 4096),
-      });
-      return { kind: 'invalid_plan_retry', error };
-    }
-    return {
-      kind: 'plan',
-      plan: validation.data,
-      ...(collected.textBuffer.length > 0
-        ? { assistantMessage: { role: 'assistant', content: collected.textBuffer } as const }
-        : {}),
-    };
+  if (planCall !== undefined) return classifyPlan(planCall, collected, logger, input);
+  if (askCall !== undefined) return classifyAsk(askCall, collected);
+  return classifyNoToolCall(collected, logger);
+}
+
+function classifyPlan(
+  planCall: { argsJson: string },
+  collected: CollectedStream,
+  logger: Logger | undefined,
+  input: CanvasRefineStepInput,
+): Classification {
+  const parsed = tryParseJson(planCall.argsJson);
+  if (parsed === null) {
+    logger?.debug(CANVAS_LOG.create.refine.failed, {
+      stage: 'invalid_plan_candidate',
+      error: 'arg_json_unparseable',
+      candidateJson: safeStringify(planCall.argsJson, 4096),
+    });
+    return { kind: 'invalid_plan_retry', error: 'arg_json_unparseable' };
   }
-  if (askCall !== undefined) {
-    const parsed = tryParseJson(askCall.argsJson);
-    const question =
-      (parsed !== null && typeof (parsed as { question?: unknown }).question === 'string'
-        ? (parsed as { question: string }).question
-        : null) ?? collected.textBuffer.trim();
-    if (question.length === 0) {
-      return { kind: 'error', code: 'refine_empty_question' };
-    }
-    return {
-      kind: 'question',
-      question,
-      ...(collected.textBuffer.length > 0
-        ? { assistantMessage: { role: 'assistant', content: collected.textBuffer } as const }
-        : {}),
-    };
+  const candidate = (parsed as { plan?: unknown }).plan ?? parsed;
+  const validation = RunPlan.safeParse(coerceRunPlan(candidate, input.targetPath));
+  if (!validation.success) {
+    const error = validation.error.issues
+      .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
+      .join('; ');
+    logger?.debug(CANVAS_LOG.create.refine.failed, {
+      stage: 'invalid_plan_candidate',
+      error,
+      candidateJson: safeStringify(candidate, 4096),
+    });
+    return { kind: 'invalid_plan_retry', error };
   }
-  // No tool call — model didn't comply. Treat as error so the driver can re-prompt or terminate.
-  // Capture diagnostics so cap-hit (large textChars) is distinguishable from early-stop (zero).
+  return {
+    kind: 'plan',
+    plan: validation.data,
+    ...(collected.textBuffer.length > 0
+      ? { assistantMessage: { role: 'assistant', content: collected.textBuffer } as const }
+      : {}),
+  };
+}
+
+function classifyAsk(askCall: { argsJson: string }, collected: CollectedStream): Classification {
+  const parsed = tryParseJson(askCall.argsJson);
+  const question =
+    (parsed !== null && typeof (parsed as { question?: unknown }).question === 'string'
+      ? (parsed as { question: string }).question
+      : null) ?? collected.textBuffer.trim();
+  if (question.length === 0) return { kind: 'error', code: 'refine_empty_question' };
+  return {
+    kind: 'question',
+    question,
+    ...(collected.textBuffer.length > 0
+      ? { assistantMessage: { role: 'assistant', content: collected.textBuffer } as const }
+      : {}),
+  };
+}
+
+function classifyNoToolCall(
+  collected: CollectedStream,
+  logger: Logger | undefined,
+): Classification {
   logger?.warn(CANVAS_LOG.create.refine.failed, {
     code: 'refine_no_tool_call',
     textChars: collected.textBuffer.length,

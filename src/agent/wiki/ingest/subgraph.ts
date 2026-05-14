@@ -39,6 +39,7 @@ import { writeIngest, type PersistedRawSummary } from './writer';
 import type {
   DuplicateChoice,
   DuplicateMatch,
+  FetchedSource,
   IngestSource,
   ProviderOverride,
   SourceTerminalRecord,
@@ -267,6 +268,71 @@ function buildIngestGraph(b: NodeBindings) {
     return { refinedSources: refined.sources };
   };
 
+  const handleDuplicateChoice = async (
+    fetched: FetchedSource,
+    dup: DuplicateMatch,
+    choice: DuplicateChoice | null,
+    idx: number,
+    persistDeps: { vault: VaultAdapter; logger?: Logger; now?: () => Date },
+  ): Promise<Partial<IngestGraphStateT>> => {
+    if (choice === 'skip') {
+      return {
+        sourceRecords: [{ sourceRef: fetched.sourceRef, status: 'skipped', rawPath: dup.rawPath }],
+        processedIdx: idx + 1,
+      };
+    }
+    if (choice === 'reprocess') {
+      partial.sourcesPersisted += 1;
+      return {
+        sourceRecords: [
+          { sourceRef: fetched.sourceRef, status: 'reprocessed', rawPath: dup.rawPath },
+        ],
+        processedIdx: idx + 1,
+      };
+    }
+    return persistAndRecord(fetched, dup, idx, persistDeps);
+  };
+
+  const persistAndRecord = async (
+    fetched: FetchedSource,
+    dup: DuplicateMatch | null,
+    idx: number,
+    persistDeps: { vault: VaultAdapter; logger?: Logger; now?: () => Date },
+  ): Promise<Partial<IngestGraphStateT>> => {
+    try {
+      const persistOpts = dup !== null ? { fetched, overwriteRawPath: dup.rawPath } : { fetched };
+      const persisted = await persistRaw(persistOpts, persistDeps);
+      partial.sourcesPersisted += 1;
+      return {
+        sourceRecords: [
+          {
+            sourceRef: fetched.sourceRef,
+            status: dup !== null ? 'replaced' : 'persisted',
+            rawPath: dup !== null ? dup.rawPath : persisted.rawPath,
+          },
+        ],
+        processedIdx: idx + 1,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      deps.logger?.debug(WIKI_LOG.ingest.persist.failed, {
+        sourceRef: fetched.sourceRef,
+        message,
+      });
+      return {
+        sourceRecords: [
+          {
+            sourceRef: fetched.sourceRef,
+            status: 'error',
+            rawPath: dup?.rawPath ?? null,
+            error: `persist_failed: ${message}`,
+          },
+        ],
+        processedIdx: idx + 1,
+      };
+    }
+  };
+
   const fetchingNode = async (
     state: IngestGraphStateT,
     config: LangGraphRunnableConfig,
@@ -301,18 +367,20 @@ function buildIngestGraph(b: NodeBindings) {
         ref: describeRef(source),
         message: fetchResult.error.message,
       });
-      const record: SourceTerminalRecord = {
-        sourceRef: describeRef(source),
-        status: 'error',
-        rawPath: null,
-        error: `${fetchResult.error.code}: ${fetchResult.error.message}`,
+      return {
+        sourceRecords: [
+          {
+            sourceRef: describeRef(source),
+            status: 'error',
+            rawPath: null,
+            error: `${fetchResult.error.code}: ${fetchResult.error.message}`,
+          },
+        ],
+        processedIdx: idx + 1,
       };
-      return { sourceRecords: [record], processedIdx: idx + 1 };
     }
     const fetched = fetchResult.fetched;
-    const sha256 = await computeFetchedSha256(fetched);
-    const dup = await findDuplicateRawBySha(deps.vault, sha256);
-
+    const dup = await findDuplicateRawBySha(deps.vault, await computeFetchedSha256(fetched));
     let choice: DuplicateChoice | null = null;
     if (dup !== null) {
       deps.logger?.debug(WIKI_LOG.ingest.persist.duplicate, {
@@ -325,57 +393,13 @@ function buildIngestGraph(b: NodeBindings) {
         match: dup,
       });
     }
-
     const persistDeps = {
       vault: deps.vault,
       ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
       ...(deps.now !== undefined ? { now: deps.now } : {}),
     };
-
-    if (dup !== null && choice === 'skip') {
-      const record: SourceTerminalRecord = {
-        sourceRef: fetched.sourceRef,
-        status: 'skipped',
-        rawPath: dup.rawPath,
-      };
-      return { sourceRecords: [record], processedIdx: idx + 1 };
-    }
-    if (dup !== null && choice === 'reprocess') {
-      const record: SourceTerminalRecord = {
-        sourceRef: fetched.sourceRef,
-        status: 'reprocessed',
-        rawPath: dup.rawPath,
-      };
-      partial.sourcesPersisted += 1;
-      return { sourceRecords: [record], processedIdx: idx + 1 };
-    }
-    try {
-      const persistOpts =
-        dup !== null && choice === 'replace'
-          ? { fetched, overwriteRawPath: dup.rawPath }
-          : { fetched };
-      const persisted = await persistRaw(persistOpts, persistDeps);
-      const record: SourceTerminalRecord = {
-        sourceRef: fetched.sourceRef,
-        status: dup !== null ? 'replaced' : 'persisted',
-        rawPath: dup !== null ? dup.rawPath : persisted.rawPath,
-      };
-      partial.sourcesPersisted += 1;
-      return { sourceRecords: [record], processedIdx: idx + 1 };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      deps.logger?.debug(WIKI_LOG.ingest.persist.failed, {
-        sourceRef: fetched.sourceRef,
-        message,
-      });
-      const record: SourceTerminalRecord = {
-        sourceRef: fetched.sourceRef,
-        status: 'error',
-        rawPath: dup?.rawPath ?? null,
-        error: `persist_failed: ${message}`,
-      };
-      return { sourceRecords: [record], processedIdx: idx + 1 };
-    }
+    if (dup !== null) return handleDuplicateChoice(fetched, dup, choice, idx, persistDeps);
+    return persistAndRecord(fetched, null, idx, persistDeps);
   };
 
   const planningNode = async (

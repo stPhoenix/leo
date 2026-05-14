@@ -45,25 +45,22 @@ export class AnthropicProvider implements Provider {
     this.bundledModels = opts.bundledModels ?? DEFAULT_MODELS;
   }
 
-  async *stream(req: ProviderChatRequest, signal: AbortSignal): AsyncIterable<StreamEvent> {
-    const apiKey = this.opts.apiKey();
-    if (apiKey.length === 0) throw new ProviderConnectError('missing API key');
-    const endpoint = this.opts.endpoint?.();
-
+  private buildFetchPatch(
+    req: ProviderChatRequest,
+    nameMapping: ReturnType<typeof sanitizeToolNames> | null,
+  ): typeof fetch | undefined {
     const betas = req.providerHints?.betas ?? [];
-    const hasTools = req.tools !== undefined && req.tools.length > 0;
-    const nameMapping = hasTools ? sanitizeToolNames(req.tools!) : null;
-    // Defer-loading names must reference the sanitized tool names since that
-    // is what the wire body actually carries (Anthropic rejects dots in names).
     const deferLoadingNames = collectDeferLoadingNames(nameMapping?.tools);
-    const needsPatch = betas.length > 0 || deferLoadingNames.size > 0;
-    const fetchPatched = needsPatch
-      ? makeAnthropicFetchPatch({
-          betas,
-          deferLoading: deferLoadingNames,
-        })
-      : undefined;
+    if (betas.length === 0 && deferLoadingNames.size === 0) return undefined;
+    return makeAnthropicFetchPatch({ betas, deferLoading: deferLoadingNames });
+  }
 
+  private buildModelInstance(
+    req: ProviderChatRequest,
+    apiKey: string,
+    fetchPatched: typeof fetch | undefined,
+    endpoint: string | undefined,
+  ): ChatAnthropic {
     const thinkingParam = toAnthropicThinkingParam(req.providerHints?.thinking);
     const thinkingActive = thinkingParam !== undefined;
     // Anthropic rejects budget_tokens >= max_tokens. Bump max so the model
@@ -76,8 +73,7 @@ export class AnthropicProvider implements Provider {
     const maxTokens = Math.max(requestedMax, minMaxForThinking);
     // Extended thinking requires temperature=1; top_p/top_k must be unset.
     const temperature = thinkingActive ? 1 : req.temperature;
-
-    const model: ChatAnthropic = new ChatAnthropic({
+    return new ChatAnthropic({
       model: req.model,
       apiKey,
       maxTokens,
@@ -91,6 +87,17 @@ export class AnthropicProvider implements Provider {
         ...(fetchPatched !== undefined ? { fetch: fetchPatched } : {}),
       },
     });
+  }
+
+  async *stream(req: ProviderChatRequest, signal: AbortSignal): AsyncIterable<StreamEvent> {
+    const apiKey = this.opts.apiKey();
+    if (apiKey.length === 0) throw new ProviderConnectError('missing API key');
+    const endpoint = this.opts.endpoint?.();
+
+    const hasTools = req.tools !== undefined && req.tools.length > 0;
+    const nameMapping = hasTools ? sanitizeToolNames(req.tools!) : null;
+    const fetchPatched = this.buildFetchPatch(req, nameMapping);
+    const model = this.buildModelInstance(req, apiKey, fetchPatched, endpoint);
 
     const disableParallel = req.providerHints?.disableParallelToolCalls === true;
     const bindOpts = buildAnthropicBindOpts(disableParallel);

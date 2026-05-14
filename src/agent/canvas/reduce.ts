@@ -215,32 +215,51 @@ function materializeEdges(
   const seenEdges = new Map<string, Edge>();
   for (const out of outputs) {
     for (const ef of out.edges) {
-      const rawFrom = tempIdMap.get(`${out.sourceRef}::${ef.fromTempId}`);
-      const rawTo = tempIdMap.get(`${out.sourceRef}::${ef.toTempId}`);
-      if (rawFrom === undefined || rawTo === undefined) continue;
-      const oriented = reorientEdgeEndpoints(
-        rawFrom,
-        rawTo,
-        ef.type,
+      const edge = buildEdgeFromExtractor(
+        out,
+        ef,
+        tempIdMap,
         entityTypeById,
         relIndex,
         knownEntityTypes,
       );
-      if (oriented === null) continue;
-      const { from, to } = oriented;
-      if (from === to) continue;
-      const id = `${from}|${to}|${ef.type}`;
-      if (seenEdges.has(id)) continue;
-      seenEdges.set(id, {
-        id,
-        from,
-        to,
-        type: ef.type,
-        ...(ef.label !== undefined ? { label: ef.label } : {}),
-      });
+      if (edge === null || seenEdges.has(edge.id)) continue;
+      seenEdges.set(edge.id, edge);
     }
   }
   return seenEdges;
+}
+
+function buildEdgeFromExtractor(
+  out: ExtractorOutput,
+  ef: ExtractorOutput['edges'][number],
+  tempIdMap: ReadonlyMap<string, string>,
+  entityTypeById: ReadonlyMap<string, string>,
+  relIndex: ReadonlyMap<string, { readonly from: string; readonly to: string }>,
+  knownEntityTypes: ReadonlySet<string>,
+): Edge | null {
+  const rawFrom = tempIdMap.get(`${out.sourceRef}::${ef.fromTempId}`);
+  const rawTo = tempIdMap.get(`${out.sourceRef}::${ef.toTempId}`);
+  if (rawFrom === undefined || rawTo === undefined) return null;
+  const oriented = reorientEdgeEndpoints(
+    rawFrom,
+    rawTo,
+    ef.type,
+    entityTypeById,
+    relIndex,
+    knownEntityTypes,
+  );
+  if (oriented === null) return null;
+  const { from, to } = oriented;
+  if (from === to) return null;
+  const id = `${from}|${to}|${ef.type}`;
+  return {
+    id,
+    from,
+    to,
+    type: ef.type,
+    ...(ef.label !== undefined ? { label: ef.label } : {}),
+  };
 }
 
 export async function reduceEntityGraph(
@@ -364,7 +383,7 @@ function slugify(s: string): string {
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[^a-z0-9]+/g, '-') // NOSONAR(typescript:S5852): single char class + quantifier, linear.
-    .replace(/^-+|-+$/g, '');
+    .replace(/^-+|-+$/g, ''); // NOSONAR(typescript:S5852): anchored alternation over single-char class, linear.
 }
 
 function uniqueSorted(arr: readonly string[]): string[] {
@@ -457,7 +476,16 @@ function applyCanonicalAliasMap(
   tempIdMap: Map<string, string>,
 ): void {
   if (aliasMap.size === 0) return;
-  // Resolve transitive chains: a→b, b→c collapses to a→c.
+  const finalMap = collapseAliasChain(aliasMap);
+  if (finalMap.size === 0) return;
+  remapFragments(fragmentsByCanonical, finalMap);
+  for (const [tempKey, canonical] of tempIdMap) {
+    const target = finalMap.get(canonical);
+    if (target !== undefined) tempIdMap.set(tempKey, target);
+  }
+}
+
+function collapseAliasChain(aliasMap: ReadonlyMap<string, string>): Map<string, string> {
   const finalMap = new Map<string, string>();
   for (const src of aliasMap.keys()) {
     let cur = aliasMap.get(src)!;
@@ -470,7 +498,13 @@ function applyCanonicalAliasMap(
     }
     if (cur !== src) finalMap.set(src, cur);
   }
-  if (finalMap.size === 0) return;
+  return finalMap;
+}
+
+function remapFragments(
+  fragmentsByCanonical: Map<string, FragmentRef[]>,
+  finalMap: ReadonlyMap<string, string>,
+): void {
   const merged = new Map<string, FragmentRef[]>();
   for (const [canonical, refs] of fragmentsByCanonical) {
     const target = finalMap.get(canonical) ?? canonical;
@@ -480,10 +514,6 @@ function applyCanonicalAliasMap(
   }
   fragmentsByCanonical.clear();
   for (const [k, v] of merged) fragmentsByCanonical.set(k, v);
-  for (const [tempKey, canonical] of tempIdMap) {
-    const target = finalMap.get(canonical);
-    if (target !== undefined) tempIdMap.set(tempKey, target);
-  }
 }
 
 function pickDefinedIn(values: readonly (string | undefined)[]): string | undefined {
@@ -531,21 +561,30 @@ export function normalizeDefinedIn(
   const stripped = raw.trim().replace(/^\[\[/, '').replace(/\]\]$/, '');
   if (stripped.length === 0) return raw.trim().toLowerCase();
   if (/^https?:\/\//i.test(stripped)) return stripped.toLowerCase();
-  if (stripped.includes('/')) {
-    // Path-style. Prefer the vault-rooted form when we can resolve the
-    // basename via pageBasenames — collapses `pages/foo.md` and
-    // `wiki/pages/foo.md` to the same key.
-    if (pageBasenames !== undefined) {
-      const last = stripped.lastIndexOf('/');
-      const basename = stripped.slice(last + 1).replace(/\.md$/i, '');
-      const slug = slugify(basename);
-      if (slug.length > 0) {
-        const path = pageBasenames.get(slug);
-        if (path !== undefined) return path;
-      }
+  if (stripped.includes('/')) return normalizePathStyle(stripped, pageBasenames);
+  return normalizeSlugStyle(stripped, pageBasenames);
+}
+
+function normalizePathStyle(
+  stripped: string,
+  pageBasenames: ReadonlyMap<string, string> | undefined,
+): string {
+  if (pageBasenames !== undefined) {
+    const last = stripped.lastIndexOf('/');
+    const basename = stripped.slice(last + 1).replace(/\.md$/i, '');
+    const slug = slugify(basename);
+    if (slug.length > 0) {
+      const path = pageBasenames.get(slug);
+      if (path !== undefined) return path;
     }
-    return /\.md$/i.test(stripped) ? stripped : `${stripped}.md`;
   }
+  return /\.md$/i.test(stripped) ? stripped : `${stripped}.md`;
+}
+
+function normalizeSlugStyle(
+  stripped: string,
+  pageBasenames: ReadonlyMap<string, string> | undefined,
+): string {
   const slug = slugify(stripped.replace(/\.md$/i, ''));
   if (slug.length === 0) return stripped.toLowerCase();
   if (pageBasenames !== undefined) {
@@ -787,50 +826,60 @@ async function maybeResolveAliases(
 ): Promise<Map<string, string>> {
   const overlaps = detectAmbiguousOverlaps(fragmentsByCanonical);
   if (overlaps.length === 0) return new Map();
-  if (deps.provider === undefined || deps.model === undefined) {
-    return new Map();
-  }
+  if (deps.provider === undefined || deps.model === undefined) return new Map();
   if (input.signal.aborted) return new Map();
 
+  const req = buildAliasResolveRequest(overlaps, input, deps);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const collected = await collectStream(deps.provider.stream(req, input.signal), input.signal);
+    const result = extractAliasMapFromCall(collected.toolCalls, 'resolve_aliases');
+    if (result === 'no-call') {
+      if (attempt === 1) throw new ReducerInvalidError('alias-resolver returned no tool call');
+      continue;
+    }
+    if (result === 'invalid') {
+      if (attempt === 1) throw new ReducerInvalidError('aliasMap missing or invalid');
+      continue;
+    }
+    return result;
+  }
+  return new Map();
+}
+
+function buildAliasResolveRequest(
+  overlaps: readonly OverlapGroup[],
+  input: ReduceEntityGraphInput,
+  deps: ReduceEntityGraphDeps,
+): ProviderChatRequest {
   const messages: ChatMessage[] = [
-    {
-      role: 'system',
-      content: CANVAS_REDUCER_ALIAS_RESOLVER_SYSTEM,
-    },
-    {
-      role: 'user',
-      content: JSON.stringify({ overlaps }),
-    },
+    { role: 'system', content: CANVAS_REDUCER_ALIAS_RESOLVER_SYSTEM },
+    { role: 'user', content: JSON.stringify({ overlaps }) },
   ];
-  const req: ProviderChatRequest = {
-    model: deps.model(),
+  return {
+    model: deps.model!(),
     messages,
     ...(deps.temperature !== undefined ? { temperature: deps.temperature() } : {}),
     maxTokens: deps.maxTokens !== undefined ? deps.maxTokens() : CANVAS_BUDGETS.reducerOutputCap,
     tools: [RESOLVE_ALIASES_TOOL],
     ...(input.traceConfig !== undefined ? { trace: input.traceConfig } : {}),
   };
+}
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const collected = await collectStream(deps.provider.stream(req, input.signal), input.signal);
-    const call = collected.toolCalls.find((c) => c.name === 'resolve_aliases');
-    if (call === undefined) {
-      if (attempt === 1) throw new ReducerInvalidError('alias-resolver returned no tool call');
-      continue;
-    }
-    const parsed = tryParseJson(call.argsJson);
-    const aliasMap = (parsed as { aliasMap?: unknown } | null)?.aliasMap;
-    if (aliasMap === null || typeof aliasMap !== 'object') {
-      if (attempt === 1) throw new ReducerInvalidError('aliasMap missing or invalid');
-      continue;
-    }
-    const out = new Map<string, string>();
-    for (const [k, v] of Object.entries(aliasMap as Record<string, unknown>)) {
-      if (typeof v === 'string') out.set(k, v);
-    }
-    return out;
+function extractAliasMapFromCall(
+  toolCalls: readonly { name: string; argsJson: string }[],
+  toolName: string,
+): Map<string, string> | 'no-call' | 'invalid' {
+  const call = toolCalls.find((c) => c.name === toolName);
+  if (call === undefined) return 'no-call';
+  const parsed = tryParseJson(call.argsJson);
+  const aliasMap = (parsed as { aliasMap?: unknown } | null)?.aliasMap;
+  if (aliasMap === null || typeof aliasMap !== 'object') return 'invalid';
+  const out = new Map<string, string>();
+  for (const [k, v] of Object.entries(aliasMap as Record<string, unknown>)) {
+    if (typeof v === 'string') out.set(k, v);
   }
-  return new Map();
+  return out;
 }
 
 type FragmentRefArr = readonly { fragment: EntityFragment; sourceRef: string }[];
@@ -929,10 +978,7 @@ async function maybeResolvePerTypeAliases(
   input: ReduceEntityGraphInput,
   deps: ReduceEntityGraphDeps,
 ): Promise<PerTypeResolveResult> {
-  const passthrough: PerTypeResolveResult = {
-    entities: [...entities],
-    edges: new Map(edges),
-  };
+  const passthrough: PerTypeResolveResult = { entities: [...entities], edges: new Map(edges) };
   if (deps.provider === undefined || deps.model === undefined) return passthrough;
   if (input.signal.aborted) return passthrough;
   if (entities.length === 0) return passthrough;
@@ -940,35 +986,7 @@ async function maybeResolvePerTypeAliases(
   const groups = buildPerTypeAliasGroups(entities, edges);
   if (groups.length === 0) return passthrough;
 
-  const messages: ChatMessage[] = [
-    {
-      role: 'system',
-      content: CANVAS_PER_TYPE_ALIAS_RESOLVER_SYSTEM,
-    },
-    { role: 'user', content: JSON.stringify({ groups }) },
-  ];
-  const req: ProviderChatRequest = {
-    model: deps.model(),
-    messages,
-    ...(deps.temperature !== undefined ? { temperature: deps.temperature() } : {}),
-    maxTokens: deps.maxTokens !== undefined ? deps.maxTokens() : CANVAS_BUDGETS.reducerOutputCap,
-    tools: [RESOLVE_PER_TYPE_ALIASES_TOOL],
-    ...(input.traceConfig !== undefined ? { trace: input.traceConfig } : {}),
-  };
-
-  let aliasMap: Record<string, unknown> | null = null;
-  try {
-    const collected = await collectStream(deps.provider.stream(req, input.signal), input.signal);
-    const call = collected.toolCalls.find((c) => c.name === 'resolve_per_type_aliases');
-    if (call !== undefined) {
-      const parsed = tryParseJson(call.argsJson) as { aliasMap?: unknown } | null;
-      if (parsed !== null && parsed.aliasMap !== null && typeof parsed.aliasMap === 'object') {
-        aliasMap = parsed.aliasMap as Record<string, unknown>;
-      }
-    }
-  } catch {
-    return passthrough;
-  }
+  const aliasMap = await fetchPerTypeAliasMap(groups, input, deps);
   if (aliasMap === null) return passthrough;
 
   const directRedirect = buildDirectRedirect(aliasMap, entities);
@@ -977,6 +995,46 @@ async function maybeResolvePerTypeAliases(
   const finalRedirect = resolveTransitiveRedirects(directRedirect);
   if (finalRedirect.size === 0) return passthrough;
 
+  const newEntities = mergeRedirectedEntities(entities, finalRedirect);
+  const newEdges = remapEdges(edges, finalRedirect);
+  return { entities: newEntities, edges: newEdges };
+}
+
+async function fetchPerTypeAliasMap(
+  groups: readonly PerTypeAliasGroup[],
+  input: ReduceEntityGraphInput,
+  deps: ReduceEntityGraphDeps,
+): Promise<Record<string, unknown> | null> {
+  const messages: ChatMessage[] = [
+    { role: 'system', content: CANVAS_PER_TYPE_ALIAS_RESOLVER_SYSTEM },
+    { role: 'user', content: JSON.stringify({ groups }) },
+  ];
+  const req: ProviderChatRequest = {
+    model: deps.model!(),
+    messages,
+    ...(deps.temperature !== undefined ? { temperature: deps.temperature() } : {}),
+    maxTokens: deps.maxTokens !== undefined ? deps.maxTokens() : CANVAS_BUDGETS.reducerOutputCap,
+    tools: [RESOLVE_PER_TYPE_ALIASES_TOOL],
+    ...(input.traceConfig !== undefined ? { trace: input.traceConfig } : {}),
+  };
+  try {
+    const collected = await collectStream(deps.provider!.stream(req, input.signal), input.signal);
+    const call = collected.toolCalls.find((c) => c.name === 'resolve_per_type_aliases');
+    if (call === undefined) return null;
+    const parsed = tryParseJson(call.argsJson) as { aliasMap?: unknown } | null;
+    if (parsed === null || parsed.aliasMap === null || typeof parsed.aliasMap !== 'object') {
+      return null;
+    }
+    return parsed.aliasMap as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function mergeRedirectedEntities(
+  entities: readonly Entity[],
+  finalRedirect: ReadonlyMap<string, string>,
+): Entity[] {
   const sourceMerge = new Map<string, Set<string>>();
   for (const e of entities) {
     if (!finalRedirect.has(e.id)) continue;
@@ -985,7 +1043,7 @@ async function maybeResolvePerTypeAliases(
     for (const s of e.sources) set.add(s);
     sourceMerge.set(target, set);
   }
-  const newEntities = entities
+  return entities
     .filter((e) => !finalRedirect.has(e.id))
     .map((e) => {
       const extra = sourceMerge.get(e.id);
@@ -995,7 +1053,12 @@ async function maybeResolvePerTypeAliases(
       const sorted = [...merged].sort((a, b) => a.localeCompare(b)).slice(0, 20);
       return { ...e, sources: sorted };
     });
+}
 
+function remapEdges(
+  edges: ReadonlyMap<string, Edge>,
+  finalRedirect: ReadonlyMap<string, string>,
+): Map<string, Edge> {
   const newEdges = new Map<string, Edge>();
   for (const ed of edges.values()) {
     const newFrom = finalRedirect.get(ed.from) ?? ed.from;
@@ -1005,23 +1068,11 @@ async function maybeResolvePerTypeAliases(
     if (newEdges.has(id)) continue;
     newEdges.set(id, { ...ed, id, from: newFrom, to: newTo });
   }
-
-  return { entities: newEntities, edges: newEdges };
+  return newEdges;
 }
 
 function computeInsights(graph: EntityGraphT): InsightsT {
-  const degree = new Map<string, number>();
-  const adjacency = new Map<string, Set<string>>();
-  for (const e of graph.entities) {
-    degree.set(e.id, 0);
-    adjacency.set(e.id, new Set());
-  }
-  for (const edge of graph.edges) {
-    degree.set(edge.from, (degree.get(edge.from) ?? 0) + 1);
-    degree.set(edge.to, (degree.get(edge.to) ?? 0) + 1);
-    adjacency.get(edge.from)?.add(edge.to);
-    adjacency.get(edge.to)?.add(edge.from);
-  }
+  const { degree, adjacency } = buildDegreeAndAdjacency(graph);
   const hubs = graph.entities
     .map((e) => ({ id: e.id, name: e.name, degree: degree.get(e.id) ?? 0 }))
     .filter((h) => h.degree > 0)
@@ -1035,17 +1086,7 @@ function computeInsights(graph: EntityGraphT): InsightsT {
   const componentSizes: number[] = [];
   for (const e of graph.entities) {
     if (seen.has(e.id)) continue;
-    const queue = [e.id];
-    let size = 0;
-    while (queue.length > 0) {
-      const cur = queue.shift()!;
-      if (seen.has(cur)) continue;
-      seen.add(cur);
-      size += 1;
-      for (const n of adjacency.get(cur) ?? []) {
-        if (!seen.has(n)) queue.push(n);
-      }
-    }
+    const size = bfsComponentSize(e.id, adjacency, seen);
     if (size > 0) componentSizes.push(size);
   }
   componentSizes.sort((a, b) => b - a);
@@ -1067,6 +1108,44 @@ function computeInsights(graph: EntityGraphT): InsightsT {
     orphans,
     perTypeCount,
   };
+}
+
+function buildDegreeAndAdjacency(graph: EntityGraphT): {
+  degree: Map<string, number>;
+  adjacency: Map<string, Set<string>>;
+} {
+  const degree = new Map<string, number>();
+  const adjacency = new Map<string, Set<string>>();
+  for (const e of graph.entities) {
+    degree.set(e.id, 0);
+    adjacency.set(e.id, new Set());
+  }
+  for (const edge of graph.edges) {
+    degree.set(edge.from, (degree.get(edge.from) ?? 0) + 1);
+    degree.set(edge.to, (degree.get(edge.to) ?? 0) + 1);
+    adjacency.get(edge.from)?.add(edge.to);
+    adjacency.get(edge.to)?.add(edge.from);
+  }
+  return { degree, adjacency };
+}
+
+function bfsComponentSize(
+  start: string,
+  adjacency: ReadonlyMap<string, ReadonlySet<string>>,
+  seen: Set<string>,
+): number {
+  const queue = [start];
+  let size = 0;
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    size += 1;
+    for (const n of adjacency.get(cur) ?? []) {
+      if (!seen.has(n)) queue.push(n);
+    }
+  }
+  return size;
 }
 
 type ReducerToolBufMap = Map<number, { id: string; name: string; args: string }>;

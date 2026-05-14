@@ -25,7 +25,7 @@ export interface CollectWikiStatusDeps {
 }
 
 const LINT_LOG_RE = /^##\s+\[([^\]]+)\]\s+lint\s+\|\s+runId=([A-Za-z0-9_-]+)/; // NOSONAR(typescript:S5852): anchored, negated char class terminates capture, linear.
-const WIKILINK_RE = /\[\[([^\]\n|#]+)(?:\|[^\]]*)?\]\]/g;
+const WIKILINK_RE = /\[\[([^\]\n|#]+)(?:\|[^\]\n]*)?\]\]/g; // NOSONAR(typescript:S5852): anchored, line-bounded negated classes, linear.
 
 export async function collectWikiStatus(deps: CollectWikiStatusDeps): Promise<WikiStatus> {
   const { vault, getMutexState } = deps;
@@ -75,9 +75,18 @@ async function scanOrphans(vault: VaultAdapter): Promise<OrphanCounts> {
   const sourceFiles = await listMarkdownFiles(vault, WIKI_SOURCES_DIR);
   const rawFiles = await listMarkdownFiles(vault, WIKI_RAW_DIR);
 
+  const orphanPageCount = await countOrphanPages(vault, pageFiles);
+  const orphanRawCount = await countOrphanRaws(vault, sourceFiles, rawFiles);
+
+  return { orphanPageCount, orphanRawCount };
+}
+
+async function countOrphanPages(
+  vault: VaultAdapter,
+  pageFiles: readonly string[],
+): Promise<number> {
   const inbound = new Map<string, number>();
   for (const p of pageFiles) inbound.set(stripExt(p), 0);
-
   for (const p of pageFiles) {
     let body: string;
     try {
@@ -93,7 +102,14 @@ async function scanOrphans(vault: VaultAdapter): Promise<OrphanCounts> {
   }
   let orphanPageCount = 0;
   for (const count of inbound.values()) if (count === 0) orphanPageCount += 1;
+  return orphanPageCount;
+}
 
+async function countOrphanRaws(
+  vault: VaultAdapter,
+  sourceFiles: readonly string[],
+  rawFiles: readonly string[],
+): Promise<number> {
   const sourceRawPaths = new Set<string>();
   for (const sp of sourceFiles) {
     let body: string;
@@ -109,8 +125,7 @@ async function scanOrphans(vault: VaultAdapter): Promise<OrphanCounts> {
   for (const r of rawFiles) {
     if (!sourceRawPaths.has(r)) orphanRawCount += 1;
   }
-
-  return { orphanPageCount, orphanRawCount };
+  return orphanRawCount;
 }
 
 async function listMarkdownFiles(vault: VaultAdapter, dir: string): Promise<readonly string[]> {

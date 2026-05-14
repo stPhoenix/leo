@@ -258,6 +258,19 @@ export function createGrepVaultTool(): ToolSpec<GrepVaultArgs, GrepVaultResult> 
   };
 }
 
+async function readScannable(ctx: ScanContext, file: string): Promise<string | undefined> {
+  const stat = await ctx.vault.stat(file);
+  if (stat !== null && stat.size > MAX_FILE_SIZE_BYTES) return undefined;
+  let raw: string;
+  try {
+    raw = await ctx.vault.read(file);
+  } catch {
+    return undefined;
+  }
+  if (looksBinary(raw)) return undefined;
+  return raw;
+}
+
 async function scanCandidates(
   candidates: readonly string[],
   ctx: ScanContext,
@@ -271,22 +284,12 @@ async function scanCandidates(
     if (ctx.signal.aborted) return 'aborted';
     if (filesScanned >= MAX_FILES_SCANNED) break;
     if (bytesScanned >= MAX_BYTES_SCANNED) break;
-    const stat = await ctx.vault.stat(file);
-    if (stat !== null && stat.size > MAX_FILE_SIZE_BYTES) continue;
-    let raw: string;
-    try {
-      raw = await ctx.vault.read(file);
-    } catch {
-      continue;
-    }
-    if (looksBinary(raw)) continue;
+    const raw = await readScannable(ctx, file);
+    if (raw === undefined) continue;
     filesScanned += 1;
     bytesScanned += byteLength(raw);
-    if (ctx.multiline) {
-      scanMultiline(file, raw, ctx, contentMatches, fileMatchSet, countByFile);
-    } else {
-      scanLineByLine(file, raw, ctx, contentMatches, fileMatchSet, countByFile);
-    }
+    const scan = ctx.multiline ? scanMultiline : scanLineByLine;
+    scan(file, raw, ctx, contentMatches, fileMatchSet, countByFile);
   }
   return { contentMatches, fileMatchSet, countByFile };
 }
@@ -448,12 +451,44 @@ function matchesGlob(file: string, root: string, globPatterns: readonly string[]
   return false;
 }
 
+interface CollectCtx {
+  readonly vault: {
+    list(p: string): Promise<{ files: readonly string[]; folders: readonly string[] }>;
+  };
+  readonly signal: AbortSignal;
+  readonly excludeMatcher?: (p: string) => boolean;
+}
+
+function shouldKeepFile(
+  file: string,
+  root: string,
+  globPatterns: readonly string[] | null,
+  ctx: CollectCtx,
+): boolean {
+  if (hasHiddenSegment(file)) return false;
+  if (ctx.excludeMatcher?.(file) === true) return false;
+  if (globPatterns !== null && !matchesGlob(file, root, globPatterns)) return false;
+  return true;
+}
+
+function processListing(
+  listing: { readonly files: readonly string[]; readonly folders: readonly string[] },
+  root: string,
+  globPatterns: readonly string[] | null,
+  ctx: CollectCtx,
+  out: string[],
+  queue: string[],
+): void {
+  for (const f of listing.files) {
+    if (shouldKeepFile(f, root, globPatterns, ctx)) out.push(f);
+  }
+  for (const d of listing.folders) {
+    if (!hasHiddenSegment(d)) queue.push(d);
+  }
+}
+
 async function collectCandidates(
-  ctx: {
-    vault: { list(p: string): Promise<{ files: readonly string[]; folders: readonly string[] }> };
-    signal: AbortSignal;
-    excludeMatcher?: (p: string) => boolean;
-  },
+  ctx: CollectCtx,
   root: string,
   globPatterns: readonly string[] | null,
 ): Promise<string[] | 'aborted'> {
@@ -471,16 +506,7 @@ async function collectCandidates(
       continue;
     }
     visited += 1;
-    for (const f of listing.files) {
-      if (hasHiddenSegment(f)) continue;
-      if (ctx.excludeMatcher?.(f) === true) continue;
-      if (globPatterns !== null && !matchesGlob(f, root, globPatterns)) continue;
-      out.push(f);
-    }
-    for (const d of listing.folders) {
-      if (hasHiddenSegment(d)) continue;
-      queue.push(d);
-    }
+    processListing(listing, root, globPatterns, ctx, out, queue);
   }
   return out;
 }

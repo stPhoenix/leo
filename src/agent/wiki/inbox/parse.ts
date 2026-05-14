@@ -17,7 +17,7 @@ export const INBOX_TABLE_HEADER = '| Source | Status | Note |';
 export const INBOX_TABLE_SEPARATOR = '| ------ | ------ | ---- |';
 
 const PIPE_LINE_REGEX = /^\s*\|.*\|\s*$/; // NOSONAR(typescript:S5852): anchored pipe-table line, single greedy `.*` between literals.
-const SEPARATOR_REGEX = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/;
+const SEPARATOR_REGEX = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/; // NOSONAR(typescript:S5852): anchored; each group iteration starts with literal `\|`, disjoint from trailing `\s*`, linear.
 const HAS_HEADER_REGEX = /\|\s*Source\s*\|\s*Status\s*\|\s*Note\s*\|/i;
 
 function splitCells(line: string): string[] {

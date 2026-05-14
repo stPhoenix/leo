@@ -48,24 +48,32 @@ export class EmbeddingClient {
     if (this.opts.connection !== undefined && !this.opts.connection.isReachable()) {
       throw new ProviderConnectError('provider unreachable');
     }
-    if (texts.length > EMBED_BATCH_SIZE) {
-      const out: number[][] = [];
-      for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
-        const slice = texts.slice(i, i + EMBED_BATCH_SIZE);
-        this.opts.logger?.debug('index.embed.batch', {
-          batchStart: i,
-          batchSize: slice.length,
-        });
-        const vectors = await this.embed(slice, signal);
-        for (const v of vectors) out.push(v);
-      }
-      return out;
-    }
+    if (texts.length > EMBED_BATCH_SIZE) return this.embedInBatches(texts, signal);
+    return this.embedWithRetry(texts, signal);
+  }
 
-    // Outer retry loop is hand-rolled because LangChain `Runnable.withRetry()`
-    // hardcodes `minTimeout: 1000ms` and `factor: 2` (see
-    // `@langchain/core/utils/p-retry`). Tests + ad-hoc back-off tuning
-    // (`baseBackoffMs`) need finer control than the framework exposes.
+  private async embedInBatches(
+    texts: readonly string[],
+    signal: AbortSignal | undefined,
+  ): Promise<number[][]> {
+    const out: number[][] = [];
+    for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
+      const slice = texts.slice(i, i + EMBED_BATCH_SIZE);
+      this.opts.logger?.debug('index.embed.batch', {
+        batchStart: i,
+        batchSize: slice.length,
+      });
+      const vectors = await this.embed(slice, signal);
+      for (const v of vectors) out.push(v);
+    }
+    return out;
+  }
+
+  // NOSONAR(typescript:S3776): hand-rolled retry loop (cannot use LangChain Runnable.withRetry — hardcoded minTimeout/factor); abort + retry + final-failure arms share lastErr.
+  private async embedWithRetry(
+    texts: readonly string[],
+    signal: AbortSignal | undefined,
+  ): Promise<number[][]> {
     const max = this.opts.maxAttempts ?? DEFAULTS.maxAttempts;
     const isAborted = (): boolean => signal?.aborted === true;
     let lastErr: unknown;

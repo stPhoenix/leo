@@ -23,39 +23,38 @@ export function elideArgs(toolName: string, args: unknown): Record<string, unkno
 }
 
 function elideArgValue(toolName: string, key: string, value: unknown): ElidedValue {
-  if (toolName === 'fetch_url' && key === 'body' && typeof value === 'string') {
+  if (toolName === 'fetch_url' && key === 'headers') return elideHeaders(value);
+  if (isStringLengthElision(toolName, key) && typeof value === 'string') {
     return { length: value.length, elided: true };
   }
-  if (toolName === 'search_web' && key === 'query' && typeof value === 'string') {
-    return { length: value.length, elided: true };
-  }
-  if (
-    toolName === 'search_web' &&
-    (key === 'includeDomains' || key === 'excludeDomains') &&
-    Array.isArray(value)
-  ) {
+  if (isDomainArrayElision(toolName, key) && Array.isArray(value)) {
     return { count: value.length, elided: true };
   }
-  if (toolName === 'extract_note' && key === 'summary' && typeof value === 'string') {
-    return { length: value.length, elided: true };
-  }
-  if (
-    toolName === 'fetch_url' &&
-    key === 'headers' &&
-    value !== null &&
-    typeof value === 'object'
-  ) {
-    const safe: Record<string, unknown> = {};
-    for (const [hKey, hVal] of Object.entries(value as Record<string, unknown>)) {
-      if (/^(authorization|cookie|x-api-key|api-key)$/i.test(hKey)) {
-        safe[hKey] = '[redacted]';
-        continue;
-      }
-      safe[hKey] = elidePrimitive(hVal);
-    }
-    return safe;
-  }
   return elidePrimitive(value);
+}
+
+function isStringLengthElision(toolName: string, key: string): boolean {
+  if (toolName === 'fetch_url' && key === 'body') return true;
+  if (toolName === 'search_web' && key === 'query') return true;
+  if (toolName === 'extract_note' && key === 'summary') return true;
+  return false;
+}
+
+function isDomainArrayElision(toolName: string, key: string): boolean {
+  return toolName === 'search_web' && (key === 'includeDomains' || key === 'excludeDomains');
+}
+
+function elideHeaders(value: unknown): ElidedValue {
+  if (value === null || typeof value !== 'object') return elidePrimitive(value);
+  const safe: Record<string, unknown> = {};
+  for (const [hKey, hVal] of Object.entries(value as Record<string, unknown>)) {
+    if (/^(authorization|cookie|x-api-key|api-key)$/i.test(hKey)) {
+      safe[hKey] = '[redacted]';
+      continue;
+    }
+    safe[hKey] = elidePrimitive(hVal);
+  }
+  return safe;
 }
 
 function elidePrimitive(value: unknown): ElidedValue {
@@ -208,42 +207,47 @@ export async function* bridgeStream(
 ): AsyncIterable<ExternalEvent> {
   try {
     for await (const chunk of source) {
-      if (chunk.kind === 'text') {
-        if (chunk.chunk.length === 0) continue;
-        yield mapTextDelta(chunk.chunk);
-        continue;
-      }
-      if (chunk.kind === 'tool_start') {
-        deps.logger.debug('externalAgent.adapter.inlineAgent.tool.start', {
-          tool: chunk.tool,
-          args: chunk.args,
-        });
-        yield mapToolStart({ tool: chunk.tool, args: chunk.args });
-        continue;
-      }
-      if (chunk.kind === 'tool_end') {
-        yield mapToolEnd({
-          tool: chunk.tool,
-          ok: chunk.ok,
-          durationMs: chunk.durationMs,
-          ...(chunk.error !== undefined ? { error: chunk.error } : {}),
-        });
-        continue;
-      }
-      if (chunk.kind === 'node_complete') {
-        yield mapNodeComplete(chunk);
-        continue;
-      }
-      if (chunk.kind === 'error') {
-        yield mapAdapterError(chunk.error);
-        return;
-      }
-      if (chunk.kind === 'done') {
-        yield { type: 'done' };
-        return;
-      }
+      const mapped = mapBridgeChunk(chunk, deps);
+      if (mapped === null) continue;
+      yield mapped.event;
+      if (mapped.terminate) return;
     }
   } catch (err) {
     yield mapAdapterError(err);
   }
+}
+
+function mapBridgeChunk(
+  chunk: BridgeChunk,
+  deps: BridgeStreamDeps,
+): { event: ExternalEvent; terminate: boolean } | null {
+  if (chunk.kind === 'text') {
+    if (chunk.chunk.length === 0) return null;
+    return { event: mapTextDelta(chunk.chunk), terminate: false };
+  }
+  if (chunk.kind === 'tool_start') {
+    deps.logger.debug('externalAgent.adapter.inlineAgent.tool.start', {
+      tool: chunk.tool,
+      args: chunk.args,
+    });
+    return { event: mapToolStart({ tool: chunk.tool, args: chunk.args }), terminate: false };
+  }
+  if (chunk.kind === 'tool_end') {
+    return {
+      event: mapToolEnd({
+        tool: chunk.tool,
+        ok: chunk.ok,
+        durationMs: chunk.durationMs,
+        ...(chunk.error !== undefined ? { error: chunk.error } : {}),
+      }),
+      terminate: false,
+    };
+  }
+  if (chunk.kind === 'node_complete') {
+    return { event: mapNodeComplete(chunk), terminate: false };
+  }
+  if (chunk.kind === 'error') {
+    return { event: mapAdapterError(chunk.error), terminate: true };
+  }
+  return { event: { type: 'done' }, terminate: true };
 }

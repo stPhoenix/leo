@@ -181,12 +181,72 @@ export class MCPClient {
     return Promise.allSettled(promises);
   }
 
+  private async discoverConnection(
+    connection: McpTransportConnection,
+    serverId: string,
+  ): Promise<{
+    tools: readonly McpToolInfo[];
+    resources: readonly McpResourceInfo[];
+    prompts: readonly McpPromptInfo[];
+  }> {
+    const [tools, resources, prompts] = await Promise.all([
+      connection.listTools().then((r) => {
+        this.logger.debug('mcp.discovery.tools.ok', { serverId, count: r.length });
+        return r;
+      }),
+      connection.listResources().then((r) => {
+        this.logger.debug('mcp.discovery.resources.ok', { serverId, count: r.length });
+        return r;
+      }),
+      connection.listPrompts().then((r) => {
+        this.logger.debug('mcp.discovery.prompts.ok', { serverId, count: r.length });
+        return r;
+      }),
+    ]);
+    return { tools, resources, prompts };
+  }
+
+  private async failConnect(
+    initial: ServerRuntime,
+    err: unknown,
+    start: number,
+    connection: McpTransportConnection | undefined,
+  ): Promise<ServerRuntime> {
+    const error = err instanceof Error ? err.message : String(err);
+    const statusCode =
+      err !== null &&
+      typeof err === 'object' &&
+      typeof (err as { code?: unknown }).code === 'number'
+        ? (err as { code: number }).code
+        : undefined;
+    const cause =
+      err !== null && typeof err === 'object' && (err as { cause?: unknown }).cause instanceof Error
+        ? (err as { cause: Error }).cause.message
+        : undefined;
+    const runtime: ServerRuntime = { ...initial, status: 'failed', error };
+    this.servers.set(initial.config.id, runtime);
+    this.notifyStatus(initial.config.id, 'failed');
+    this.logger.warn('mcp.connect.fail', {
+      serverId: initial.config.id,
+      transport: initial.config.transport,
+      error,
+      ...(statusCode !== undefined ? { statusCode } : {}),
+      ...(cause !== undefined ? { cause } : {}),
+      durationMs: this.clock() - start,
+    });
+    if (connection !== undefined) {
+      try {
+        await connection.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    return runtime;
+  }
+
   async connectOne(config: McpServerConfig, signal?: AbortSignal): Promise<ServerRuntime> {
     const start = this.clock();
-    this.logger.info('mcp.connect.start', {
-      serverId: config.id,
-      transport: config.transport,
-    });
+    this.logger.info('mcp.connect.start', { serverId: config.id, transport: config.transport });
     const initial: ServerRuntime = {
       id: config.id,
       config,
@@ -206,23 +266,8 @@ export class MCPClient {
         transport: config.transport,
         durationMs: this.clock() - start,
       });
-      const [tools, resources, prompts] = await Promise.all([
-        connection.listTools().then((r) => {
-          this.logger.debug('mcp.discovery.tools.ok', { serverId: config.id, count: r.length });
-          return r;
-        }),
-        connection.listResources().then((r) => {
-          this.logger.debug('mcp.discovery.resources.ok', { serverId: config.id, count: r.length });
-          return r;
-        }),
-        connection.listPrompts().then((r) => {
-          this.logger.debug('mcp.discovery.prompts.ok', { serverId: config.id, count: r.length });
-          return r;
-        }),
-      ]);
-      for (const tool of tools) {
-        this.registerTool(config.id, tool);
-      }
+      const { tools, resources, prompts } = await this.discoverConnection(connection, config.id);
+      for (const tool of tools) this.registerTool(config.id, tool);
       const runtime: ServerRuntime = {
         ...initial,
         status: 'connected',
@@ -246,42 +291,7 @@ export class MCPClient {
       });
       return runtime;
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      const statusCode =
-        err !== null &&
-        typeof err === 'object' &&
-        typeof (err as { code?: unknown }).code === 'number'
-          ? (err as { code: number }).code
-          : undefined;
-      const cause =
-        err !== null &&
-        typeof err === 'object' &&
-        (err as { cause?: unknown }).cause instanceof Error
-          ? (err as { cause: Error }).cause.message
-          : undefined;
-      const runtime: ServerRuntime = {
-        ...initial,
-        status: 'failed',
-        error,
-      };
-      this.servers.set(config.id, runtime);
-      this.notifyStatus(config.id, 'failed');
-      this.logger.warn('mcp.connect.fail', {
-        serverId: config.id,
-        transport: config.transport,
-        error,
-        ...(statusCode !== undefined ? { statusCode } : {}),
-        ...(cause !== undefined ? { cause } : {}),
-        durationMs: this.clock() - start,
-      });
-      if (connection !== undefined) {
-        try {
-          await connection.close();
-        } catch {
-          /* ignore */
-        }
-      }
-      return runtime;
+      return this.failConnect(initial, err, start, connection);
     }
   }
 

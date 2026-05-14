@@ -191,89 +191,123 @@ function parseBlocks(raw: unknown): readonly ContentBlock[] | undefined {
   return out;
 }
 
+type BlockParser = (obj: Record<string, unknown>) => ContentBlock | null;
+
+function parseTextBlock(obj: Record<string, unknown>): ContentBlock | null {
+  if (typeof obj.text !== 'string') return null;
+  return { type: 'text', text: obj.text };
+}
+
+function parseThinkingBlock(obj: Record<string, unknown>): ContentBlock | null {
+  if (typeof obj.thinking !== 'string') return null;
+  return {
+    type: 'thinking',
+    thinking: obj.thinking,
+    ...(typeof obj.signature === 'string' ? { signature: obj.signature } : {}),
+  };
+}
+
+function parseRedactedThinkingBlock(obj: Record<string, unknown>): ContentBlock | null {
+  if (typeof obj.data !== 'string') return null;
+  return { type: 'redacted_thinking', data: obj.data };
+}
+
+function parseToolUseEntry(obj: Record<string, unknown>): ContentBlock | null {
+  if (typeof obj.id !== 'string' || typeof obj.name !== 'string') return null;
+  return parseToolUseBlock(obj);
+}
+
+function parseToolResultBlock(obj: Record<string, unknown>): ContentBlock | null {
+  if (typeof obj.tool_use_id !== 'string') return null;
+  return {
+    type: 'tool_result',
+    tool_use_id: obj.tool_use_id,
+    content: parseToolResultContent(obj.content),
+    ...(typeof obj.is_error === 'boolean' ? { is_error: obj.is_error } : {}),
+  };
+}
+
+function parseToolReferenceBlock(obj: Record<string, unknown>): ContentBlock | null {
+  if (typeof obj.tool_name !== 'string') return null;
+  return { type: 'tool_reference', tool_name: obj.tool_name };
+}
+
+function parseSlashExpandedBlock(obj: Record<string, unknown>): ContentBlock | null {
+  if (
+    typeof obj.command !== 'string' ||
+    typeof obj.typed !== 'string' ||
+    typeof obj.expandedBody !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    type: 'slash_expanded',
+    command: obj.command,
+    typed: obj.typed,
+    expandedBody: obj.expandedBody,
+  };
+}
+
+function parseImageBlock(obj: Record<string, unknown>): ContentBlock | null {
+  const source = parseBase64Source(obj.source);
+  if (source === null) return null;
+  return {
+    type: 'image',
+    source,
+    ...(typeof obj.name === 'string' ? { name: obj.name } : {}),
+    ...(typeof obj.size === 'number' ? { size: obj.size } : {}),
+  };
+}
+
+function parseDocumentBlock(obj: Record<string, unknown>): ContentBlock | null {
+  const source = parseBase64Source(obj.source);
+  if (source === null) return null;
+  return {
+    type: 'document',
+    source,
+    ...(typeof obj.name === 'string' ? { name: obj.name } : {}),
+    ...(typeof obj.size === 'number' ? { size: obj.size } : {}),
+  };
+}
+
+function parseAttachmentChipBlock(obj: Record<string, unknown>): ContentBlock | null {
+  const kind = obj.kind;
+  if (kind !== 'image' && kind !== 'document') return null;
+  if (
+    typeof obj.name !== 'string' ||
+    typeof obj.mimeType !== 'string' ||
+    typeof obj.size !== 'number'
+  ) {
+    return null;
+  }
+  return {
+    type: 'attachment_chip',
+    kind,
+    name: obj.name,
+    mimeType: obj.mimeType,
+    size: obj.size,
+    ...(typeof obj.path === 'string' ? { path: obj.path } : {}),
+  };
+}
+
+const BLOCK_PARSERS: Readonly<Record<string, BlockParser>> = {
+  text: parseTextBlock,
+  thinking: parseThinkingBlock,
+  redacted_thinking: parseRedactedThinkingBlock,
+  tool_use: parseToolUseEntry,
+  tool_result: parseToolResultBlock,
+  tool_reference: parseToolReferenceBlock,
+  slash_expanded: parseSlashExpandedBlock,
+  image: parseImageBlock,
+  document: parseDocumentBlock,
+  attachment_chip: parseAttachmentChipBlock,
+};
+
 function parseSingleBlock(obj: Record<string, unknown>): ContentBlock | null {
   const type = obj.type;
-  if (type === 'text' && typeof obj.text === 'string') {
-    return { type: 'text', text: obj.text };
-  }
-  if (type === 'thinking' && typeof obj.thinking === 'string') {
-    return {
-      type: 'thinking',
-      thinking: obj.thinking,
-      ...(typeof obj.signature === 'string' ? { signature: obj.signature } : {}),
-    };
-  }
-  if (type === 'redacted_thinking' && typeof obj.data === 'string') {
-    return { type: 'redacted_thinking', data: obj.data };
-  }
-  if (type === 'tool_use' && typeof obj.id === 'string' && typeof obj.name === 'string') {
-    return parseToolUseBlock(obj);
-  }
-  if (type === 'tool_result' && typeof obj.tool_use_id === 'string') {
-    return {
-      type: 'tool_result',
-      tool_use_id: obj.tool_use_id,
-      content: parseToolResultContent(obj.content),
-      ...(typeof obj.is_error === 'boolean' ? { is_error: obj.is_error } : {}),
-    };
-  }
-  if (type === 'tool_reference' && typeof obj.tool_name === 'string') {
-    return { type: 'tool_reference', tool_name: obj.tool_name };
-  }
-  if (
-    type === 'slash_expanded' &&
-    typeof obj.command === 'string' &&
-    typeof obj.typed === 'string' &&
-    typeof obj.expandedBody === 'string'
-  ) {
-    return {
-      type: 'slash_expanded',
-      command: obj.command,
-      typed: obj.typed,
-      expandedBody: obj.expandedBody,
-    };
-  }
-  if (type === 'image') {
-    const source = parseBase64Source(obj.source);
-    if (source !== null) {
-      return {
-        type: 'image',
-        source,
-        ...(typeof obj.name === 'string' ? { name: obj.name } : {}),
-        ...(typeof obj.size === 'number' ? { size: obj.size } : {}),
-      };
-    }
-  }
-  if (type === 'document') {
-    const source = parseBase64Source(obj.source);
-    if (source !== null) {
-      return {
-        type: 'document',
-        source,
-        ...(typeof obj.name === 'string' ? { name: obj.name } : {}),
-        ...(typeof obj.size === 'number' ? { size: obj.size } : {}),
-      };
-    }
-  }
-  if (type === 'attachment_chip') {
-    const kind = obj.kind;
-    if (
-      (kind === 'image' || kind === 'document') &&
-      typeof obj.name === 'string' &&
-      typeof obj.mimeType === 'string' &&
-      typeof obj.size === 'number'
-    ) {
-      return {
-        type: 'attachment_chip',
-        kind,
-        name: obj.name,
-        mimeType: obj.mimeType,
-        size: obj.size,
-        ...(typeof obj.path === 'string' ? { path: obj.path } : {}),
-      };
-    }
-  }
-  return null;
+  if (typeof type !== 'string') return null;
+  const parser = BLOCK_PARSERS[type];
+  return parser !== undefined ? parser(obj) : null;
 }
 
 function parseBase64Source(

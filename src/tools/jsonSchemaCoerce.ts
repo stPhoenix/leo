@@ -30,6 +30,18 @@ function expectsArrayOrObject(schema: unknown): boolean {
   return false;
 }
 
+function tryParseJsonField(value: string): { ok: true; parsed: unknown } | { ok: false } {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return { ok: false };
+  const first = trimmed.charCodeAt(0);
+  if (first !== 0x5b /* [ */ && first !== 0x7b /* { */) return { ok: false };
+  try {
+    return { ok: true, parsed: JSON.parse(trimmed) };
+  } catch {
+    return { ok: false };
+  }
+}
+
 export function coerceStringifiedJsonByJsonSchema(raw: unknown, schema: JsonSchema): unknown {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
   const props = schema.properties;
@@ -40,18 +52,10 @@ export function coerceStringifiedJsonByJsonSchema(raw: unknown, schema: JsonSche
     const v = obj[k];
     if (typeof v !== 'string') continue;
     if (!expectsArrayOrObject(fieldSchema)) continue;
-    const trimmed = v.trim();
-    if (trimmed.length === 0) continue;
-    const first = trimmed.charCodeAt(0);
-    if (first !== 0x5b /* [ */ && first !== 0x7b /* { */) continue;
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (out === null) out = { ...obj };
-      out[k] = parsed;
-    } catch {
-      // Leave the original string in place; the MCP server will surface the
-      // type mismatch with its own validation error.
-    }
+    const result = tryParseJsonField(v);
+    if (!result.ok) continue;
+    if (out === null) out = { ...obj };
+    out[k] = result.parsed;
   }
   return out ?? raw;
 }

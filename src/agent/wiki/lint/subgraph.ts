@@ -347,6 +347,7 @@ function buildLintGraph(b: NodeBindings) {
   };
 
   const applyOrphanPage = async (
+    // NOSONAR S3776: closure-heavy orphan-link handler — propose/read/apply/write phases share controller/accum state.
     finding: LintFinding,
     note: string | undefined,
     state: LintGraphStateT,
@@ -624,6 +625,34 @@ function buildLintGraph(b: NodeBindings) {
     return applyNonOrphanPage(finding, note, state, lintBudgets, signal, accum);
   };
 
+  const resolveLintBudgets = (): WikiBudgets => {
+    if (deps.contextWindow === undefined || deps.contextWindow <= 0) return WIKI_BUDGETS;
+    return resolveWikiBudgets({
+      contextWindow: deps.contextWindow,
+      ...(deps.maxOutputTokens !== undefined ? { maxOutputTokens: deps.maxOutputTokens } : {}),
+    });
+  };
+
+  const maybeApplySchemaPatch = async (
+    accum: WriteAccum,
+    state: LintGraphStateT,
+    signal: AbortSignal,
+  ): Promise<boolean> => {
+    if (!accum.derivedApplySchema || state.schemaPatch === null || signal.aborted) return false;
+    try {
+      await applySchemaPatch(deps.vault, state.schemaPatch);
+      partial.schemaEdited = true;
+      controller.update({ schemaEditedConfirmed: true });
+      return true;
+    } catch (err) {
+      deps.logger?.warn(WIKI_LOG.lint.write.failed, {
+        runId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  };
+
   const writingNode = async (
     state: LintGraphStateT,
     config: LangGraphRunnableConfig,
@@ -631,15 +660,7 @@ function buildLintGraph(b: NodeBindings) {
     checkpoint('writing');
     const decision = state.decision!;
     const signal = config.signal ?? new AbortController().signal;
-    const lintBudgets: WikiBudgets =
-      deps.contextWindow !== undefined && deps.contextWindow > 0
-        ? resolveWikiBudgets({
-            contextWindow: deps.contextWindow,
-            ...(deps.maxOutputTokens !== undefined
-              ? { maxOutputTokens: deps.maxOutputTokens }
-              : {}),
-          })
-        : WIKI_BUDGETS;
+    const lintBudgets = resolveLintBudgets();
     const acceptedFindings = state.proposedFindings.filter((f) => decision.accepted.includes(f.id));
     const noteById = new Map<string, string>((decision.notes ?? []).map((n) => [n.id, n.note]));
     const validPagePaths = new Set<string>(state.scan!.pages.map((p) => p.path));
@@ -651,9 +672,7 @@ function buildLintGraph(b: NodeBindings) {
       derivedApplySchema: decision.applySchema,
     };
 
-    for (const f of acceptedFindings) {
-      controller.setFindingPatchStatus(f.id, 'pending');
-    }
+    for (const f of acceptedFindings) controller.setFindingPatchStatus(f.id, 'pending');
 
     for (const finding of acceptedFindings) {
       if (signal.aborted) break;
@@ -676,25 +695,10 @@ function buildLintGraph(b: NodeBindings) {
       findingsFailed: accum.findingsFailed,
     });
 
-    let schemaEdited = false;
-    if (accum.derivedApplySchema && state.schemaPatch !== null && !signal.aborted) {
-      try {
-        await applySchemaPatch(deps.vault, state.schemaPatch);
-        schemaEdited = true;
-        partial.schemaEdited = true;
-        controller.update({ schemaEditedConfirmed: true });
-      } catch (err) {
-        deps.logger?.warn(WIKI_LOG.lint.write.failed, {
-          runId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
+    const schemaEdited = await maybeApplySchemaPatch(accum, state, signal);
     partial.pagesEdited = accum.editedPaths.size;
     partial.findingsApplied = accum.findingsApplied;
     partial.findingsFailed = accum.findingsFailed;
-
     return { pagesEdited: accum.editedPaths.size, schemaEdited };
   };
 
@@ -740,6 +744,35 @@ export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartR
   let lastPhase: WikiPhase = 'idle';
   const setLastPhase = (p: WikiPhase): void => {
     lastPhase = p;
+  };
+
+  const finalizeLintRun = async (): Promise<void> => {
+    try {
+      const indexBody = await regenerateIndex(deps.vault);
+      await deps.vault.write(WIKI_INDEX_PATH, indexBody);
+    } catch (err) {
+      deps.logger?.warn(WIKI_LOG.lint.write.failed, {
+        path: WIKI_INDEX_PATH,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    const cancelled = ac.signal.aborted;
+    await appendLintLogLine(
+      {
+        runId,
+        applied: partial.findingsApplied,
+        failed: partial.findingsFailed,
+        pagesEdited: partial.pagesEdited,
+        ...(cancelled ? { cancelled: true } : {}),
+      },
+      {
+        vault: deps.vault,
+        ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+      },
+    );
+    acquired.release();
+    releaseWikiLiveController(runId);
   };
 
   const terminal = (async (): Promise<LintTerminalResult> => {
@@ -884,32 +917,7 @@ export function startLintRun(input: LintRunInput, deps: LintRunDeps): LintStartR
       controller.recordError('unhandled', message);
       return errorTerminal('unhandled', message);
     } finally {
-      try {
-        const indexBody = await regenerateIndex(deps.vault);
-        await deps.vault.write(WIKI_INDEX_PATH, indexBody);
-      } catch (err) {
-        deps.logger?.warn(WIKI_LOG.lint.write.failed, {
-          path: WIKI_INDEX_PATH,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      const cancelled = ac.signal.aborted;
-      await appendLintLogLine(
-        {
-          runId,
-          applied: partial.findingsApplied,
-          failed: partial.findingsFailed,
-          pagesEdited: partial.pagesEdited,
-          ...(cancelled ? { cancelled: true } : {}),
-        },
-        {
-          vault: deps.vault,
-          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-          ...(deps.now !== undefined ? { now: deps.now } : {}),
-        },
-      );
-      acquired.release();
-      releaseWikiLiveController(runId);
+      await finalizeLintRun();
     }
   })();
 

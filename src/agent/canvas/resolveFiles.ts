@@ -23,48 +23,10 @@ export function resolveEntityFiles(input: ResolveEntityFilesInput): EntityGraph 
   const resolver = input.metadataCache?.getFirstLinkpathDest;
   const pageBasenames = input.pageBasenames;
 
-  // Compute each entity's first-choice candidate path (regardless of claims) so
-  // we can detect when multiple entities target the same vault file. When that
-  // happens, prefer the entity whose id-slug matches the page basename slug —
-  // e.g. `testament:canon-of-silicon` should claim `the-canon-of-silicon.md`
-  // over `testament:book-of-parables`. Without this, alphabetical first-wins
-  // hands the file to whichever entity was misattributed by `definedIn`.
-  const firstChoice = new Map<string, string>(); // entityId → candidate path
-  for (const ent of input.graph.entities) {
-    const candidate = computeFirstChoice(ent, {
-      basenameMap,
-      anchor,
-      resolver,
-      pageBasenames,
-    });
-    if (candidate !== null) firstChoice.set(ent.id, candidate);
-  }
-  const preferredOwner = new Map<string, string>(); // path → entityId
-  const groupedByPath = new Map<string, string[]>();
-  for (const [eid, path] of firstChoice) {
-    const list = groupedByPath.get(path);
-    if (list === undefined) groupedByPath.set(path, [eid]);
-    else list.push(eid);
-  }
-  for (const [path, ids] of groupedByPath) {
-    if (ids.length < 2) continue;
-    const baseSlugs = new Set(candidateSlugs(vaultBasename(path)));
-    for (const id of ids) {
-      const idSlug = id.includes(':') ? id.slice(id.indexOf(':') + 1) : id;
-      if (baseSlugs.has(idSlug)) {
-        preferredOwner.set(path, id);
-        break;
-      }
-    }
-  }
-
-  // Track filePath values already claimed by an upstream entity. Two distinct
-  // entities binding to the same vault file would render as two `{type:"file"}`
-  // canvas nodes pointing at the same source — confusing.
-  const claimed = new Set<string>();
-  for (const ent of input.graph.entities) {
-    if (ent.filePath !== undefined) claimed.add(ent.filePath);
-  }
+  const ctx: FirstChoiceCtx = { basenameMap, anchor, resolver, pageBasenames };
+  const firstChoice = buildFirstChoiceMap(input.graph.entities, ctx);
+  const preferredOwner = computePreferredOwners(firstChoice);
+  const claimed = collectClaimedPaths(input.graph.entities);
 
   const tryClaim = (path: string, entityId: string): string | null => {
     if (claimed.has(path)) return null;
@@ -127,6 +89,48 @@ export function resolveEntityFiles(input: ResolveEntityFilesInput): EntityGraph 
   return { ...input.graph, entities: nextEntities };
 }
 
+function buildFirstChoiceMap(
+  entities: readonly Entity[],
+  ctx: FirstChoiceCtx,
+): Map<string, string> {
+  const firstChoice = new Map<string, string>();
+  for (const ent of entities) {
+    const candidate = computeFirstChoice(ent, ctx);
+    if (candidate !== null) firstChoice.set(ent.id, candidate);
+  }
+  return firstChoice;
+}
+
+function computePreferredOwners(firstChoice: ReadonlyMap<string, string>): Map<string, string> {
+  const groupedByPath = new Map<string, string[]>();
+  for (const [eid, path] of firstChoice) {
+    const list = groupedByPath.get(path);
+    if (list === undefined) groupedByPath.set(path, [eid]);
+    else list.push(eid);
+  }
+  const preferredOwner = new Map<string, string>();
+  for (const [path, ids] of groupedByPath) {
+    if (ids.length < 2) continue;
+    const baseSlugs = new Set(candidateSlugs(vaultBasename(path)));
+    for (const id of ids) {
+      const idSlug = id.includes(':') ? id.slice(id.indexOf(':') + 1) : id;
+      if (baseSlugs.has(idSlug)) {
+        preferredOwner.set(path, id);
+        break;
+      }
+    }
+  }
+  return preferredOwner;
+}
+
+function collectClaimedPaths(entities: readonly Entity[]): Set<string> {
+  const claimed = new Set<string>();
+  for (const ent of entities) {
+    if (ent.filePath !== undefined) claimed.add(ent.filePath);
+  }
+  return claimed;
+}
+
 interface FirstChoiceCtx {
   readonly basenameMap: ReadonlyMap<string, string>;
   readonly anchor: string;
@@ -138,29 +142,40 @@ function computeFirstChoice(ent: Entity, ctx: FirstChoiceCtx): string | null {
   if (ent.filePath !== undefined) return ent.filePath;
   if (looksLikeUrl(ent.name)) return null;
   if (ent.type === 'url') return null;
+  return (
+    firstChoiceViaDefinedIn(ent, ctx) ??
+    firstChoiceViaResolver(ent, ctx) ??
+    firstChoiceViaSlugs(ent, ctx)
+  );
+}
 
-  if (ent.definedIn !== undefined) {
-    const viaDefined = resolveDefinedInPath(ent.definedIn, ctx.pageBasenames);
-    if (viaDefined !== null && definedInRelatesToEntity(viaDefined, ent)) return viaDefined;
-  }
+function firstChoiceViaDefinedIn(ent: Entity, ctx: FirstChoiceCtx): string | null {
+  if (ent.definedIn === undefined) return null;
+  const viaDefined = resolveDefinedInPath(ent.definedIn, ctx.pageBasenames);
+  if (viaDefined === null || !definedInRelatesToEntity(viaDefined, ent)) return null;
+  return viaDefined;
+}
 
+function firstChoiceViaResolver(ent: Entity, ctx: FirstChoiceCtx): string | null {
   const viaResolver = ctx.resolver?.(ent.name, ctx.anchor);
-  if (viaResolver !== null && viaResolver !== undefined && viaResolver.path.length > 0) {
-    return viaResolver.path;
+  if (viaResolver === null || viaResolver === undefined || viaResolver.path.length === 0) {
+    return null;
   }
+  return viaResolver.path;
+}
 
+function firstChoiceViaSlugs(ent: Entity, ctx: FirstChoiceCtx): string | null {
   const slugCandidates = candidateSlugs(ent.name);
   for (const slug of slugCandidates) {
     const path = ctx.basenameMap.get(slug);
     if (path !== undefined) return path;
   }
-  if (ctx.pageBasenames !== undefined) {
-    const idSlug = ent.id.includes(':') ? ent.id.slice(ent.id.indexOf(':') + 1) : '';
-    const slugs = idSlug.length > 0 ? [...slugCandidates, idSlug] : slugCandidates;
-    for (const slug of slugs) {
-      const path = ctx.pageBasenames.get(slug);
-      if (path !== undefined) return path;
-    }
+  if (ctx.pageBasenames === undefined) return null;
+  const idSlug = ent.id.includes(':') ? ent.id.slice(ent.id.indexOf(':') + 1) : '';
+  const slugs = idSlug.length > 0 ? [...slugCandidates, idSlug] : slugCandidates;
+  for (const slug of slugs) {
+    const path = ctx.pageBasenames.get(slug);
+    if (path !== undefined) return path;
   }
   return null;
 }
@@ -291,7 +306,7 @@ function slugify(s: string): string {
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[^a-z0-9]+/g, '-') // NOSONAR(typescript:S5852): single char class + quantifier, linear.
-    .replace(/^-+|-+$/g, '');
+    .replace(/^-+|-+$/g, ''); // NOSONAR(typescript:S5852): anchored alternation over single-char class, linear.
 }
 
 function looksLikeUrl(s: string): boolean {

@@ -117,6 +117,7 @@ export interface MicrocompactResult {
   readonly querySource?: string;
 }
 
+// NOSONAR(typescript:S3776): linear microcompact pipeline (gather → gate → clear → rebuild → measure) sharing ctx/messages/clearIds state across phases; extracting fragments the gating logic.
 export function microcompactMessages(
   messages: readonly CompactMessage[],
   ctx: MicrocompactContext = {},
@@ -199,6 +200,22 @@ function clearedToolResult(m: CompactToolMessage): CompactToolMessage {
   return next;
 }
 
+function collectFromAssistantMessage(
+  m: Extract<CompactMessage, { role: 'assistant' }>,
+  isCompactable: (toolName: string) => boolean,
+  out: { id: string; name: string }[],
+): void {
+  for (const call of m.toolCalls ?? []) {
+    if (isCompactable(call.name)) out.push({ id: call.id, name: call.name });
+  }
+  if (!Array.isArray(m.content)) return;
+  for (const block of m.content) {
+    if (block.type === 'tool_use' && isCompactable(block.name)) {
+      out.push({ id: block.id, name: block.name });
+    }
+  }
+}
+
 function collectCompactableToolUses(
   messages: readonly CompactMessage[],
   isCompactable: (toolName: string) => boolean,
@@ -206,16 +223,7 @@ function collectCompactableToolUses(
   const out: { id: string; name: string }[] = [];
   for (const m of messages) {
     if (m.role !== 'assistant') continue;
-    for (const call of m.toolCalls ?? []) {
-      if (isCompactable(call.name)) out.push({ id: call.id, name: call.name });
-    }
-    if (Array.isArray(m.content)) {
-      for (const block of m.content) {
-        if (block.type === 'tool_use' && isCompactable(block.name)) {
-          out.push({ id: block.id, name: block.name });
-        }
-      }
-    }
+    collectFromAssistantMessage(m, isCompactable, out);
   }
   return out;
 }

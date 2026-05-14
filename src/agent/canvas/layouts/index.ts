@@ -78,10 +78,20 @@ export function layout(input: LayoutInput): LayoutResult {
   };
 }
 
-export function autoSelect(graph: {
+type AutoSelectGraph = {
   entities: readonly { id: string; type: string; fields?: unknown }[];
   edges: readonly { from: string; to: string; type: string }[];
-}): LayoutPreset {
+};
+
+export function autoSelect(graph: AutoSelectGraph): LayoutPreset {
+  if (detectBipartite(graph)) return 'bipartite';
+  if (graph.entities.length > 0 && isAcyclicConnected(graph)) return 'tree';
+  if (detectRadial(graph)) return 'radial';
+  if (detectTimeline(graph)) return 'timeline';
+  return 'force';
+}
+
+function detectBipartite(graph: AutoSelectGraph): boolean {
   const typeCounts = new Map<string, number>();
   for (const e of graph.entities) {
     typeCounts.set(e.type, (typeCounts.get(e.type) ?? 0) + 1);
@@ -89,40 +99,32 @@ export function autoSelect(graph: {
   const ranked = [...typeCounts.entries()].sort((a, b) => b[1] - a[1]);
   const relationTypes = new Set<string>();
   for (const ed of graph.edges) relationTypes.add(ed.type);
+  if (ranked.length < 2 || ranked[0]![1] === 0 || ranked[1]![1] === 0) return false;
+  if (relationTypes.size !== 1) return false;
+  return ranked.length === 2 || (ranked[2]?.[1] ?? 0) < ranked[1]![1] / 2;
+}
 
-  // bipartite: 2 dominant entity types and 1 dominant relation type
-  if (ranked.length >= 2 && ranked[0]![1] > 0 && ranked[1]![1] > 0 && relationTypes.size === 1) {
-    if (ranked.length === 2 || (ranked[2]?.[1] ?? 0) < ranked[1]![1] / 2) {
-      return 'bipartite';
-    }
-  }
-
-  // tree: acyclic + connected
-  if (graph.entities.length > 0 && isAcyclicConnected(graph)) {
-    return 'tree';
-  }
-
-  // radial: single entity has degree > 2× median
+function detectRadial(graph: AutoSelectGraph): boolean {
   const degree = new Map<string, number>();
   for (const ed of graph.edges) {
     degree.set(ed.from, (degree.get(ed.from) ?? 0) + 1);
     degree.set(ed.to, (degree.get(ed.to) ?? 0) + 1);
   }
   const degreesSorted = [...degree.values()].sort((a, b) => a - b);
-  if (degreesSorted.length > 0) {
-    const median = degreesSorted[Math.floor(degreesSorted.length / 2)]!;
-    const max = degreesSorted[degreesSorted.length - 1]!;
-    if (max > median * 2 && median > 0) return 'radial';
-  }
+  if (degreesSorted.length === 0) return false;
+  const median = degreesSorted[Math.floor(degreesSorted.length / 2)]!;
+  const max = degreesSorted[degreesSorted.length - 1]!;
+  return max > median * 2 && median > 0;
+}
 
-  // timeline: any entity has temporal field
+function detectTimeline(graph: AutoSelectGraph): boolean {
   for (const e of graph.entities) {
     const fields = (e as { fields?: Record<string, unknown> }).fields;
     if (fields !== undefined && (fields.date || fields.start || fields.timestamp)) {
-      return 'timeline';
+      return true;
     }
   }
-  return 'force';
+  return false;
 }
 
 function applyLockedCoords(nodes: readonly CanvasNode[], locked: LockedCoords): CanvasNode[] {
@@ -233,6 +235,15 @@ function isAcyclicConnected(graph: {
   entities: readonly { id: string }[];
   edges: readonly { from: string; to: string }[];
 }): boolean {
+  if (graph.entities.length === 0) return false;
+  if (!isConnected(graph)) return false;
+  return isAcyclic(graph);
+}
+
+function isConnected(graph: {
+  entities: readonly { id: string }[];
+  edges: readonly { from: string; to: string }[];
+}): boolean {
   const adj = new Map<string, Set<string>>();
   for (const e of graph.entities) adj.set(e.id, new Set());
   for (const ed of graph.edges) {
@@ -241,7 +252,6 @@ function isAcyclicConnected(graph: {
       adj.get(ed.to)!.add(ed.from);
     }
   }
-  if (graph.entities.length === 0) return false;
   const root = graph.entities[0]!.id;
   const visited = new Set<string>();
   const queue: string[] = [root];
@@ -253,8 +263,13 @@ function isAcyclicConnected(graph: {
       if (!visited.has(n)) queue.push(n);
     }
   }
-  if (visited.size !== graph.entities.length) return false;
-  // Check for cycle: DFS on directed edges (acyclicity is on the directed graph).
+  return visited.size === graph.entities.length;
+}
+
+function isAcyclic(graph: {
+  entities: readonly { id: string }[];
+  edges: readonly { from: string; to: string }[];
+}): boolean {
   const outEdges = new Map<string, string[]>();
   for (const e of graph.entities) outEdges.set(e.id, []);
   for (const ed of graph.edges) outEdges.get(ed.from)?.push(ed.to);

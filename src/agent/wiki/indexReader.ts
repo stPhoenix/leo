@@ -105,20 +105,26 @@ export function scoreEntries(
   if (tokens.length === 0) return [];
   const scored: ScoredEntry[] = [];
   for (const entry of entries) {
-    const titleTokens = tokenize(entry.title);
-    const summaryTokens = tokenize(entry.summary);
-    const categoryTokens = tokenize(entry.category);
-    let score = 0;
-    for (const t of tokens) {
-      if (titleTokens.includes(t)) score += 3;
-      if (summaryTokens.includes(t)) score += 1;
-      if (categoryTokens.includes(t)) score += 1;
-      if (entry.title.toLowerCase().includes(t)) score += 0.5;
-    }
+    const score = scoreEntryAgainstTokens(entry, tokens);
     if (score > 0) scored.push({ ...entry, score });
   }
   scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
   return scored;
+}
+
+function scoreEntryAgainstTokens(entry: WikiIndexEntry, tokens: readonly string[]): number {
+  const titleTokens = tokenize(entry.title);
+  const summaryTokens = tokenize(entry.summary);
+  const categoryTokens = tokenize(entry.category);
+  const titleLower = entry.title.toLowerCase();
+  let score = 0;
+  for (const t of tokens) {
+    if (titleTokens.includes(t)) score += 3;
+    if (summaryTokens.includes(t)) score += 1;
+    if (categoryTokens.includes(t)) score += 1;
+    if (titleLower.includes(t)) score += 0.5;
+  }
+  return score;
 }
 
 export function topNCandidates(

@@ -118,110 +118,21 @@ export function applyMarkdownPatch(input: ApplyMarkdownPatchInput): ApplyMarkdow
   const { content, sourcesBlock } = stripSourcesSection(rest);
 
   switch (patch.kind) {
-    case 'replace_body': {
-      const driftRatio =
-        Math.abs(currentBody.length - patch.body.length) / Math.max(currentBody.length, 1);
-      if (driftRatio > REPLACE_BODY_DRIFT_THRESHOLD) {
-        return {
-          ok: false,
-          reason: 'body_size_drift',
-          message: `replace_body delta ${(driftRatio * 100).toFixed(0)}% exceeds 50% guardrail`,
-        };
-      }
-      const cleaned = stripStrayShell(patch.body);
-      const next = recompose(frontmatter, cleaned, sourcesBlock);
-      return { ok: true, nextBody: next, changed: next !== currentBody };
-    }
-    case 'replace_section': {
-      const range = findSection(content, patch.section);
-      if (range === null) {
-        return {
-          ok: false,
-          reason: 'section_not_found',
-          message: `section not found: ${patch.section}`,
-        };
-      }
-      const lines = content.split('\n');
-      const heading = `${'#'.repeat(range.level)} ${patch.section.trim()}`;
-      const replacement = patch.body.trimEnd();
-      const before = lines.slice(0, range.startLine);
-      const after = lines.slice(range.endLine);
-      const merged = [
-        ...before,
-        heading,
-        '',
-        replacement,
-        ...(after.length > 0 ? [''] : []),
-        ...after,
-      ].join('\n');
-      const newContent = stripTrailingBlankLines(merged);
-      const next = recompose(frontmatter, newContent, sourcesBlock);
-      return { ok: true, nextBody: next, changed: next !== currentBody };
-    }
-    case 'append': {
-      const sectionName = patch.section ?? null;
-      if (sectionName === null) {
-        const trimmed = stripTrailingBlankLines(content);
-        const sep = trimmed.length > 0 ? '\n\n' : '';
-        const newContent = `${trimmed}${sep}${patch.body.trimEnd()}`;
-        const next = recompose(frontmatter, newContent, sourcesBlock);
-        return { ok: true, nextBody: next, changed: next !== currentBody };
-      }
-      const range = findSection(content, sectionName);
-      if (range === null) {
-        return {
-          ok: false,
-          reason: 'section_not_found',
-          message: `section not found: ${sectionName}`,
-        };
-      }
-      const lines = content.split('\n');
-      const sectionLines = lines.slice(range.startLine, range.endLine);
-      const trimmedSection = stripTrailingBlankLines(sectionLines.join('\n'));
-      const newSection = `${trimmedSection}\n\n${patch.body.trimEnd()}`;
-      const before = lines.slice(0, range.startLine).join('\n');
-      const after = lines.slice(range.endLine).join('\n');
-      const newContent = stripTrailingBlankLines(
-        [before, newSection, after].filter((s) => s.length > 0).join('\n'),
-      );
-      const next = recompose(frontmatter, newContent, sourcesBlock);
-      return { ok: true, nextBody: next, changed: next !== currentBody };
-    }
-    case 'delete': {
-      const sectionName = patch.section ?? null;
-      if (sectionName === null) {
-        return {
-          ok: false,
-          reason: 'unsupported_kind',
-          message: 'delete requires a section name; whole-body delete is forbidden',
-        };
-      }
-      const range = findSection(content, sectionName);
-      if (range === null) {
-        return {
-          ok: false,
-          reason: 'section_not_found',
-          message: `section not found: ${sectionName}`,
-        };
-      }
-      const lines = content.split('\n');
-      const before = lines.slice(0, range.startLine).join('\n');
-      const after = lines.slice(range.endLine).join('\n');
-      const newContent = stripTrailingBlankLines(
-        [before, after].filter((s) => s.length > 0).join('\n'),
-      );
-      const next = recompose(frontmatter, newContent, sourcesBlock);
-      return { ok: true, nextBody: next, changed: next !== currentBody };
-    }
-    case 'create-source-summary': {
+    case 'replace_body':
+      return patchReplaceBody(currentBody, patch, frontmatter, sourcesBlock);
+    case 'replace_section':
+      return patchReplaceSection(currentBody, patch, frontmatter, content, sourcesBlock);
+    case 'append':
+      return patchAppend(currentBody, patch, frontmatter, content, sourcesBlock);
+    case 'delete':
+      return patchDelete(currentBody, patch, frontmatter, content, sourcesBlock);
+    case 'create-source-summary':
       return {
         ok: false,
         reason: 'unsupported_kind',
         message: 'create-source-summary targets wiki/sources/, not a page body',
       };
-    }
     default: {
-      // Exhaustiveness guard: TS will complain here if a new patch kind is added.
       const exhaustive: never = patch;
       return {
         ok: false,
@@ -230,6 +141,128 @@ export function applyMarkdownPatch(input: ApplyMarkdownPatchInput): ApplyMarkdow
       };
     }
   }
+}
+
+function patchReplaceBody(
+  currentBody: string,
+  patch: Extract<ApplyMarkdownPatchInput['patch'], { kind: 'replace_body' }>,
+  frontmatter: string,
+  sourcesBlock: string,
+): ApplyMarkdownPatchResult {
+  const driftRatio =
+    Math.abs(currentBody.length - patch.body.length) / Math.max(currentBody.length, 1);
+  if (driftRatio > REPLACE_BODY_DRIFT_THRESHOLD) {
+    return {
+      ok: false,
+      reason: 'body_size_drift',
+      message: `replace_body delta ${(driftRatio * 100).toFixed(0)}% exceeds 50% guardrail`,
+    };
+  }
+  const cleaned = stripStrayShell(patch.body);
+  const next = recompose(frontmatter, cleaned, sourcesBlock);
+  return { ok: true, nextBody: next, changed: next !== currentBody };
+}
+
+function patchReplaceSection(
+  currentBody: string,
+  patch: Extract<ApplyMarkdownPatchInput['patch'], { kind: 'replace_section' }>,
+  frontmatter: string,
+  content: string,
+  sourcesBlock: string,
+): ApplyMarkdownPatchResult {
+  const range = findSection(content, patch.section);
+  if (range === null) {
+    return {
+      ok: false,
+      reason: 'section_not_found',
+      message: `section not found: ${patch.section}`,
+    };
+  }
+  const lines = content.split('\n');
+  const heading = `${'#'.repeat(range.level)} ${patch.section.trim()}`;
+  const replacement = patch.body.trimEnd();
+  const before = lines.slice(0, range.startLine);
+  const after = lines.slice(range.endLine);
+  const merged = [
+    ...before,
+    heading,
+    '',
+    replacement,
+    ...(after.length > 0 ? [''] : []),
+    ...after,
+  ].join('\n');
+  const newContent = stripTrailingBlankLines(merged);
+  const next = recompose(frontmatter, newContent, sourcesBlock);
+  return { ok: true, nextBody: next, changed: next !== currentBody };
+}
+
+function patchAppend(
+  currentBody: string,
+  patch: Extract<ApplyMarkdownPatchInput['patch'], { kind: 'append' }>,
+  frontmatter: string,
+  content: string,
+  sourcesBlock: string,
+): ApplyMarkdownPatchResult {
+  const sectionName = patch.section ?? null;
+  if (sectionName === null) {
+    const trimmed = stripTrailingBlankLines(content);
+    const sep = trimmed.length > 0 ? '\n\n' : '';
+    const newContent = `${trimmed}${sep}${patch.body.trimEnd()}`;
+    const next = recompose(frontmatter, newContent, sourcesBlock);
+    return { ok: true, nextBody: next, changed: next !== currentBody };
+  }
+  const range = findSection(content, sectionName);
+  if (range === null) {
+    return {
+      ok: false,
+      reason: 'section_not_found',
+      message: `section not found: ${sectionName}`,
+    };
+  }
+  const lines = content.split('\n');
+  const sectionLines = lines.slice(range.startLine, range.endLine);
+  const trimmedSection = stripTrailingBlankLines(sectionLines.join('\n'));
+  const newSection = `${trimmedSection}\n\n${patch.body.trimEnd()}`;
+  const before = lines.slice(0, range.startLine).join('\n');
+  const after = lines.slice(range.endLine).join('\n');
+  const newContent = stripTrailingBlankLines(
+    [before, newSection, after].filter((s) => s.length > 0).join('\n'),
+  );
+  const next = recompose(frontmatter, newContent, sourcesBlock);
+  return { ok: true, nextBody: next, changed: next !== currentBody };
+}
+
+function patchDelete(
+  currentBody: string,
+  patch: Extract<ApplyMarkdownPatchInput['patch'], { kind: 'delete' }>,
+  frontmatter: string,
+  content: string,
+  sourcesBlock: string,
+): ApplyMarkdownPatchResult {
+  const sectionName = patch.section ?? null;
+  if (sectionName === null) {
+    return {
+      ok: false,
+      reason: 'unsupported_kind',
+      message: 'delete requires a section name; whole-body delete is forbidden',
+    };
+  }
+  const range = findSection(content, sectionName);
+  if (range === null) {
+    return {
+      ok: false,
+      reason: 'section_not_found',
+      message: `section not found: ${sectionName}`,
+    };
+  }
+  const lines = content.split('\n');
+  const before = lines.slice(0, range.startLine).join('\n');
+  const after = lines.slice(range.endLine).join('\n');
+  const newContent = stripTrailingBlankLines(
+    [before, after].filter((s) => s.length > 0).join('\n'),
+  );
+  const next = recompose(frontmatter, newContent, sourcesBlock);
+  return { ok: true, nextBody: next, changed: next !== currentBody };
 }
 
 function recompose(frontmatter: string, content: string, sourcesBlock: string): string {

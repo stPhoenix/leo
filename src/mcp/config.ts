@@ -54,37 +54,51 @@ export function parseMcpConfig(raw: unknown): ParseResult {
   return { configs, errors };
 }
 
-function parseEntry(
-  raw: unknown,
-  idx: number,
-): { ok: true; data: McpServerConfig } | { ok: false; error: string } {
+type EntryResult = { ok: true; data: McpServerConfig } | { ok: false; error: string };
+
+interface EntryBase {
+  readonly obj: Record<string, unknown>;
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly transport: 'stdio' | 'http';
+}
+
+function parseEntryBase(raw: unknown, idx: number): EntryBase | { ok: false; error: string } {
   if (raw === null || typeof raw !== 'object') {
     return { ok: false, error: `entry ${idx} is not an object` };
   }
   const obj = raw as Record<string, unknown>;
-  const id = obj.id;
-  if (typeof id !== 'string' || id.length === 0) {
+  if (typeof obj.id !== 'string' || obj.id.length === 0) {
     return { ok: false, error: `entry ${idx} missing id` };
   }
-  const enabled = obj.enabled;
-  if (typeof enabled !== 'boolean') {
-    return { ok: false, error: `entry ${idx} (${id}) missing enabled boolean` };
+  if (typeof obj.enabled !== 'boolean') {
+    return { ok: false, error: `entry ${idx} (${obj.id}) missing enabled boolean` };
   }
   const rawTransport = obj.transport;
   if (rawTransport !== 'stdio' && rawTransport !== 'http' && rawTransport !== 'sse') {
-    return { ok: false, error: `entry ${idx} (${id}) invalid transport` };
+    return { ok: false, error: `entry ${idx} (${obj.id}) invalid transport` };
   }
-  const transport: 'stdio' | 'http' = rawTransport === 'sse' ? 'http' : rawTransport;
-  if (transport === 'stdio') {
-    const command = obj.command;
-    if (typeof command !== 'string' || command.length === 0) {
-      return { ok: false, error: `entry ${idx} (${id}) missing command` };
-    }
-    const args = Array.isArray(obj.args)
-      ? (obj.args.filter((x) => typeof x === 'string') as string[])
-      : undefined;
-    const env = isStringMap(obj.env) ? (obj.env as Record<string, string>) : undefined;
-    const data: McpStdioConfig = {
+  return {
+    obj,
+    id: obj.id,
+    enabled: obj.enabled,
+    transport: rawTransport === 'sse' ? 'http' : rawTransport,
+  };
+}
+
+function buildStdioEntry(base: EntryBase, idx: number): EntryResult {
+  const { obj, id, enabled, transport } = base;
+  const command = obj.command;
+  if (typeof command !== 'string' || command.length === 0) {
+    return { ok: false, error: `entry ${idx} (${id}) missing command` };
+  }
+  const args = Array.isArray(obj.args)
+    ? (obj.args.filter((x) => typeof x === 'string') as string[])
+    : undefined;
+  const env = isStringMap(obj.env) ? (obj.env as Record<string, string>) : undefined;
+  return {
+    ok: true,
+    data: {
       ...obj,
       id,
       enabled,
@@ -92,23 +106,34 @@ function parseEntry(
       command,
       ...(args !== undefined ? { args } : {}),
       ...(env !== undefined ? { env } : {}),
-    };
-    return { ok: true, data };
-  }
+    } as McpStdioConfig,
+  };
+}
+
+function buildHttpEntry(base: EntryBase, idx: number): EntryResult {
+  const { obj, id, enabled, transport } = base;
   const url = obj.url;
   if (typeof url !== 'string' || url.length === 0) {
     return { ok: false, error: `entry ${idx} (${id}) missing url` };
   }
   const headers = isStringMap(obj.headers) ? (obj.headers as Record<string, string>) : undefined;
-  const data: McpHttpConfig = {
-    ...obj,
-    id,
-    enabled,
-    transport,
-    url,
-    ...(headers !== undefined ? { headers } : {}),
+  return {
+    ok: true,
+    data: {
+      ...obj,
+      id,
+      enabled,
+      transport,
+      url,
+      ...(headers !== undefined ? { headers } : {}),
+    } as McpHttpConfig,
   };
-  return { ok: true, data };
+}
+
+function parseEntry(raw: unknown, idx: number): EntryResult {
+  const base = parseEntryBase(raw, idx);
+  if ('ok' in base) return base;
+  return base.transport === 'stdio' ? buildStdioEntry(base, idx) : buildHttpEntry(base, idx);
 }
 
 function isStringMap(v: unknown): boolean {

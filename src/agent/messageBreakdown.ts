@@ -24,49 +24,67 @@ export const EMPTY_BREAKDOWN: MessageBreakdown = {
 };
 
 export function breakdownMessages(messages: readonly TokenMessage[]): MessageBreakdown {
-  let toolCallTokens = 0;
-  let toolResultTokens = 0;
-  let attachmentTokens = 0;
-  let assistantTextTokens = 0;
-  let userTextTokens = 0;
+  const acc: BreakdownAcc = {
+    toolCallTokens: 0,
+    toolResultTokens: 0,
+    attachmentTokens: 0,
+    assistantTextTokens: 0,
+    userTextTokens: 0,
+  };
 
   for (const m of messages) {
     if (typeof m.content === 'string') {
-      const t = roughTokenCountEstimation(m.content);
-      if (m.role === 'assistant') assistantTextTokens += t;
-      else if (m.role === 'user') userTextTokens += t;
+      addTextTokens(acc, m.role, roughTokenCountEstimation(m.content));
       continue;
     }
     for (const block of m.content) {
-      const tally = tallyBlock(block);
-      switch (tally.bucket) {
-        case 'tool_call':
-          toolCallTokens += tally.tokens;
-          break;
-        case 'tool_result':
-          toolResultTokens += tally.tokens;
-          break;
-        case 'attachment':
-          attachmentTokens += tally.tokens;
-          break;
-        case 'text':
-          if (m.role === 'assistant') assistantTextTokens += tally.tokens;
-          else if (m.role === 'user') userTextTokens += tally.tokens;
-          break;
-      }
+      applyTally(acc, m.role, tallyBlock(block));
     }
   }
 
-  const totalTokens =
-    toolCallTokens + toolResultTokens + attachmentTokens + assistantTextTokens + userTextTokens;
   return {
-    toolCallTokens,
-    toolResultTokens,
-    attachmentTokens,
-    assistantTextTokens,
-    userTextTokens,
-    totalTokens,
+    ...acc,
+    totalTokens:
+      acc.toolCallTokens +
+      acc.toolResultTokens +
+      acc.attachmentTokens +
+      acc.assistantTextTokens +
+      acc.userTextTokens,
   };
+}
+
+interface BreakdownAcc {
+  toolCallTokens: number;
+  toolResultTokens: number;
+  attachmentTokens: number;
+  assistantTextTokens: number;
+  userTextTokens: number;
+}
+
+function addTextTokens(acc: BreakdownAcc, role: TokenMessage['role'], tokens: number): void {
+  if (role === 'assistant') acc.assistantTextTokens += tokens;
+  else if (role === 'user') acc.userTextTokens += tokens;
+}
+
+function applyTally(
+  acc: BreakdownAcc,
+  role: TokenMessage['role'],
+  tally: { bucket: Bucket; tokens: number },
+): void {
+  switch (tally.bucket) {
+    case 'tool_call':
+      acc.toolCallTokens += tally.tokens;
+      return;
+    case 'tool_result':
+      acc.toolResultTokens += tally.tokens;
+      return;
+    case 'attachment':
+      acc.attachmentTokens += tally.tokens;
+      return;
+    case 'text':
+      addTextTokens(acc, role, tally.tokens);
+      return;
+  }
 }
 
 type Bucket = 'tool_call' | 'tool_result' | 'attachment' | 'text';

@@ -81,6 +81,21 @@ export function createSearchVaultTool(
 const FILENAME_FALLBACK_LIMIT = 20;
 const FILENAME_FALLBACK_MAX_VISIT = 5000;
 
+function collectFilenameHits(
+  listing: { files: readonly string[]; folders: readonly string[] },
+  needle: string,
+  hits: SearchVaultHit[],
+  queue: string[],
+): void {
+  for (const f of listing.files) {
+    if (basename(f).toLowerCase().includes(needle)) {
+      hits.push({ path: f, line_start: 1, line_end: 1, score: 0 });
+      if (hits.length >= FILENAME_FALLBACK_LIMIT) return;
+    }
+  }
+  for (const d of listing.folders) queue.push(d);
+}
+
 export async function filenameMatch(
   vault: VaultAdapter,
   query: string,
@@ -91,9 +106,12 @@ export async function filenameMatch(
   const hits: SearchVaultHit[] = [];
   const queue: string[] = [''];
   let visited = 0;
-  while (queue.length > 0 && hits.length < FILENAME_FALLBACK_LIMIT) {
-    if (signal?.aborted) break;
-    if (visited >= FILENAME_FALLBACK_MAX_VISIT) break;
+  while (
+    queue.length > 0 &&
+    hits.length < FILENAME_FALLBACK_LIMIT &&
+    !signal?.aborted &&
+    visited < FILENAME_FALLBACK_MAX_VISIT
+  ) {
     const cur = queue.shift() as string;
     let listing;
     try {
@@ -102,16 +120,7 @@ export async function filenameMatch(
       continue;
     }
     visited += 1;
-    for (const f of listing.files) {
-      const base = basename(f).toLowerCase();
-      if (base.includes(needle)) {
-        hits.push({ path: f, line_start: 1, line_end: 1, score: 0 });
-        if (hits.length >= FILENAME_FALLBACK_LIMIT) break;
-      }
-    }
-    for (const d of listing.folders) {
-      queue.push(d);
-    }
+    collectFilenameHits(listing, needle, hits, queue);
   }
   return hits;
 }

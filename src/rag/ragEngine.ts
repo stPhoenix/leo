@@ -63,6 +63,43 @@ export class RAGEngine {
     this.boostWeights = opts.boostWeights ?? DEFAULT_BOOST_WEIGHTS;
   }
 
+  private async embedQuery(
+    text: string,
+    signal: AbortSignal | undefined,
+  ): Promise<readonly number[] | null> {
+    try {
+      const vectors = await this.embedder.embed([text], signal);
+      if (vectors.length === 0 || vectors[0] === undefined) return null;
+      return vectors[0];
+    } catch (err) {
+      if (signal?.aborted) throw signalReason(signal);
+      throw err;
+    }
+  }
+
+  private filterRows(allRows: readonly VectorRow[], opts: QueryOpts): readonly VectorRow[] {
+    const excluded = this.excludeMatcher();
+    const afterExclude = allRows.filter((r) => !excluded(r.path));
+    if (afterExclude.length !== allRows.length) {
+      this.logger?.debug('exclude.rag.filter', {
+        rowsIn: allRows.length,
+        rowsOut: afterExclude.length,
+      });
+    }
+    const normalisedTags = normalizeTags(opts.tags ?? []);
+    if (normalisedTags.length === 0) return afterExclude;
+    const tagPredicate = compileTagPredicate(normalisedTags);
+    const rows = afterExclude.filter((r) =>
+      tagPredicate({ frontmatter: r.frontmatter_tags, inline: r.inline_tags }),
+    );
+    this.logger?.debug('rag.query.tag-filter', {
+      requested: normalisedTags.length,
+      kept: rows.length,
+      dropped: afterExclude.length - rows.length,
+    });
+    return rows;
+  }
+
   async query(text: string, opts: QueryOpts = {}): Promise<readonly RAGHit[]> {
     const k = opts.k ?? DEFAULT_TOP_K;
     const signal = opts.signal;
@@ -74,17 +111,9 @@ export class RAGEngine {
     if (signal?.aborted) throw signalReason(signal);
 
     const embedStart = this.nowMs();
-    let queryVector: readonly number[];
-    try {
-      const vectors = await this.embedder.embed([text], signal);
-      if (vectors.length === 0 || vectors[0] === undefined) return [];
-      queryVector = vectors[0];
-    } catch (err) {
-      if (signal?.aborted) throw signalReason(signal);
-      throw err;
-    }
+    const queryVector = await this.embedQuery(text, signal);
+    if (queryVector === null || queryVector.length === 0) return [];
     this.logger?.debug('rag.query.embed.ms', { ms: Math.round(this.nowMs() - embedStart) });
-    if (queryVector.length === 0) return [];
 
     const header = await this.store.listHeader();
     if (header !== null && header.dim !== queryVector.length) {
@@ -103,28 +132,7 @@ export class RAGEngine {
       this.logger?.info('rag.query.result', { hits: 0, topScore: 0 });
       return [];
     }
-    const excluded = this.excludeMatcher();
-    const afterExclude = allRows.filter((r) => !excluded(r.path));
-    if (afterExclude.length !== allRows.length) {
-      this.logger?.debug('exclude.rag.filter', {
-        rowsIn: allRows.length,
-        rowsOut: afterExclude.length,
-      });
-    }
-    const requestedTags = opts.tags ?? [];
-    const normalisedTags = normalizeTags(requestedTags);
-    let rows: readonly VectorRow[] = afterExclude;
-    if (normalisedTags.length > 0) {
-      const tagPredicate = compileTagPredicate(normalisedTags);
-      rows = afterExclude.filter((r) =>
-        tagPredicate({ frontmatter: r.frontmatter_tags, inline: r.inline_tags }),
-      );
-      this.logger?.debug('rag.query.tag-filter', {
-        requested: normalisedTags.length,
-        kept: rows.length,
-        dropped: afterExclude.length - rows.length,
-      });
-    }
+    const rows = this.filterRows(allRows, opts);
     if (rows.length === 0) {
       this.logger?.info('rag.query.result', { hits: 0, topScore: 0 });
       return [];

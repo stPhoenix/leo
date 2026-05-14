@@ -99,46 +99,59 @@ export class SkillsStore {
     this.changed.emit();
   }
 
+  private async loadSkillFile(
+    dir: string,
+    segments: readonly string[],
+    seenPaths: Set<string>,
+  ): Promise<void> {
+    if (segments.length === 0) return;
+    const skillFilePath = `${dir}/${SKILL_FILE}`;
+    if (seenPaths.has(skillFilePath)) return;
+    if (!(await this.vault.exists(skillFilePath))) return;
+    seenPaths.add(skillFilePath);
+    await this.loadOne(skillFilePath, segments.join(NAME_SEPARATOR));
+  }
+
+  private async descendInto(
+    folder: string,
+    dir: string,
+    segments: readonly string[],
+    seenPaths: Set<string>,
+  ): Promise<void> {
+    const seg = stripPrefix(folder, `${dir}/`);
+    if (seg.length === 0) return;
+    if (seg.includes(NAME_SEPARATOR)) {
+      this.logger?.warn('skills.load.invalid-segment', { dir: folder, segment: seg });
+      return;
+    }
+    let childListing: { readonly files: readonly string[]; readonly folders: readonly string[] };
+    try {
+      childListing = await this.vault.list(folder);
+    } catch (err) {
+      this.logger?.warn('skills.load.list-failed', {
+        dir: folder,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    await this.walk(folder, [...segments, seg], childListing, seenPaths);
+  }
+
   private async walk(
     dir: string,
     segments: readonly string[],
     listing: { readonly files: readonly string[]; readonly folders: readonly string[] },
     seenPaths: Set<string>,
   ): Promise<void> {
-    if (segments.length > 0) {
-      const skillFilePath = `${dir}/${SKILL_FILE}`;
-      if (!seenPaths.has(skillFilePath) && (await this.vault.exists(skillFilePath))) {
-        seenPaths.add(skillFilePath);
-        await this.loadOne(skillFilePath, segments.join(NAME_SEPARATOR));
-      }
-    }
+    await this.loadSkillFile(dir, segments, seenPaths);
     if (segments.length >= MAX_NAME_SEGMENTS) {
       if (listing.folders.length > 0) {
-        this.logger?.warn('skills.load.depth-exceeded', {
-          dir,
-          maxSegments: MAX_NAME_SEGMENTS,
-        });
+        this.logger?.warn('skills.load.depth-exceeded', { dir, maxSegments: MAX_NAME_SEGMENTS });
       }
       return;
     }
     for (const folder of listing.folders) {
-      const seg = stripPrefix(folder, `${dir}/`);
-      if (seg.length === 0) continue;
-      if (seg.includes(NAME_SEPARATOR)) {
-        this.logger?.warn('skills.load.invalid-segment', { dir: folder, segment: seg });
-        continue;
-      }
-      let childListing: { readonly files: readonly string[]; readonly folders: readonly string[] };
-      try {
-        childListing = await this.vault.list(folder);
-      } catch (err) {
-        this.logger?.warn('skills.load.list-failed', {
-          dir: folder,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        continue;
-      }
-      await this.walk(folder, [...segments, seg], childListing, seenPaths);
+      await this.descendInto(folder, dir, segments, seenPaths);
     }
   }
 

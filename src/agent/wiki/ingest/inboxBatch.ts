@@ -46,80 +46,27 @@ export async function runInboxBatch(
   const parsed = parseInbox(initial);
   const open = parsed.rows.filter((r): r is InboxRow => r.status === 'open');
 
-  let buffer = initial;
+  const acc: { buffer: string; ticked: number; annotated: number; cancelled: boolean } = {
+    buffer: initial,
+    ticked: 0,
+    annotated: 0,
+    cancelled: false,
+  };
   const perItem: InboxBatchPerItemResult[] = [];
-  let ticked = 0;
-  let annotated = 0;
-  let cancelled = false;
 
   for (const row of open) {
     if (signal.aborted) {
-      cancelled = true;
+      acc.cancelled = true;
       break;
     }
-    const source = inferSource(row.ref, row.note ?? undefined);
-    if (source === null) {
-      buffer = annotateErrorOnRef(buffer, row.ref, 'invalid_ref', 'cannot infer source kind');
-      annotated += 1;
-      perItem.push({
-        ref: row.ref,
-        status: 'error',
-        errorCode: 'invalid_ref',
-        errorMessage: 'cannot infer source kind',
-      });
-      continue;
-    }
-    const start = deps.startRun({
-      threadId,
-      originalAsk: `Inbox drain: ${row.ref}`,
-      sources: [source],
-      ...(row.note !== null ? { note: row.note } : {}),
-      ...(providerOverride !== undefined ? { providerOverride } : {}),
-    });
-    if (!start.ok) {
-      perItem.push({
-        ref: row.ref,
-        status: 'busy',
-        errorCode: 'busy',
-        errorMessage: `mutex held by ${start.busy.activeOp} runId=${start.busy.activeRunId}`,
-      });
-      buffer = annotateErrorOnRef(buffer, row.ref, 'busy', 'wiki mutex held');
-      annotated += 1;
-      continue;
-    }
-    deps.onHandle?.(start.handle);
-    const onAbort = (): void => start.handle.abort();
-    signal.addEventListener('abort', onAbort, { once: true });
-    let terminal: IngestTerminalResult;
-    try {
-      terminal = await start.handle.terminal;
-    } finally {
-      signal.removeEventListener('abort', onAbort);
-    }
-    if (terminal.ok) {
-      buffer = tickRef(buffer, row.ref);
-      ticked += 1;
-      perItem.push({ ref: row.ref, status: 'ok', runId: start.handle.runId });
-    } else if ('cancelled' in terminal && terminal.cancelled === true) {
-      cancelled = true;
-      perItem.push({ ref: row.ref, status: 'cancelled', runId: start.handle.runId });
-      break;
-    } else if ('error' in terminal) {
-      buffer = annotateErrorOnRef(buffer, row.ref, terminal.error.code, terminal.error.message);
-      annotated += 1;
-      perItem.push({
-        ref: row.ref,
-        status: 'error',
-        errorCode: terminal.error.code,
-        errorMessage: terminal.error.message,
-        runId: start.handle.runId,
-      });
-    }
+    const handled = await processInboxRow(row, threadId, signal, deps, providerOverride, acc);
+    perItem.push(handled.result);
+    if (handled.stop) break;
   }
 
-  if (buffer !== initial) {
+  if (acc.buffer !== initial) {
     try {
-      await deps.vault.write(WIKI_INBOX_PATH, buffer);
+      await deps.vault.write(WIKI_INBOX_PATH, acc.buffer);
     } catch (err) {
       deps.logger?.warn('wiki.inbox.write-failed', {
         error: err instanceof Error ? err.message : String(err),
@@ -129,11 +76,109 @@ export async function runInboxBatch(
 
   return {
     drained: open.length,
-    ticked,
-    annotated,
+    ticked: acc.ticked,
+    annotated: acc.annotated,
     perItem,
-    cancelled: cancelled || signal.aborted,
+    cancelled: acc.cancelled || signal.aborted,
   };
+}
+
+interface InboxBatchAcc {
+  buffer: string;
+  ticked: number;
+  annotated: number;
+  cancelled: boolean;
+}
+
+async function processInboxRow(
+  row: InboxRow,
+  threadId: string,
+  signal: AbortSignal,
+  deps: InboxBatchDeps,
+  providerOverride: ProviderOverride | undefined,
+  acc: InboxBatchAcc,
+): Promise<{ result: InboxBatchPerItemResult; stop: boolean }> {
+  const source = inferSource(row.ref, row.note ?? undefined);
+  if (source === null) {
+    acc.buffer = annotateErrorOnRef(acc.buffer, row.ref, 'invalid_ref', 'cannot infer source kind');
+    acc.annotated += 1;
+    return {
+      result: {
+        ref: row.ref,
+        status: 'error',
+        errorCode: 'invalid_ref',
+        errorMessage: 'cannot infer source kind',
+      },
+      stop: false,
+    };
+  }
+  const start = deps.startRun({
+    threadId,
+    originalAsk: `Inbox drain: ${row.ref}`,
+    sources: [source],
+    ...(row.note !== null ? { note: row.note } : {}),
+    ...(providerOverride !== undefined ? { providerOverride } : {}),
+  });
+  if (!start.ok) {
+    acc.buffer = annotateErrorOnRef(acc.buffer, row.ref, 'busy', 'wiki mutex held');
+    acc.annotated += 1;
+    return {
+      result: {
+        ref: row.ref,
+        status: 'busy',
+        errorCode: 'busy',
+        errorMessage: `mutex held by ${start.busy.activeOp} runId=${start.busy.activeRunId}`,
+      },
+      stop: false,
+    };
+  }
+  deps.onHandle?.(start.handle);
+  const onAbort = (): void => start.handle.abort();
+  signal.addEventListener('abort', onAbort, { once: true });
+  let terminal: IngestTerminalResult;
+  try {
+    terminal = await start.handle.terminal;
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+  return classifyTerminal(row, start.handle.runId, terminal, acc);
+}
+
+function classifyTerminal(
+  row: InboxRow,
+  runId: string,
+  terminal: IngestTerminalResult,
+  acc: InboxBatchAcc,
+): { result: InboxBatchPerItemResult; stop: boolean } {
+  if (terminal.ok) {
+    acc.buffer = tickRef(acc.buffer, row.ref);
+    acc.ticked += 1;
+    return { result: { ref: row.ref, status: 'ok', runId }, stop: false };
+  }
+  if ('cancelled' in terminal && terminal.cancelled === true) {
+    acc.cancelled = true;
+    return { result: { ref: row.ref, status: 'cancelled', runId }, stop: true };
+  }
+  if ('error' in terminal) {
+    acc.buffer = annotateErrorOnRef(
+      acc.buffer,
+      row.ref,
+      terminal.error.code,
+      terminal.error.message,
+    );
+    acc.annotated += 1;
+    return {
+      result: {
+        ref: row.ref,
+        status: 'error',
+        errorCode: terminal.error.code,
+        errorMessage: terminal.error.message,
+        runId,
+      },
+      stop: false,
+    };
+  }
+  return { result: { ref: row.ref, status: 'ok', runId }, stop: false };
 }
 
 export function inferSource(ref: string, note?: string): IngestSource | null {

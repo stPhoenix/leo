@@ -130,40 +130,57 @@ export class ProviderManager {
     const max = this.opts.maxAttempts ?? DEFAULTS.maxAttempts;
     for (let attempt = 0; attempt < max; attempt++) {
       if (callerSignal.aborted) return;
-      const watchdog = this.setupIdleWatchdog(callerSignal);
-      this.opts.logger?.info('provider.request', { attempt: attempt + 1, model: req.model });
-      const iter = this.activeProvider.stream(req, watchdog.attemptSignal)[Symbol.asyncIterator]();
-      const startedRef = { value: false };
+      const outcome = yield* this.runOneAttempt(req, callerSignal, attempt, max);
+      if (outcome.kind === 'completed') return;
+      if (outcome.kind === 'cancelled') return;
+      if (outcome.kind === 'fatal') {
+        yield { type: 'error', error: outcome.error };
+        return;
+      }
       try {
-        const completed = yield* this.consumeAttemptStream(iter, watchdog, startedRef);
-        if (completed) {
-          this.connection.markReachable();
-          return;
-        }
-      } catch (err) {
-        const decision = this.handleAttemptError({
-          err,
-          callerSignal,
-          watchdog,
-          started: startedRef.value,
-          attempt,
-          max,
-        });
-        if (decision.kind === 'cancelled') return;
-        if (decision.kind === 'fatal') {
-          yield { type: 'error', error: decision.error };
-          return;
-        }
-        try {
-          await delay(decision.waitMs, callerSignal);
-        } catch {
-          return;
-        }
-      } finally {
-        watchdog.clearTimer();
-        if (iter.return !== undefined) {
-          void iter.return().catch(() => undefined);
-        }
+        await delay(outcome.waitMs, callerSignal);
+      } catch {
+        return;
+      }
+    }
+  }
+
+  private async *runOneAttempt(
+    req: ProviderChatRequest,
+    callerSignal: AbortSignal,
+    attempt: number,
+    max: number,
+  ): AsyncGenerator<
+    StreamEvent,
+    | { kind: 'completed' }
+    | { kind: 'cancelled' }
+    | { kind: 'fatal'; error: Error }
+    | { kind: 'retry'; waitMs: number }
+  > {
+    const watchdog = this.setupIdleWatchdog(callerSignal);
+    this.opts.logger?.info('provider.request', { attempt: attempt + 1, model: req.model });
+    const iter = this.activeProvider.stream(req, watchdog.attemptSignal)[Symbol.asyncIterator]();
+    const startedRef = { value: false };
+    try {
+      const completed = yield* this.consumeAttemptStream(iter, watchdog, startedRef);
+      if (completed) {
+        this.connection.markReachable();
+        return { kind: 'completed' };
+      }
+      return { kind: 'retry', waitMs: 0 };
+    } catch (err) {
+      return this.handleAttemptError({
+        err,
+        callerSignal,
+        watchdog,
+        started: startedRef.value,
+        attempt,
+        max,
+      });
+    } finally {
+      watchdog.clearTimer();
+      if (iter.return !== undefined) {
+        void iter.return().catch(() => undefined);
       }
     }
   }

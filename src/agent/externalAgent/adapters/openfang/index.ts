@@ -89,6 +89,7 @@ export class OpenfangAdapter extends ExternalAgentAdapter {
   }
 
   async *start(input: ExternalAgentInput): AsyncIterable<ExternalEvent> {
+    // NOSONAR S3776: cohesive A2A submit→poll→terminal FSM; closure state spans submit/poll/error-mapping phases.
     const logBuffer: ExternalEvent[] = [];
     const log: LogFn = (level, msg, fields) => {
       logBuffer.push({ type: 'log', level, msg: formatLogMsg(msg, redactFields(fields)) });

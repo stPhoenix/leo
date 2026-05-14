@@ -318,33 +318,40 @@ function mergeFindings(
   const byId = new Map<string, PiiFinding>();
   for (const raw of raws) {
     if (raw.text.length === 0) continue;
-    let cursor = 0;
-    let found = false;
-    while (cursor <= originalText.length - raw.text.length) {
-      const idx = originalText.indexOf(raw.text, cursor);
-      if (idx < 0) break;
-      found = true;
-      const start = idx;
-      const end = idx + raw.text.length;
-      const id = stableId(raw.kind, start, end);
-      if (!byId.has(id)) {
-        byId.set(id, {
-          id,
-          kind: raw.kind,
-          start,
-          end,
-          sample: originalText.slice(start, end),
-          suggestion: raw.suggestion,
-          ...(raw.note !== undefined && raw.kind === 'other' ? { note: raw.note } : {}),
-        });
-      }
-      cursor = end;
-    }
-    if (!found) {
-      logger?.debug(EXTERNAL_AGENT_LOG.piiCheck.hallucinated, { kind: raw.kind });
-    }
+    const matched = collectFindingMatches(originalText, raw, byId);
+    if (!matched) logger?.debug(EXTERNAL_AGENT_LOG.piiCheck.hallucinated, { kind: raw.kind });
   }
   return [...byId.values()].sort((a, b) => a.start - b.start);
+}
+
+function collectFindingMatches(
+  originalText: string,
+  raw: RawFinding,
+  byId: Map<string, PiiFinding>,
+): boolean {
+  let cursor = 0;
+  let found = false;
+  while (cursor <= originalText.length - raw.text.length) {
+    const idx = originalText.indexOf(raw.text, cursor);
+    if (idx < 0) break;
+    found = true;
+    const start = idx;
+    const end = idx + raw.text.length;
+    const id = stableId(raw.kind, start, end);
+    if (!byId.has(id)) {
+      byId.set(id, {
+        id,
+        kind: raw.kind,
+        start,
+        end,
+        sample: originalText.slice(start, end),
+        suggestion: raw.suggestion,
+        ...(raw.note !== undefined && raw.kind === 'other' ? { note: raw.note } : {}),
+      });
+    }
+    cursor = end;
+  }
+  return found;
 }
 
 export function chunkText(text: string, budget: number, overlap: number): readonly Chunk[] {

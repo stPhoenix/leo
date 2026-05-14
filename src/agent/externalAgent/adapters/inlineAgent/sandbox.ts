@@ -74,44 +74,47 @@ export class Sandbox {
     if (this._initialized) return { ok: true };
     try {
       await fs.mkdir(this._root, { recursive: false, mode: 0o700 });
+      this._initialized = true;
+      return { ok: true };
     } catch (err) {
-      const code = errorCode(err);
-      if (code === 'EEXIST') {
-        return { ok: false, error: 'sandbox_collision', cause: 'directory exists' };
-      }
-      if (code === 'ENOENT') {
-        try {
-          await fs.mkdir(join(this.tempDir(), ROOT_DIR_NAME), {
-            recursive: true,
-            mode: 0o700,
-          });
-          await fs.mkdir(this._root, { recursive: false, mode: 0o700 });
-        } catch (err2) {
-          this.logger.warn('externalAgent.adapter.inlineAgent.sandbox.init-failed', {
-            runId: this.runId,
-            error: err2 instanceof Error ? err2.message : String(err2),
-          });
-          return {
-            ok: false,
-            error: 'sandbox_init_failed',
-            cause: err2 instanceof Error ? err2.message : String(err2),
-          };
-        }
-        this._initialized = true;
-        return { ok: true };
-      }
+      return this.handleInitError(err);
+    }
+  }
+
+  private async handleInitError(err: unknown): Promise<SandboxInitResult> {
+    const code = errorCode(err);
+    if (code === 'EEXIST') {
+      return { ok: false, error: 'sandbox_collision', cause: 'directory exists' };
+    }
+    if (code === 'ENOENT') return this.recoverMissingParent();
+    this.logger.warn('externalAgent.adapter.inlineAgent.sandbox.init-failed', {
+      runId: this.runId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return {
+      ok: false,
+      error: 'sandbox_init_failed',
+      cause: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  private async recoverMissingParent(): Promise<SandboxInitResult> {
+    try {
+      await fs.mkdir(join(this.tempDir(), ROOT_DIR_NAME), { recursive: true, mode: 0o700 });
+      await fs.mkdir(this._root, { recursive: false, mode: 0o700 });
+      this._initialized = true;
+      return { ok: true };
+    } catch (err2) {
       this.logger.warn('externalAgent.adapter.inlineAgent.sandbox.init-failed', {
         runId: this.runId,
-        error: err instanceof Error ? err.message : String(err),
+        error: err2 instanceof Error ? err2.message : String(err2),
       });
       return {
         ok: false,
         error: 'sandbox_init_failed',
-        cause: err instanceof Error ? err.message : String(err),
+        cause: err2 instanceof Error ? err2.message : String(err2),
       };
     }
-    this._initialized = true;
-    return { ok: true };
   }
 
   resolve(relPath: string): SandboxResolveResult {

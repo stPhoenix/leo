@@ -61,6 +61,82 @@ const MENTION_PICKER_LIMIT = 8;
 
 const MAX_TEXTAREA_HEIGHT_PX = 280;
 
+function useSlashPicker(
+  draft: string,
+  slashCommands: readonly SlashCommandInfo[] | undefined,
+): readonly SlashPickerItem[] {
+  return useMemo<readonly SlashPickerItem[]>(() => {
+    if (slashCommands === undefined || slashCommands.length === 0) return [];
+    const match = SLASH_PICKER_REGEX.exec(draft);
+    if (match === null) return [];
+    const query = (match[1] ?? '').toLowerCase();
+    const ranked = fuzzyFilter(query, slashCommands, (c) => c.name);
+    return ranked.map((r) => ({
+      name: r.item.name,
+      description: r.item.description,
+      matches: r.matches,
+    }));
+  }, [draft, slashCommands]);
+}
+
+function useMentionMatch(
+  draft: string,
+  caret: number,
+  vaultFiles: readonly VaultFileEntry[] | undefined,
+  slashOpen: boolean,
+): { query: string; tokenStart: number } | null {
+  return useMemo(() => {
+    if (vaultFiles === undefined || vaultFiles.length === 0) return null;
+    if (slashOpen) return null;
+    const head = draft.slice(0, caret);
+    const m = MENTION_PICKER_REGEX.exec(head);
+    if (m === null) return null;
+    return {
+      query: (m[1] ?? '').toLowerCase(),
+      tokenStart: m.index + (m[0].startsWith('@') ? 0 : 1),
+    };
+  }, [draft, caret, vaultFiles, slashOpen]);
+}
+
+function splitMatchIndicesForMention(
+  matches: readonly number[],
+  slashAt: number,
+): { folderMatches: number[]; nameMatches: number[] } {
+  const folderMatches: number[] = [];
+  const nameMatches: number[] = [];
+  if (slashAt < 0) {
+    for (const i of matches) nameMatches.push(i);
+    return { folderMatches, nameMatches };
+  }
+  for (const i of matches) {
+    if (i < slashAt) folderMatches.push(i);
+    else if (i > slashAt) nameMatches.push(i - slashAt - 1);
+  }
+  return { folderMatches, nameMatches };
+}
+
+function useMentionItems(
+  mentionMatch: { query: string; tokenStart: number } | null,
+  vaultFiles: readonly VaultFileEntry[] | undefined,
+): readonly MentionPickerItem[] {
+  return useMemo<readonly MentionPickerItem[]>(() => {
+    if (mentionMatch === null || vaultFiles === undefined) return [];
+    const ranked = fuzzyFilter(mentionMatch.query, vaultFiles, (f) => f.path);
+    const top = ranked.slice(0, MENTION_PICKER_LIMIT);
+    return top.map((r) => {
+      const slash = r.item.path.lastIndexOf('/');
+      const { folderMatches, nameMatches } = splitMatchIndicesForMention(r.matches, slash);
+      return {
+        path: r.item.path,
+        name: r.item.name,
+        kind: r.item.kind,
+        nameMatches,
+        folderMatches,
+      };
+    });
+  }, [mentionMatch, vaultFiles]);
+}
+
 export function ComposerInput(props: ComposerInputProps): JSX.Element {
   const [draft, setDraft] = useState<string>('');
   const [reduceMotion, setReduceMotion] = useState<boolean>(false);
@@ -77,61 +153,12 @@ export function ComposerInput(props: ComposerInputProps): JSX.Element {
   const draftNonEmpty = draft.trim().length > 0;
   const sendEnabled = draftNonEmpty;
 
-  const slashCommands = props.slashCommands;
-  const slashItems = useMemo<readonly SlashPickerItem[]>(() => {
-    if (slashCommands === undefined || slashCommands.length === 0) return [];
-    const match = SLASH_PICKER_REGEX.exec(draft);
-    if (match === null) return [];
-    const query = (match[1] ?? '').toLowerCase();
-    const ranked = fuzzyFilter(query, slashCommands, (c) => c.name);
-    return ranked.map((r) => ({
-      name: r.item.name,
-      description: r.item.description,
-      matches: r.matches,
-    }));
-  }, [draft, slashCommands]);
-
+  const slashItems = useSlashPicker(draft, props.slashCommands);
   const slashOpen = slashItems.length > 0;
 
   const vaultFiles = props.vaultFiles;
-  const mentionMatch = useMemo(() => {
-    if (vaultFiles === undefined || vaultFiles.length === 0) return null;
-    if (slashOpen) return null;
-    const head = draft.slice(0, caret);
-    const m = MENTION_PICKER_REGEX.exec(head);
-    if (m === null) return null;
-    return {
-      query: (m[1] ?? '').toLowerCase(),
-      tokenStart: m.index + (m[0].startsWith('@') ? 0 : 1),
-    };
-  }, [draft, caret, vaultFiles, slashOpen]);
-
-  const mentionItems = useMemo<readonly MentionPickerItem[]>(() => {
-    if (mentionMatch === null || vaultFiles === undefined) return [];
-    const ranked = fuzzyFilter(mentionMatch.query, vaultFiles, (f) => f.path);
-    const top = ranked.slice(0, MENTION_PICKER_LIMIT);
-    return top.map((r) => {
-      const slash = r.item.path.lastIndexOf('/');
-      const folderMatches: number[] = [];
-      const nameMatches: number[] = [];
-      if (slash < 0) {
-        for (const i of r.matches) nameMatches.push(i);
-      } else {
-        for (const i of r.matches) {
-          if (i < slash) folderMatches.push(i);
-          else if (i > slash) nameMatches.push(i - slash - 1);
-        }
-      }
-      return {
-        path: r.item.path,
-        name: r.item.name,
-        kind: r.item.kind,
-        nameMatches,
-        folderMatches,
-      };
-    });
-  }, [mentionMatch, vaultFiles]);
-
+  const mentionMatch = useMentionMatch(draft, caret, vaultFiles, slashOpen);
+  const mentionItems = useMentionItems(mentionMatch, vaultFiles);
   const mentionOpen = mentionItems.length > 0;
 
   useEffect(() => {

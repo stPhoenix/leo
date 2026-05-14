@@ -125,35 +125,18 @@ function buildCompactionSummary(
   lines.push(COMPACT_BOUNDARY_MARKER);
   lines.push(`Earlier ${droppedCount} messages were compacted to free context.`);
 
-  if (state.publishedArtifacts.length > 0) {
-    lines.push('');
-    lines.push('Already published artifacts (do NOT publish again):');
-    for (const a of state.publishedArtifacts) {
-      const summary = a.summary !== undefined ? ` — ${a.summary}` : '';
-      lines.push(`- ${a.relPath}${summary}`);
-    }
-  }
-
-  if (state.todos.length > 0) {
-    lines.push('');
-    lines.push('Current TODO list (use as authoritative progress state):');
-    for (const t of state.todos) {
-      lines.push(`- [${t.status}] ${t.id}: ${t.content}`);
-    }
-  }
-
-  if (fetchedUrls.length > 0) {
-    lines.push('');
-    lines.push('URLs already fetched (do NOT refetch — bodies are gone but the work is done):');
-    for (const u of fetchedUrls) lines.push(`- ${u}`);
-  }
-
-  if (writtenPaths.length > 0) {
-    lines.push('');
-    lines.push('Sandbox files already written (use list_dir / read_file / glob to inspect):');
-    for (const p of writtenPaths) lines.push(`- ${p}`);
-  }
-
+  appendArtifactsSection(lines, state.publishedArtifacts);
+  appendTodosSection(lines, state.todos);
+  appendListSection(
+    lines,
+    fetchedUrls,
+    'URLs already fetched (do NOT refetch — bodies are gone but the work is done):',
+  );
+  appendListSection(
+    lines,
+    writtenPaths,
+    'Sandbox files already written (use list_dir / read_file / glob to inspect):',
+  );
   if (state.notes.length > 0) {
     lines.push('');
     lines.push(`Research notes captured: ${state.notes.length}.`);
@@ -165,4 +148,31 @@ function buildCompactionSummary(
   );
 
   return lines.join('\n');
+}
+
+function appendArtifactsSection(
+  lines: string[],
+  artifacts: InlineAgentRunState['publishedArtifacts'],
+): void {
+  if (artifacts.length === 0) return;
+  lines.push('');
+  lines.push('Already published artifacts (do NOT publish again):');
+  for (const a of artifacts) {
+    const summary = a.summary !== undefined ? ` — ${a.summary}` : '';
+    lines.push(`- ${a.relPath}${summary}`);
+  }
+}
+
+function appendTodosSection(lines: string[], todos: InlineAgentRunState['todos']): void {
+  if (todos.length === 0) return;
+  lines.push('');
+  lines.push('Current TODO list (use as authoritative progress state):');
+  for (const t of todos) lines.push(`- [${t.status}] ${t.id}: ${t.content}`);
+}
+
+function appendListSection(lines: string[], items: readonly string[], header: string): void {
+  if (items.length === 0) return;
+  lines.push('');
+  lines.push(header);
+  for (const item of items) lines.push(`- ${item}`);
 }

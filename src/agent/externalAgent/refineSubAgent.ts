@@ -153,37 +153,59 @@ function applyRefineEvent(
   toolBufs: Map<number, { id: string; name: string; args: string }>,
   toolCalls: Array<{ name: string; argsJson: string }>,
 ): 'text' | 'continue' | 'break' | 'throw' {
-  if (event.type === 'token') return 'text';
-  if (event.type === 'tool_call') {
-    toolCalls.push({ name: event.call.name, argsJson: event.call.argsJson });
-    return 'continue';
+  switch (event.type) {
+    case 'token':
+      return 'text';
+    case 'tool_call':
+      toolCalls.push({ name: event.call.name, argsJson: event.call.argsJson });
+      return 'continue';
+    case 'block_start':
+      handleBlockStart(event, toolBufs);
+      return 'continue';
+    case 'block_delta':
+      return handleBlockDelta(event, toolBufs);
+    case 'block_stop':
+      handleBlockStop(event, toolBufs, toolCalls);
+      return 'continue';
+    case 'error':
+      return 'throw';
+    case 'done':
+      return 'break';
+    default:
+      return 'continue';
   }
-  if (event.type === 'block_start') {
-    if (event.block.type === 'tool_use') {
-      const block = event.block as { id: string; name: string };
-      toolBufs.set(event.index, { id: block.id, name: block.name, args: '' });
-    }
-    return 'continue';
-  }
-  if (event.type === 'block_delta') {
-    if (event.delta.type === 'text_delta') return 'text';
-    if (event.delta.type === 'input_json_delta') {
-      const buf = toolBufs.get(event.index);
-      if (buf !== undefined) buf.args += (event.delta as { partial_json: string }).partial_json;
-    }
-    return 'continue';
-  }
-  if (event.type === 'block_stop') {
+}
+
+function handleBlockStart(
+  event: Extract<RefineStreamEvent, { type: 'block_start' }>,
+  toolBufs: Map<number, { id: string; name: string; args: string }>,
+): void {
+  if (event.block.type !== 'tool_use') return;
+  const block = event.block as { id: string; name: string };
+  toolBufs.set(event.index, { id: block.id, name: block.name, args: '' });
+}
+
+function handleBlockDelta(
+  event: Extract<RefineStreamEvent, { type: 'block_delta' }>,
+  toolBufs: Map<number, { id: string; name: string; args: string }>,
+): 'text' | 'continue' {
+  if (event.delta.type === 'text_delta') return 'text';
+  if (event.delta.type === 'input_json_delta') {
     const buf = toolBufs.get(event.index);
-    if (buf !== undefined) {
-      toolCalls.push({ name: buf.name, argsJson: buf.args.length === 0 ? '{}' : buf.args });
-      toolBufs.delete(event.index);
-    }
-    return 'continue';
+    if (buf !== undefined) buf.args += (event.delta as { partial_json: string }).partial_json;
   }
-  if (event.type === 'error') return 'throw';
-  if (event.type === 'done') return 'break';
   return 'continue';
+}
+
+function handleBlockStop(
+  event: Extract<RefineStreamEvent, { type: 'block_stop' }>,
+  toolBufs: Map<number, { id: string; name: string; args: string }>,
+  toolCalls: Array<{ name: string; argsJson: string }>,
+): void {
+  const buf = toolBufs.get(event.index);
+  if (buf === undefined) return;
+  toolCalls.push({ name: buf.name, argsJson: buf.args.length === 0 ? '{}' : buf.args });
+  toolBufs.delete(event.index);
 }
 
 function assertNoForeignToolCall(toolCalls: ReadonlyArray<{ name: string }>): void {

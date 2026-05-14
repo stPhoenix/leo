@@ -58,6 +58,17 @@ function isGroupable(
   return statusOf(input.runState, block.id) === 'success';
 }
 
+function isSameToolUseInRun(
+  block: ContentBlock,
+  first: ToolUseBlock,
+  input: DetectGroupsInput,
+): block is ToolUseBlock {
+  if (block.type !== 'tool_use') return false;
+  if (block.name !== first.name) return false;
+  if (!input.isReadOnly(block.name)) return false;
+  return statusOf(input.runState, block.id) === 'success';
+}
+
 // Walk forward collecting same-name successful read-only tool_use blocks plus
 // their immediately-following matching tool_result block (when present).
 function collectGroupRun(
@@ -70,19 +81,17 @@ function collectGroupRun(
   let j = start;
   while (j < input.blocks.length) {
     const next = input.blocks[j]!;
-    if (next.type !== 'tool_use') break;
-    if (next.name !== first.name) break;
-    if (!input.isReadOnly(next.name)) break;
-    if (statusOf(input.runState, next.id) !== 'success') break;
+    if (!isSameToolUseInRun(next, first, input)) break;
     const toolUseIndex = j;
     indices.push(toolUseIndex);
     j += 1;
-    let result: ToolResultBlock | undefined;
-    let resultIndex: number | undefined;
     const maybeResult = input.blocks[j];
-    if (maybeResult?.type === 'tool_result' && maybeResult.tool_use_id === next.id) {
-      result = maybeResult;
-      resultIndex = j;
+    const result =
+      maybeResult?.type === 'tool_result' && maybeResult.tool_use_id === next.id
+        ? maybeResult
+        : undefined;
+    const resultIndex = result !== undefined ? j : undefined;
+    if (result !== undefined) {
       indices.push(j);
       j += 1;
     }

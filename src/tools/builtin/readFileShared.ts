@@ -89,6 +89,36 @@ export function stripLineNumberPrefix(line: string): string {
 const FIND_SIMILAR_MAX_VISIT = 5000;
 const FIND_SIMILAR_MAX_DISTANCE = 3;
 
+interface PathListing {
+  readonly files: readonly string[];
+  readonly folders: readonly string[];
+}
+
+async function safeList(vault: VaultAdapter, folder: string): Promise<PathListing | undefined> {
+  try {
+    return await vault.list(folder);
+  } catch {
+    return undefined;
+  }
+}
+
+function collectFolderMatches(
+  listing: PathListing,
+  target: string,
+  candidates: { path: string; distance: number }[],
+  queue: string[],
+): void {
+  for (const f of listing.files) {
+    const base = basename(f).toLowerCase();
+    const distance = scoreDistance(base, target);
+    if (distance >= 0) candidates.push({ path: f, distance });
+  }
+  for (const d of listing.folders) {
+    if (basename(d).startsWith('.')) continue;
+    queue.push(d);
+  }
+}
+
 export async function findSimilarPaths(
   vault: VaultAdapter,
   missingPath: string,
@@ -100,26 +130,12 @@ export async function findSimilarPaths(
   const candidates: { path: string; distance: number }[] = [];
   const queue: string[] = [''];
   let visited = 0;
-  while (queue.length > 0) {
-    if (signal?.aborted) break;
-    if (visited >= FIND_SIMILAR_MAX_VISIT) break;
+  while (queue.length > 0 && !signal?.aborted && visited < FIND_SIMILAR_MAX_VISIT) {
     const cur = queue.shift() as string;
-    let listing;
-    try {
-      listing = await vault.list(cur);
-    } catch {
-      continue;
-    }
+    const listing = await safeList(vault, cur);
+    if (listing === undefined) continue;
     visited += 1;
-    for (const f of listing.files) {
-      const base = basename(f).toLowerCase();
-      const distance = scoreDistance(base, target);
-      if (distance >= 0) candidates.push({ path: f, distance });
-    }
-    for (const d of listing.folders) {
-      if (basename(d).startsWith('.')) continue;
-      queue.push(d);
-    }
+    collectFolderMatches(listing, target, candidates, queue);
   }
   candidates.sort((a, b) => a.distance - b.distance);
   return candidates.slice(0, Math.max(1, max)).map((c) => c.path);

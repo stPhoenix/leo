@@ -160,6 +160,42 @@ function handleNotifyAction(action: McpUiNotifyAction, deps: McpUiActionDeps): M
   return { ok: true };
 }
 
+function parsePromptAction(
+  payload: Record<string, unknown>,
+  messageId: string | undefined,
+): McpUiAction | null {
+  if (typeof payload.prompt !== 'string') return null;
+  return {
+    type: 'prompt',
+    payload: { prompt: payload.prompt },
+    ...(messageId !== undefined ? { messageId } : {}),
+  };
+}
+
+function parseLinkAction(
+  payload: Record<string, unknown>,
+  messageId: string | undefined,
+): McpUiAction | null {
+  if (typeof payload.url !== 'string') return null;
+  return {
+    type: 'link',
+    payload: { url: payload.url },
+    ...(messageId !== undefined ? { messageId } : {}),
+  };
+}
+
+function parseNotifyAction(
+  payload: Record<string, unknown>,
+  messageId: string | undefined,
+): McpUiAction | null {
+  if (typeof payload.message !== 'string') return null;
+  return {
+    type: 'notify',
+    payload: { message: payload.message },
+    ...(messageId !== undefined ? { messageId } : {}),
+  };
+}
+
 export function parseMcpUiAction(raw: unknown): McpUiAction | null {
   if (raw === null || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
@@ -167,42 +203,31 @@ export function parseMcpUiAction(raw: unknown): McpUiAction | null {
   const payload = (obj.payload ?? {}) as Record<string, unknown>;
   const messageId = typeof obj.messageId === 'string' ? obj.messageId : undefined;
   switch (obj.type) {
-    case 'tool': {
-      if (typeof payload.toolName !== 'string') return null;
-      const params =
-        payload.params !== undefined &&
-        typeof payload.params === 'object' &&
-        payload.params !== null
-          ? (payload.params as Record<string, unknown>)
-          : undefined;
-      return {
-        type: 'tool',
-        payload: { toolName: payload.toolName, ...(params !== undefined ? { params } : {}) },
-        ...(messageId !== undefined ? { messageId } : {}),
-      };
-    }
+    case 'tool':
+      return parseToolAction(payload, messageId);
     case 'prompt':
-      if (typeof payload.prompt !== 'string') return null;
-      return {
-        type: 'prompt',
-        payload: { prompt: payload.prompt },
-        ...(messageId !== undefined ? { messageId } : {}),
-      };
+      return parsePromptAction(payload, messageId);
     case 'link':
-      if (typeof payload.url !== 'string') return null;
-      return {
-        type: 'link',
-        payload: { url: payload.url },
-        ...(messageId !== undefined ? { messageId } : {}),
-      };
+      return parseLinkAction(payload, messageId);
     case 'notify':
-      if (typeof payload.message !== 'string') return null;
-      return {
-        type: 'notify',
-        payload: { message: payload.message },
-        ...(messageId !== undefined ? { messageId } : {}),
-      };
+      return parseNotifyAction(payload, messageId);
     default:
       return null;
   }
+}
+
+function parseToolAction(
+  payload: Record<string, unknown>,
+  messageId: string | undefined,
+): McpUiAction | null {
+  if (typeof payload.toolName !== 'string') return null;
+  const params =
+    payload.params !== undefined && typeof payload.params === 'object' && payload.params !== null
+      ? (payload.params as Record<string, unknown>)
+      : undefined;
+  return {
+    type: 'tool',
+    payload: { toolName: payload.toolName, ...(params !== undefined ? { params } : {}) },
+    ...(messageId !== undefined ? { messageId } : {}),
+  };
 }

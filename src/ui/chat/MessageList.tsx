@@ -352,6 +352,36 @@ interface TokenUsageFooterProps {
   readonly cacheRead?: number;
 }
 
+function CacheBreakdown({
+  cacheRead,
+  cacheCreation,
+}: {
+  readonly cacheRead?: number;
+  readonly cacheCreation?: number;
+}): JSX.Element | null {
+  const readActive = cacheRead !== undefined && cacheRead > 0;
+  const writeActive = cacheCreation !== undefined && cacheCreation > 0;
+  if (!readActive && !writeActive) return null;
+  return (
+    <span className="leo-usage-cache" data-slot="usage-cache">
+      {' '}
+      ({readActive ? <span data-slot="usage-cache-read">cache hit {cacheRead}</span> : null}
+      {readActive && writeActive ? ', ' : ''}
+      {writeActive ? <span data-slot="usage-cache-write">cache write {cacheCreation}</span> : null})
+    </span>
+  );
+}
+
+function ReasoningBreakdown({ reasoning }: { readonly reasoning?: number }): JSX.Element | null {
+  if (reasoning === undefined || reasoning <= 0) return null;
+  return (
+    <span className="leo-usage-reasoning" data-slot="usage-reasoning">
+      {' '}
+      (thinking {reasoning})
+    </span>
+  );
+}
+
 function TokenUsageFooter(props: TokenUsageFooterProps): JSX.Element {
   const totalEstimated = props.estimatedInput || props.estimatedOutput;
   const prefix = (est: boolean): string => (est ? '~' : '');
@@ -360,36 +390,17 @@ function TokenUsageFooter(props: TokenUsageFooterProps): JSX.Element {
       <span data-slot="usage-input" data-estimated={props.estimatedInput ? 'true' : 'false'}>
         input {prefix(props.estimatedInput)}
         {props.input}
-        {(props.cacheRead !== undefined && props.cacheRead > 0) ||
-        (props.cacheCreation !== undefined && props.cacheCreation > 0) ? (
-          <span className="leo-usage-cache" data-slot="usage-cache">
-            {' '}
-            (
-            {props.cacheRead !== undefined && props.cacheRead > 0 ? (
-              <span data-slot="usage-cache-read">cache hit {props.cacheRead}</span>
-            ) : null}
-            {props.cacheRead !== undefined &&
-            props.cacheRead > 0 &&
-            props.cacheCreation !== undefined &&
-            props.cacheCreation > 0
-              ? ', '
-              : ''}
-            {props.cacheCreation !== undefined && props.cacheCreation > 0 ? (
-              <span data-slot="usage-cache-write">cache write {props.cacheCreation}</span>
-            ) : null}
-            )
-          </span>
-        ) : null}
+        <CacheBreakdown
+          {...(props.cacheRead !== undefined ? { cacheRead: props.cacheRead } : {})}
+          {...(props.cacheCreation !== undefined ? { cacheCreation: props.cacheCreation } : {})}
+        />
       </span>
       <span data-slot="usage-output" data-estimated={props.estimatedOutput ? 'true' : 'false'}>
         output {prefix(props.estimatedOutput)}
         {props.output}
-        {props.reasoning !== undefined && props.reasoning > 0 ? (
-          <span className="leo-usage-reasoning" data-slot="usage-reasoning">
-            {' '}
-            (thinking {props.reasoning})
-          </span>
-        ) : null}
+        <ReasoningBreakdown
+          {...(props.reasoning !== undefined ? { reasoning: props.reasoning } : {})}
+        />
       </span>
       <span data-slot="usage-total" data-estimated={totalEstimated ? 'true' : 'false'}>
         total {prefix(totalEstimated)}

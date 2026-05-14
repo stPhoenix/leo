@@ -56,6 +56,7 @@ function isAbortError(err: unknown): boolean {
 }
 
 export async function pollUntilTerminal(deps: PollDeps, opts: PollOpts): Promise<PollResult> {
+  // NOSONAR S3776: cohesive poll FSM (abort/timeout/transient-retry/terminal); shared mutable state across iterations.
   const budget = opts.transientRetryBudget ?? 3;
   const baseMs = opts.transientRetryBaseMs ?? 1_000;
   const startedAt = deps.now();

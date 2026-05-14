@@ -26,6 +26,33 @@ interface LegacyPayload {
   readonly examples?: readonly LegacyExamplePair[];
 }
 
+async function migrateOneLegacyFile(opts: MigrationOptions, rawPath: string): Promise<boolean> {
+  const fileName = rawPath.split('/').pop() ?? rawPath;
+  if (fileName === 'SKILL.md') return false;
+  const fullPath = rawPath.startsWith(`${opts.dir}/`) ? rawPath : `${opts.dir}/${fileName}`;
+  try {
+    const content = await opts.vault.read(fullPath);
+    const payload = decodeLegacy(content, fileName);
+    if (payload === null) return false;
+    const folder = `${opts.dir}/${payload.id}`;
+    const target = `${folder}/SKILL.md`;
+    if (await opts.vault.exists(target)) {
+      await opts.vault.remove(fullPath);
+      return false;
+    }
+    await opts.vault.mkdir(folder);
+    await opts.vault.write(target, renderSkillMarkdown(payload));
+    await opts.vault.remove(fullPath);
+    return true;
+  } catch (err) {
+    opts.logger?.warn('skills.migrate.file-failed', {
+      path: fullPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
 export async function migrateLegacySkills(opts: MigrationOptions): Promise<void> {
   let listing: { readonly files: readonly string[]; readonly folders: readonly string[] };
   try {
@@ -40,29 +67,7 @@ export async function migrateLegacySkills(opts: MigrationOptions): Promise<void>
   if (flatFiles.length === 0) return;
   let migrated = 0;
   for (const rawPath of flatFiles) {
-    const fileName = rawPath.split('/').pop() ?? rawPath;
-    if (fileName === 'SKILL.md') continue;
-    const fullPath = rawPath.startsWith(`${opts.dir}/`) ? rawPath : `${opts.dir}/${fileName}`;
-    try {
-      const content = await opts.vault.read(fullPath);
-      const payload = decodeLegacy(content, fileName);
-      if (payload === null) continue;
-      const folder = `${opts.dir}/${payload.id}`;
-      const target = `${folder}/SKILL.md`;
-      if (await opts.vault.exists(target)) {
-        await opts.vault.remove(fullPath);
-        continue;
-      }
-      await opts.vault.mkdir(folder);
-      await opts.vault.write(target, renderSkillMarkdown(payload));
-      await opts.vault.remove(fullPath);
-      migrated += 1;
-    } catch (err) {
-      opts.logger?.warn('skills.migrate.file-failed', {
-        path: fullPath,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    if (await migrateOneLegacyFile(opts, rawPath)) migrated += 1;
   }
   if (migrated > 0) {
     opts.logger?.info('skills.migrate.done', { migrated });

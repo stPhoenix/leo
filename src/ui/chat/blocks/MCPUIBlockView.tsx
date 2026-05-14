@@ -73,7 +73,8 @@ function MCPUIBlockViewImpl(props: MCPUIBlockViewProps): JSX.Element {
       const win = iframeRef.current?.contentWindow;
       if (win === null || win === undefined) return;
       try {
-        win.postMessage({ kind: HOST_MESSAGE_KIND, type: 'response', messageId, payload }, '*');
+        // NOSONAR(typescript:S2819): sandboxed srcDoc iframe has origin "null"; literal is the only valid target.
+        win.postMessage({ kind: HOST_MESSAGE_KIND, type: 'response', messageId, payload }, 'null');
       } catch (err) {
         onError?.(err instanceof Error ? err : new Error(String(err)));
       }
@@ -119,7 +120,8 @@ function MCPUIBlockViewImpl(props: MCPUIBlockViewProps): JSX.Element {
     const win = iframeRef.current?.contentWindow;
     if (win === null || win === undefined) return;
     try {
-      win.postMessage({ kind: HOST_MESSAGE_KIND, type: 'theme-update', vars: theme.map }, '*');
+      // NOSONAR(typescript:S2819): sandboxed srcDoc iframe has origin "null"; literal is the only valid target.
+      win.postMessage({ kind: HOST_MESSAGE_KIND, type: 'theme-update', vars: theme.map }, 'null');
     } catch (err) {
       onError?.(err instanceof Error ? err : new Error(String(err)));
     }

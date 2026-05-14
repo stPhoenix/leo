@@ -383,112 +383,142 @@ function renderInlineModelSelect(props: FieldRowProps, label: string): JSX.Eleme
   );
 }
 
+function StringFieldRow(props: FieldRowProps & { label: string }): JSX.Element {
+  const { label } = props;
+  return (
+    <label className="leo-eas-field" key={label}>
+      <span>{label}</span>
+      <input
+        type="text"
+        className="leo-eas-input"
+        aria-label={`${props.adapterId}.${label}`}
+        value={typeof props.value === 'string' ? props.value : ''}
+        onChange={(e) => props.onChange(e.target.value)}
+      />
+      {props.field.description !== undefined && props.field.description !== 'secret' ? (
+        <small className="leo-eas-help">{props.field.description}</small>
+      ) : null}
+    </label>
+  );
+}
+
+function NumberFieldRow(props: FieldRowProps & { label: string }): JSX.Element {
+  const { label } = props;
+  return (
+    <label className="leo-eas-field" key={label}>
+      <span>{label}</span>
+      <input
+        type="number"
+        className="leo-eas-input"
+        aria-label={`${props.adapterId}.${label}`}
+        value={typeof props.value === 'number' ? props.value : 0}
+        onChange={(e) => props.onChange(Number(e.target.value))}
+      />
+      {props.field.description !== undefined ? (
+        <small className="leo-eas-help">{props.field.description}</small>
+      ) : null}
+    </label>
+  );
+}
+
+function BooleanFieldRow(props: FieldRowProps & { label: string }): JSX.Element {
+  const { label } = props;
+  return (
+    <label className="leo-eas-field leo-eas-field-checkbox" key={label}>
+      <input
+        type="checkbox"
+        aria-label={`${props.adapterId}.${label}`}
+        checked={Boolean(props.value)}
+        onChange={(e) => props.onChange(e.target.checked)}
+      />
+      <span>{label}</span>
+      {props.field.description !== undefined ? (
+        <small className="leo-eas-help">{props.field.description}</small>
+      ) : null}
+    </label>
+  );
+}
+
+function StringArrayFieldRow(props: FieldRowProps & { label: string }): JSX.Element {
+  const { label } = props;
+  return (
+    <label className="leo-eas-field" key={label}>
+      <span>{label} (comma-separated)</span>
+      <input
+        type="text"
+        className="leo-eas-input"
+        aria-label={`${props.adapterId}.${label}`}
+        value={Array.isArray(props.value) ? (props.value as string[]).join(', ') : ''}
+        onChange={(e) =>
+          props.onChange(
+            e.target.value
+              .split(',')
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0),
+          )
+        }
+      />
+      {props.field.description !== undefined ? (
+        <small className="leo-eas-help">{props.field.description}</small>
+      ) : null}
+    </label>
+  );
+}
+
+function ObjectFieldRow(props: FieldRowProps & { label: string }): JSX.Element {
+  const { label } = props;
+  return (
+    <fieldset className="leo-eas-fieldset" key={label}>
+      <legend>{label}</legend>
+      {(props.field.children ?? []).map((child) => (
+        <FieldRow
+          key={child.path.join('.')}
+          field={child}
+          value={getIn(props.value, child.path.slice(props.field.path.length))}
+          schema={props.schema}
+          adapterId={props.adapterId}
+          onChange={(v) =>
+            props.onChange(setIn(props.value, child.path.slice(props.field.path.length), v))
+          }
+          {...(props.readSecret !== undefined ? { readSecret: props.readSecret } : {})}
+          {...(props.writeSecret !== undefined ? { writeSecret: props.writeSecret } : {})}
+        />
+      ))}
+    </fieldset>
+  );
+}
+
+function UnknownFieldRow(props: FieldRowProps & { label: string }): JSX.Element {
+  const { label } = props;
+  return (
+    <div className="leo-eas-unknown" key={label} role="note">
+      <span>{label}</span>
+      <pre className="leo-eas-mono">{JSON.stringify(props.value)}</pre>
+      <small>(unsupported field type — edit data.json directly)</small>
+    </div>
+  );
+}
+
 function FieldRow(props: FieldRowProps): JSX.Element {
   const label = props.field.path.join('.');
   const inlineSpecial = renderInlineAgentSpecialField(props, label);
   if (inlineSpecial !== null) return inlineSpecial;
   switch (props.field.kind) {
     case 'string':
-      return (
-        <label className="leo-eas-field" key={label}>
-          <span>{label}</span>
-          <input
-            type="text"
-            className="leo-eas-input"
-            aria-label={`${props.adapterId}.${label}`}
-            value={typeof props.value === 'string' ? props.value : ''}
-            onChange={(e) => props.onChange(e.target.value)}
-          />
-          {props.field.description !== undefined && props.field.description !== 'secret' ? (
-            <small className="leo-eas-help">{props.field.description}</small>
-          ) : null}
-        </label>
-      );
+      return <StringFieldRow {...props} label={label} />;
     case 'secret':
       return <SecretField {...props} label={label} />;
     case 'number':
-      return (
-        <label className="leo-eas-field" key={label}>
-          <span>{label}</span>
-          <input
-            type="number"
-            className="leo-eas-input"
-            aria-label={`${props.adapterId}.${label}`}
-            value={typeof props.value === 'number' ? props.value : 0}
-            onChange={(e) => props.onChange(Number(e.target.value))}
-          />
-          {props.field.description !== undefined ? (
-            <small className="leo-eas-help">{props.field.description}</small>
-          ) : null}
-        </label>
-      );
+      return <NumberFieldRow {...props} label={label} />;
     case 'boolean':
-      return (
-        <label className="leo-eas-field leo-eas-field-checkbox" key={label}>
-          <input
-            type="checkbox"
-            aria-label={`${props.adapterId}.${label}`}
-            checked={Boolean(props.value)}
-            onChange={(e) => props.onChange(e.target.checked)}
-          />
-          <span>{label}</span>
-          {props.field.description !== undefined ? (
-            <small className="leo-eas-help">{props.field.description}</small>
-          ) : null}
-        </label>
-      );
+      return <BooleanFieldRow {...props} label={label} />;
     case 'string-array':
-      return (
-        <label className="leo-eas-field" key={label}>
-          <span>{label} (comma-separated)</span>
-          <input
-            type="text"
-            className="leo-eas-input"
-            aria-label={`${props.adapterId}.${label}`}
-            value={Array.isArray(props.value) ? (props.value as string[]).join(', ') : ''}
-            onChange={(e) =>
-              props.onChange(
-                e.target.value
-                  .split(',')
-                  .map((s) => s.trim())
-                  .filter((s) => s.length > 0),
-              )
-            }
-          />
-          {props.field.description !== undefined ? (
-            <small className="leo-eas-help">{props.field.description}</small>
-          ) : null}
-        </label>
-      );
+      return <StringArrayFieldRow {...props} label={label} />;
     case 'object':
-      return (
-        <fieldset className="leo-eas-fieldset" key={label}>
-          <legend>{label}</legend>
-          {(props.field.children ?? []).map((child) => (
-            <FieldRow
-              key={child.path.join('.')}
-              field={child}
-              value={getIn(props.value, child.path.slice(props.field.path.length))}
-              schema={props.schema}
-              adapterId={props.adapterId}
-              onChange={(v) =>
-                props.onChange(setIn(props.value, child.path.slice(props.field.path.length), v))
-              }
-              {...(props.readSecret !== undefined ? { readSecret: props.readSecret } : {})}
-              {...(props.writeSecret !== undefined ? { writeSecret: props.writeSecret } : {})}
-            />
-          ))}
-        </fieldset>
-      );
+      return <ObjectFieldRow {...props} label={label} />;
     case 'unknown':
     default:
-      return (
-        <div className="leo-eas-unknown" key={label} role="note">
-          <span>{label}</span>
-          <pre className="leo-eas-mono">{JSON.stringify(props.value)}</pre>
-          <small>(unsupported field type — edit data.json directly)</small>
-        </div>
-      );
+      return <UnknownFieldRow {...props} label={label} />;
   }
 }
 

@@ -336,22 +336,47 @@ export class ChatView extends ItemView {
       this.deps.subscribeThemeChange !== undefined
         ? { subscribeThemeChange: this.deps.subscribeThemeChange }
         : {};
-    const buildProps = (): Parameters<typeof ChatRoot>[0] => ({
-      initialWidth: host.clientWidth,
-      observeWidth,
-      onOverflowMenu: (anchor) => this.openOverflowMenu(anchor),
-      messageStore: this.messageStore,
-      renderMarkdown,
-      clipboard,
-      toolUseSlots: this.buildToolUseSlots(),
-      liveIndicatorRunState: this.runStateStore,
-      lastEventAtSource: () => this.streamingController?.lastEventAt ?? null,
-      onCancelLive: () => {
+    const buildComposerProps = (): Parameters<typeof ChatRoot>[0]['composer'] => ({
+      onSubmit: (text) => {
+        this.deps.logger?.info('composer.submit', { length: text.length });
+        const isCompactSlash = /^\s*\/compact(\s|$)/i.test(text);
+        const handled = this.slashRegistry?.tryHandle(text) === true;
+        if (isCompactSlash) {
+          this.deps.logger?.info('compact.composer.submit_intercept', {
+            tryHandleResult: handled,
+            hasRegistry: this.slashRegistry !== null,
+          });
+        }
+        if (handled) return;
+        this.beginTurn(text);
+      },
+      onStopIntent: () => {
+        this.deps.logger?.info('composer.stop_intent', {});
         this.runStateStore.cancelAllInProgress();
         this.streamingController?.stop();
       },
-      resolveToolName: (id: string) => this.resolveToolName(id),
-      setIcon: (el, name) => setIcon(el, name),
+      onOpenCommandPalette: () => this.openCommandPalette(),
+      ...(this.slashRegistry !== null ? { slashCommands: this.slashRegistry.list() } : {}),
+      ...(this.deps.attachments !== undefined
+        ? {
+            attachments: this.attachmentItems(),
+            onAttachmentRemove: (id) => this.deps.attachments?.store.remove(id),
+            onCaptureFiles: (files) => this.captureAttachmentFiles(files),
+            onCaptureRejected: (rejections) => this.appendAttachmentRejections(rejections),
+            attachmentRejections: this.attachmentRejections,
+            onDismissAttachmentRejections: () => this.clearAttachmentRejections(),
+            ...(this.deps.pickFiles !== undefined
+              ? { onPickFiles: () => this.openFilePicker() }
+              : {}),
+            ...(this.deps.vaultFiles !== undefined ? { vaultFiles: this.deps.vaultFiles() } : {}),
+            ...(this.deps.readVaultFile !== undefined
+              ? { onMentionSelect: (entry) => this.captureMentionedFile(entry.path) }
+              : {}),
+          }
+        : {}),
+    });
+
+    const buildOptionalProps = (): Partial<Parameters<typeof ChatRoot>[0]> => ({
       ...(mcpUiDispatchAction !== null ? { mcpUiDispatchAction, mcpUiThemeOptions } : {}),
       ...(focusedContextSource !== null
         ? {
@@ -359,7 +384,6 @@ export class ChatView extends ItemView {
             onRevealContextFile: (path: string) => this.revealFile(path),
           }
         : {}),
-      messageActions,
       ...(confirmationSource !== undefined ? { confirmationSource } : {}),
       ...(acceptRejectSource !== undefined ? { acceptRejectSource } : {}),
       ...(this.deps.threadsSource !== undefined ? { threadsSource: this.deps.threadsSource } : {}),
@@ -380,6 +404,25 @@ export class ChatView extends ItemView {
       ...(this.deps.planModeSource !== undefined
         ? { planModeSource: this.deps.planModeSource }
         : {}),
+    });
+
+    const buildProps = (): Parameters<typeof ChatRoot>[0] => ({
+      initialWidth: host.clientWidth,
+      observeWidth,
+      onOverflowMenu: (anchor) => this.openOverflowMenu(anchor),
+      messageStore: this.messageStore,
+      renderMarkdown,
+      clipboard,
+      toolUseSlots: this.buildToolUseSlots(),
+      liveIndicatorRunState: this.runStateStore,
+      lastEventAtSource: () => this.streamingController?.lastEventAt ?? null,
+      onCancelLive: () => {
+        this.runStateStore.cancelAllInProgress();
+        this.streamingController?.stop();
+      },
+      resolveToolName: (id: string) => this.resolveToolName(id),
+      setIcon: (el, name) => setIcon(el, name),
+      messageActions,
       renderPlanMarkdown,
       phaseSource: {
         getPhase: () => this.lastPhase,
@@ -395,45 +438,8 @@ export class ChatView extends ItemView {
         getLength: () => this.turnDispatcher?.queueLength() ?? 0,
         subscribe: (cb) => this.turnDispatcher?.subscribe(cb) ?? ((): void => undefined),
       },
-      composer: {
-        onSubmit: (text) => {
-          this.deps.logger?.info('composer.submit', { length: text.length });
-          const isCompactSlash = /^\s*\/compact(\s|$)/i.test(text);
-          const handled = this.slashRegistry?.tryHandle(text) === true;
-          if (isCompactSlash) {
-            this.deps.logger?.info('compact.composer.submit_intercept', {
-              tryHandleResult: handled,
-              hasRegistry: this.slashRegistry !== null,
-            });
-          }
-          if (handled) return;
-          this.beginTurn(text);
-        },
-        onStopIntent: () => {
-          this.deps.logger?.info('composer.stop_intent', {});
-          this.runStateStore.cancelAllInProgress();
-          this.streamingController?.stop();
-        },
-        onOpenCommandPalette: () => this.openCommandPalette(),
-        ...(this.slashRegistry !== null ? { slashCommands: this.slashRegistry.list() } : {}),
-        ...(this.deps.attachments !== undefined
-          ? {
-              attachments: this.attachmentItems(),
-              onAttachmentRemove: (id) => this.deps.attachments?.store.remove(id),
-              onCaptureFiles: (files) => this.captureAttachmentFiles(files),
-              onCaptureRejected: (rejections) => this.appendAttachmentRejections(rejections),
-              attachmentRejections: this.attachmentRejections,
-              onDismissAttachmentRejections: () => this.clearAttachmentRejections(),
-              ...(this.deps.pickFiles !== undefined
-                ? { onPickFiles: () => this.openFilePicker() }
-                : {}),
-              ...(this.deps.vaultFiles !== undefined ? { vaultFiles: this.deps.vaultFiles() } : {}),
-              ...(this.deps.readVaultFile !== undefined
-                ? { onMentionSelect: (entry) => this.captureMentionedFile(entry.path) }
-                : {}),
-            }
-          : {}),
-      },
+      composer: buildComposerProps(),
+      ...buildOptionalProps(),
     });
     this.buildChatRootProps = buildProps;
     this.root = createRoot(host);
@@ -591,119 +597,139 @@ export class ChatView extends ItemView {
     return createElement(PiiDetectorContext.Provider, { value: this.deps.piiDetector }, tree);
   }
 
-  private buildSlashRegistry(): SlashRegistry {
-    const registry = createSlashRegistry({
-      ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
-      onError: (err) => new Notice(`Command failed: ${err.message}`),
-    });
-    registry.register({
-      name: 'clear',
-      description: 'Clear chat and reset agent state',
-      run: () => this.handleSlashClear(),
-    });
+  private registerPlanCommand(registry: SlashRegistry): void {
     const planMode = this.deps.planMode;
-    if (planMode !== undefined) {
-      registry.register({
-        name: 'plan',
-        description: 'Enter plan mode (read-only tools until ExitPlanMode)',
-        run: () => planMode.enter(),
-      });
-    }
+    if (planMode === undefined) return;
+    registry.register({
+      name: 'plan',
+      description: 'Enter plan mode (read-only tools until ExitPlanMode)',
+      run: () => planMode.enter(),
+    });
+  }
+
+  private registerSkillCommands(registry: SlashRegistry): void {
     const skillSlash = this.deps.skillSlash;
-    if (skillSlash !== undefined) {
-      for (const cmd of skillSlash.list()) {
-        const description =
-          cmd.whenToUse !== undefined && cmd.whenToUse.length > 0
-            ? `${cmd.description} — ${cmd.whenToUse}`
-            : cmd.description;
-        registry.register({
-          name: cmd.name,
-          description,
-          match: (ctx) => ctx.name === cmd.name.toLowerCase(),
-          run: async (ctx): Promise<void> => {
-            const out = await skillSlash.run(cmd.name, ctx.args);
-            if (out === null) return;
-            this.beginTurn(out.content, {
-              slashCommand: { typed: ctx.raw, command: cmd.name },
-              ...(out.initialAllowedTools !== undefined && out.initialAllowedTools.length > 0
-                ? { initialAllowedTools: out.initialAllowedTools }
-                : {}),
-            });
-          },
-        });
-      }
-    }
-    const compact = this.deps.compactRunner;
-    if (compact === undefined) {
-      this.deps.logger?.info('compact.slash.skipped_no_runner', {});
-    }
-    if (compact !== undefined) {
-      this.deps.logger?.info('compact.slash.registered', {});
+    if (skillSlash === undefined) return;
+    for (const cmd of skillSlash.list()) {
+      const description =
+        cmd.whenToUse !== undefined && cmd.whenToUse.length > 0
+          ? `${cmd.description} — ${cmd.whenToUse}`
+          : cmd.description;
       registry.register({
-        name: 'compact',
-        description: 'Compact conversation now (optional custom instructions)',
-        match: (ctx) => ctx.name === 'compact',
+        name: cmd.name,
+        description,
+        match: (ctx) => ctx.name === cmd.name.toLowerCase(),
         run: async (ctx): Promise<void> => {
-          const phase = this.streamingController?.phase;
-          if (phase === 'streaming' || phase === 'cancelling') {
-            new Notice('Cannot /compact while a turn is streaming.');
-            return;
-          }
-          const args = (ctx.args ?? '').trim();
-          try {
-            await compact.run(args.length > 0 ? args : undefined);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            new Notice(`Compact failed: ${msg}`);
-          }
+          const out = await skillSlash.run(cmd.name, ctx.args);
+          if (out === null) return;
+          this.beginTurn(out.content, {
+            slashCommand: { typed: ctx.raw, command: cmd.name },
+            ...(out.initialAllowedTools !== undefined && out.initialAllowedTools.length > 0
+              ? { initialAllowedTools: out.initialAllowedTools }
+              : {}),
+          });
         },
       });
     }
+  }
+
+  private registerCompactCommand(registry: SlashRegistry): void {
+    const compact = this.deps.compactRunner;
+    if (compact === undefined) {
+      this.deps.logger?.info('compact.slash.skipped_no_runner', {});
+      return;
+    }
+    this.deps.logger?.info('compact.slash.registered', {});
+    registry.register({
+      name: 'compact',
+      description: 'Compact conversation now (optional custom instructions)',
+      match: (ctx) => ctx.name === 'compact',
+      run: async (ctx): Promise<void> => {
+        const phase = this.streamingController?.phase;
+        if (phase === 'streaming' || phase === 'cancelling') {
+          new Notice('Cannot /compact while a turn is streaming.');
+          return;
+        }
+        const args = (ctx.args ?? '').trim();
+        try {
+          await compact.run(args.length > 0 ? args : undefined);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          new Notice(`Compact failed: ${msg}`);
+        }
+      },
+    });
+  }
+
+  private registerContextCommand(registry: SlashRegistry): void {
     const analyze = this.deps.analyzeContext;
-    if (analyze !== undefined) {
-      this.contextCommand = createContextCommand<ContextData>({
-        analyze,
-        render: (data) => this.renderContextAsWidget(data),
-        onError: (err) => new Notice(`Context: ${err.message}`),
-        ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
-      });
-      const handle = this.contextCommand;
-      registry.register({
-        name: 'context',
-        description: 'Show context usage breakdown',
-        run: () => handle.invoke(),
-      });
-    }
+    if (analyze === undefined) return;
+    this.contextCommand = createContextCommand<ContextData>({
+      analyze,
+      render: (data) => this.renderContextAsWidget(data),
+      onError: (err) => new Notice(`Context: ${err.message}`),
+      ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
+    });
+    const handle = this.contextCommand;
+    registry.register({
+      name: 'context',
+      description: 'Show context usage breakdown',
+      run: () => handle.invoke(),
+    });
+  }
+
+  private registerRagCommand(registry: SlashRegistry): void {
     const collectRag = this.deps.collectRagSnapshot;
-    if (collectRag !== undefined) {
-      this.ragCommand = createRagCommand({
-        collect: collectRag,
-        render: (snapshot) => this.renderRagAsWidget(snapshot),
-        onError: (err) => new Notice(`RAG: ${err.message}`),
-        ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
-      });
-      const handle = this.ragCommand;
-      registry.register({
-        name: 'rag',
-        description: 'Show RAG / index status',
-        run: () => handle.invoke(),
-      });
-    }
+    if (collectRag === undefined) return;
+    this.ragCommand = createRagCommand({
+      collect: collectRag,
+      render: (snapshot) => this.renderRagAsWidget(snapshot),
+      onError: (err) => new Notice(`RAG: ${err.message}`),
+      ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
+    });
+    const handle = this.ragCommand;
+    registry.register({
+      name: 'rag',
+      description: 'Show RAG / index status',
+      run: () => handle.invoke(),
+    });
+  }
+
+  private registerWikiStatusCommand(registry: SlashRegistry): void {
     const collectWikiStatus = this.deps.collectWikiStatus;
-    if (collectWikiStatus !== undefined) {
-      this.wikiStatusCommand = createWikiStatusCommand({
-        collect: collectWikiStatus,
-        render: (status) => this.renderWikiStatusAsWidget(status),
-        onError: (err) => new Notice(`Wiki status: ${err.message}`),
-        ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
-      });
-      const handle = this.wikiStatusCommand;
-      registry.register({
-        name: 'wiki-status',
-        description: 'Show wiki health summary',
-        run: () => handle.invoke(),
-      });
-    }
+    if (collectWikiStatus === undefined) return;
+    this.wikiStatusCommand = createWikiStatusCommand({
+      collect: collectWikiStatus,
+      render: (status) => this.renderWikiStatusAsWidget(status),
+      onError: (err) => new Notice(`Wiki status: ${err.message}`),
+      ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
+    });
+    const handle = this.wikiStatusCommand;
+    registry.register({
+      name: 'wiki-status',
+      description: 'Show wiki health summary',
+      run: () => handle.invoke(),
+    });
+  }
+
+  private registerCanvasStatusCommand(registry: SlashRegistry): void {
+    const collectCanvasStatus = this.deps.collectCanvasStatus;
+    if (collectCanvasStatus === undefined) return;
+    this.canvasStatusCommand = createCanvasStatusCommand({
+      collect: collectCanvasStatus,
+      render: (status) => this.renderCanvasStatusAsWidget(status),
+      onError: (err) => new Notice(`Canvas status: ${err.message}`),
+      ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
+    });
+    const handle = this.canvasStatusCommand;
+    registry.register({
+      name: 'canvas-status',
+      description: 'Show canvas runs + recent canvases',
+      run: () => handle.invoke(),
+    });
+  }
+
+  private registerWikiPromptCommands(registry: SlashRegistry): void {
     registry.register({
       name: 'wiki-ingest',
       description: 'Ingest a URL, vault note, or attachment into the wiki',
@@ -728,21 +754,6 @@ export class ChatView extends ItemView {
         this.beginTurn(seed);
       },
     });
-    const collectCanvasStatus = this.deps.collectCanvasStatus;
-    if (collectCanvasStatus !== undefined) {
-      this.canvasStatusCommand = createCanvasStatusCommand({
-        collect: collectCanvasStatus,
-        render: (status) => this.renderCanvasStatusAsWidget(status),
-        onError: (err) => new Notice(`Canvas status: ${err.message}`),
-        ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
-      });
-      const handle = this.canvasStatusCommand;
-      registry.register({
-        name: 'canvas-status',
-        description: 'Show canvas runs + recent canvases',
-        run: () => handle.invoke(),
-      });
-    }
     // /canvas-create is provided by the canvas-create built-in skill (src/skills/builtins.ts)
     // and exposed via skillSlash above. No imperative registration here — the skill body
     // drives the research → plan → delegate workflow.
@@ -758,6 +769,26 @@ export class ChatView extends ItemView {
         this.beginTurn(seed);
       },
     });
+  }
+
+  private buildSlashRegistry(): SlashRegistry {
+    const registry = createSlashRegistry({
+      ...(this.deps.logger !== undefined ? { logger: this.deps.logger } : {}),
+      onError: (err) => new Notice(`Command failed: ${err.message}`),
+    });
+    registry.register({
+      name: 'clear',
+      description: 'Clear chat and reset agent state',
+      run: () => this.handleSlashClear(),
+    });
+    this.registerPlanCommand(registry);
+    this.registerSkillCommands(registry);
+    this.registerCompactCommand(registry);
+    this.registerContextCommand(registry);
+    this.registerRagCommand(registry);
+    this.registerWikiStatusCommand(registry);
+    this.registerWikiPromptCommands(registry);
+    this.registerCanvasStatusCommand(registry);
     return registry;
   }
 

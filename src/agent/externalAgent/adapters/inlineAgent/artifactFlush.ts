@@ -11,58 +11,23 @@ export interface ArtifactFlushDeps {
   readonly logger: InlineAgentLoggerLite;
 }
 
+type ArtifactLoadResult =
+  | { ok: true; buf: Buffer }
+  | { ok: false; reason: 'path_outside_sandbox' | 'artifact_missing' };
+
 export async function* flushPublishedArtifacts(
   deps: ArtifactFlushDeps,
 ): AsyncIterable<ExternalEvent> {
   for (const nomination of deps.runState.publishedArtifacts) {
-    const resolved = deps.sandbox.resolve(nomination.relPath);
-    if (!resolved.ok) {
-      deps.logger.warn('externalAgent.adapter.inlineAgent.artifact.invalid-path', {
-        relPath: nomination.relPath,
-        reason: 'path_outside_sandbox',
-      });
-      yield {
-        type: 'log',
-        level: 'warn',
-        msg: `artifact_skipped ${JSON.stringify({ relPath: nomination.relPath, reason: 'path_outside_sandbox' })}`,
-      };
-      continue;
-    }
-    const safe = await deps.sandbox.checkSafe(resolved.absPath);
-    if (!safe.ok) {
-      deps.logger.warn('externalAgent.adapter.inlineAgent.artifact.missing', {
-        relPath: nomination.relPath,
-        reason: safe.error === 'not_found' ? 'artifact_missing' : 'path_outside_sandbox',
-      });
-      yield {
-        type: 'log',
-        level: 'warn',
-        msg: `artifact_skipped ${JSON.stringify({
-          relPath: nomination.relPath,
-          reason: safe.error === 'not_found' ? 'artifact_missing' : 'path_outside_sandbox',
-        })}`,
-      };
-      continue;
-    }
-    let buf: Buffer;
-    try {
-      buf = await fs.readFile(resolved.absPath);
-    } catch {
-      deps.logger.warn('externalAgent.adapter.inlineAgent.artifact.missing', {
-        relPath: nomination.relPath,
-        reason: 'artifact_missing',
-      });
-      yield {
-        type: 'log',
-        level: 'warn',
-        msg: `artifact_skipped ${JSON.stringify({ relPath: nomination.relPath, reason: 'artifact_missing' })}`,
-      };
+    const loaded = await loadArtifact(deps, nomination.relPath);
+    if (!loaded.ok) {
+      yield buildSkipEvent(nomination.relPath, loaded.reason);
       continue;
     }
     const mime = mimeFromRelPath(nomination.relPath);
     const content = mime?.startsWith('text/')
-      ? buf.toString('utf8')
-      : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      ? loaded.buf.toString('utf8')
+      : new Uint8Array(loaded.buf.buffer, loaded.buf.byteOffset, loaded.buf.byteLength);
     yield {
       type: 'file',
       relPath: nomination.relPath,
@@ -70,4 +35,43 @@ export async function* flushPublishedArtifacts(
       ...(mime !== undefined ? { mime } : {}),
     };
   }
+}
+
+async function loadArtifact(deps: ArtifactFlushDeps, relPath: string): Promise<ArtifactLoadResult> {
+  const resolved = deps.sandbox.resolve(relPath);
+  if (!resolved.ok) {
+    deps.logger.warn('externalAgent.adapter.inlineAgent.artifact.invalid-path', {
+      relPath,
+      reason: 'path_outside_sandbox',
+    });
+    return { ok: false, reason: 'path_outside_sandbox' };
+  }
+  const safe = await deps.sandbox.checkSafe(resolved.absPath);
+  if (!safe.ok) {
+    const reason: 'artifact_missing' | 'path_outside_sandbox' =
+      safe.error === 'not_found' ? 'artifact_missing' : 'path_outside_sandbox';
+    deps.logger.warn('externalAgent.adapter.inlineAgent.artifact.missing', { relPath, reason });
+    return { ok: false, reason };
+  }
+  try {
+    const buf = await fs.readFile(resolved.absPath);
+    return { ok: true, buf };
+  } catch {
+    deps.logger.warn('externalAgent.adapter.inlineAgent.artifact.missing', {
+      relPath,
+      reason: 'artifact_missing',
+    });
+    return { ok: false, reason: 'artifact_missing' };
+  }
+}
+
+function buildSkipEvent(
+  relPath: string,
+  reason: 'path_outside_sandbox' | 'artifact_missing',
+): ExternalEvent {
+  return {
+    type: 'log',
+    level: 'warn',
+    msg: `artifact_skipped ${JSON.stringify({ relPath, reason })}`,
+  };
 }

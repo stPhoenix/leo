@@ -209,31 +209,16 @@ export function createDelegateWikiIngestTool(
       return { ok: true, data: parsed.data };
     },
     async invoke(args, ctx): Promise<ToolResult<DelegateWikiIngestData>> {
-      let preparedSources: readonly IngestSource[] | null = null;
-      let preparedOriginalAsk: string | null = null;
-      let preparedSummary: string | null = null;
-      if (args.kind === 'vaultPath') {
-        const expanded = await expandVaultPathSources(deps.vault, args);
-        if (!expanded.ok) {
-          return {
-            ok: true,
-            data: {
-              ok: false,
-              error: { code: 'fetch_vault_empty_folder', message: expanded.error },
-            },
-          };
-        }
-        preparedSources = expanded.sources;
-        preparedOriginalAsk =
-          expanded.fileCount > 1
-            ? `Ingest folder into wiki: ${args.path} (${expanded.fileCount} files)`
-            : `Ingest vault path into wiki: ${args.path}`;
-        preparedSummary =
-          expanded.fileCount > 1 ? `${args.path} (${expanded.fileCount} files)` : args.path;
+      const prep = await prepareVaultPathSources(deps.vault, args);
+      if (prep.kind === 'error') {
+        return {
+          ok: true,
+          data: { ok: false, error: { code: 'fetch_vault_empty_folder', message: prep.message } },
+        };
       }
 
-      const originalAsk = preparedOriginalAsk ?? describeArgsAsAsk(args);
-      const sourcesSummary = preparedSummary ?? describeArgsAsSummary(args);
+      const originalAsk = prep.originalAsk ?? describeArgsAsAsk(args);
+      const sourcesSummary = prep.summary ?? describeArgsAsSummary(args);
 
       const outcome = await deps.beginPickerFlow({
         threadId: ctx.thread,
@@ -269,7 +254,7 @@ export function createDelegateWikiIngestTool(
         return { ok: true, data: { ok: true, data: { mode: 'inbox', batch } } };
       }
 
-      const sources: readonly IngestSource[] = preparedSources ?? [argsToSource(args)];
+      const sources: readonly IngestSource[] = prep.sources ?? [argsToSource(args)];
       const start = deps.startRun(
         {
           threadId: ctx.thread,
@@ -313,6 +298,32 @@ export function createDelegateWikiIngestTool(
 type ExpandResult =
   | { readonly ok: true; readonly sources: readonly IngestSource[]; readonly fileCount: number }
   | { readonly ok: false; readonly error: string };
+
+type VaultPathPrep =
+  | {
+      readonly kind: 'ok';
+      readonly sources: readonly IngestSource[] | null;
+      readonly originalAsk: string | null;
+      readonly summary: string | null;
+    }
+  | { readonly kind: 'error'; readonly message: string };
+
+async function prepareVaultPathSources(
+  vault: VaultAdapter,
+  args: DelegateWikiIngestArgs,
+): Promise<VaultPathPrep> {
+  if (args.kind !== 'vaultPath') {
+    return { kind: 'ok', sources: null, originalAsk: null, summary: null };
+  }
+  const expanded = await expandVaultPathSources(vault, args);
+  if (!expanded.ok) return { kind: 'error', message: expanded.error };
+  const originalAsk =
+    expanded.fileCount > 1
+      ? `Ingest folder into wiki: ${args.path} (${expanded.fileCount} files)`
+      : `Ingest vault path into wiki: ${args.path}`;
+  const summary = expanded.fileCount > 1 ? `${args.path} (${expanded.fileCount} files)` : args.path;
+  return { kind: 'ok', sources: expanded.sources, originalAsk, summary };
+}
 
 async function expandVaultPathSources(
   vault: VaultAdapter,

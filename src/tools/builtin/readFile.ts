@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { roughTokenCountEstimation } from '@/agent/tokenEstimator';
-import type { ToolSpec } from '../types';
+import type { ToolCtx, ToolResult, ToolSpec } from '../types';
 import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
 import { isSafeVaultPath } from './readNote';
 import {
@@ -9,6 +9,7 @@ import {
   findSimilarPaths,
   looksBinary,
   readFileInRange,
+  type ReadRange,
 } from './readFileShared';
 
 export interface ReadFileArgs {
@@ -66,6 +67,100 @@ const ReadFileSchema: z.ZodType<ReadFileArgs> = z
   })
   .strict();
 
+async function checkMissing(
+  ctx: ToolCtx,
+  path: string,
+): Promise<ToolResult<ReadFileResult> | undefined> {
+  if (await ctx.vault.exists(path)) return undefined;
+  const suggestions = await findSimilarPaths(ctx.vault, path, 3, ctx.signal);
+  const suffix = suggestions.length > 0 ? ` Did you mean: ${suggestions.join(', ')}?` : '';
+  return { ok: false, error: `file not found: ${path}.${suffix}` };
+}
+
+function checkCached(
+  ctx: ToolCtx,
+  path: string,
+  mtimeMs: number,
+  offset: number | undefined,
+  limit: number | undefined,
+): ToolResult<ReadFileResult> | undefined {
+  if (ctx.readState === undefined) return undefined;
+  const cached = ctx.readState.matches(ctx.thread, path, mtimeMs, offset, limit);
+  if (cached === undefined) return undefined;
+  return {
+    ok: true,
+    data: {
+      path,
+      content:
+        '<system-reminder>File unchanged since last read. The content from the earlier read_file tool result in this conversation is still current — refer to that instead of re-reading.</system-reminder>',
+      bytes: 0,
+      truncated: false,
+      unchanged: true,
+    },
+  };
+}
+
+interface SlicedSource {
+  readonly working: string;
+  readonly truncatedByBytes: boolean;
+}
+
+function sliceSource(raw: string, args: ReadFileArgs): SlicedSource {
+  const limitProvided = args.limit !== undefined;
+  if (limitProvided) return { working: raw, truncatedByBytes: false };
+  const cap = Math.min(args.maxBytes ?? DEFAULT_MAX_BYTES, HARD_MAX_BYTES);
+  if (byteLength(raw) <= cap) return { working: raw, truncatedByBytes: false };
+  return { working: sliceToBytes(raw, cap), truncatedByBytes: true };
+}
+
+function emptyFileResult(
+  ctx: ToolCtx,
+  args: ReadFileArgs,
+  mtimeMs: number,
+  startLine: number,
+  limitProvided: boolean,
+): ToolResult<ReadFileResult> {
+  ctx.readState?.set(ctx.thread, args.path, {
+    content: '',
+    mtimeMs,
+    offset: args.offset,
+    limit: args.limit,
+    isPartialView: limitProvided,
+  });
+  return {
+    ok: true,
+    data: {
+      path: args.path,
+      content:
+        '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>',
+      bytes: 0,
+      truncated: false,
+      totalLines: 0,
+      startLine,
+      numLines: 0,
+    },
+  };
+}
+
+function offsetPastEndResult(
+  path: string,
+  range: ReadRange,
+  startLine: number,
+): ToolResult<ReadFileResult> {
+  return {
+    ok: true,
+    data: {
+      path,
+      content: `<system-reminder>Warning: the file exists but is shorter than the provided offset (${startLine}). The file has ${range.totalLines} lines.</system-reminder>`,
+      bytes: 0,
+      truncated: false,
+      totalLines: range.totalLines,
+      startLine,
+      numLines: 0,
+    },
+  };
+}
+
 export function createReadFileTool(): ToolSpec<ReadFileArgs, ReadFileResult> {
   return {
     id: 'read_file',
@@ -80,35 +175,14 @@ export function createReadFileTool(): ToolSpec<ReadFileArgs, ReadFileResult> {
     async invoke(args, ctx) {
       if (ctx.signal.aborted) return { ok: false, error: 'aborted' };
       try {
-        if (!(await ctx.vault.exists(args.path))) {
-          const suggestions = await findSimilarPaths(ctx.vault, args.path, 3, ctx.signal);
-          const suffix = suggestions.length > 0 ? ` Did you mean: ${suggestions.join(', ')}?` : '';
-          return { ok: false, error: `file not found: ${args.path}.${suffix}` };
-        }
+        const missing = await checkMissing(ctx, args.path);
+        if (missing !== undefined) return missing;
         const stat = await ctx.vault.stat(args.path);
         const mtimeMs = Math.floor(stat?.mtimeMs ?? 0);
         const startLine = args.offset ?? 1;
-        if (ctx.readState !== undefined && stat !== null) {
-          const cached = ctx.readState.matches(
-            ctx.thread,
-            args.path,
-            mtimeMs,
-            args.offset,
-            args.limit,
-          );
-          if (cached !== undefined) {
-            return {
-              ok: true,
-              data: {
-                path: args.path,
-                content:
-                  '<system-reminder>File unchanged since last read. The content from the earlier read_file tool result in this conversation is still current — refer to that instead of re-reading.</system-reminder>',
-                bytes: 0,
-                truncated: false,
-                unchanged: true,
-              },
-            };
-          }
+        if (stat !== null) {
+          const cached = checkCached(ctx, args.path, mtimeMs, args.offset, args.limit);
+          if (cached !== undefined) return cached;
         }
         const raw = await ctx.vault.read(args.path);
         if (looksBinary(raw)) {
@@ -118,14 +192,7 @@ export function createReadFileTool(): ToolSpec<ReadFileArgs, ReadFileResult> {
           };
         }
         const limitProvided = args.limit !== undefined;
-        const cap = Math.min(args.maxBytes ?? DEFAULT_MAX_BYTES, HARD_MAX_BYTES);
-        const totalBytes = byteLength(raw);
-        let truncatedByBytes = false;
-        let working = raw;
-        if (!limitProvided && totalBytes > cap) {
-          working = sliceToBytes(raw, cap);
-          truncatedByBytes = true;
-        }
+        const { working, truncatedByBytes } = sliceSource(raw, args);
         const range = readFileInRange(working, Math.max(0, startLine - 1), args.limit);
         const tokens = roughTokenCountEstimation(range.content);
         if (tokens > MAX_TOKENS_DEFAULT) {
@@ -135,53 +202,19 @@ export function createReadFileTool(): ToolSpec<ReadFileArgs, ReadFileResult> {
           };
         }
         if (range.totalLines === 0) {
-          if (ctx.readState !== undefined) {
-            ctx.readState.set(ctx.thread, args.path, {
-              content: '',
-              mtimeMs,
-              offset: args.offset,
-              limit: args.limit,
-              isPartialView: limitProvided,
-            });
-          }
-          return {
-            ok: true,
-            data: {
-              path: args.path,
-              content:
-                '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>',
-              bytes: 0,
-              truncated: false,
-              totalLines: 0,
-              startLine,
-              numLines: 0,
-            },
-          };
+          return emptyFileResult(ctx, args, mtimeMs, startLine, limitProvided);
         }
         if (startLine > range.totalLines) {
-          return {
-            ok: true,
-            data: {
-              path: args.path,
-              content: `<system-reminder>Warning: the file exists but is shorter than the provided offset (${startLine}). The file has ${range.totalLines} lines.</system-reminder>`,
-              bytes: 0,
-              truncated: false,
-              totalLines: range.totalLines,
-              startLine,
-              numLines: 0,
-            },
-          };
+          return offsetPastEndResult(args.path, range, startLine);
         }
         const numbered = addLineNumbers(range.content, startLine);
-        if (ctx.readState !== undefined) {
-          ctx.readState.set(ctx.thread, args.path, {
-            content: range.content,
-            mtimeMs,
-            offset: args.offset,
-            limit: args.limit,
-            isPartialView: limitProvided || truncatedByBytes,
-          });
-        }
+        ctx.readState?.set(ctx.thread, args.path, {
+          content: range.content,
+          mtimeMs,
+          offset: args.offset,
+          limit: args.limit,
+          isPartialView: limitProvided || truncatedByBytes,
+        });
         return {
           ok: true,
           data: {

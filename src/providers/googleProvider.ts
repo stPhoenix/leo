@@ -81,18 +81,30 @@ export class GoogleProvider implements Provider {
 
   async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
     const apiKey = this.opts.apiKey();
-    if (apiKey.length === 0) {
-      return this.bundledModels.map((id) => ({ id }));
-    }
+    if (apiKey.length === 0) return this.bundledModels.map((id) => ({ id }));
+    const url = this.buildListModelsUrl();
+    const response = await this.fetchListModels(url, apiKey, signal);
+    if (!response.ok) throw new ProviderConnectError(`HTTP ${response.status}`);
+    const json = (await response.json()) as GeminiListModelsResponse;
+    return mapGeminiModels(json.models ?? []);
+  }
+
+  private buildListModelsUrl(): string {
     const endpoint = this.opts.endpoint?.();
     const baseUrl =
       endpoint !== undefined && endpoint.length > 0
         ? endpoint.replace(/\/+$/, '') // NOSONAR(typescript:S5852): anchored trailing-slash trim, linear.
         : DEFAULT_BASE_URL;
-    const url = `${baseUrl}/v1beta/models?pageSize=1000`;
-    let response: Response;
+    return `${baseUrl}/v1beta/models?pageSize=1000`;
+  }
+
+  private async fetchListModels(
+    url: string,
+    apiKey: string,
+    signal: AbortSignal | undefined,
+  ): Promise<Response> {
     try {
-      response = await this.fetchImpl(url, {
+      return await this.fetchImpl(url, {
         ...(signal !== undefined ? { signal } : {}),
         headers: { 'x-goog-api-key': apiKey },
       });
@@ -100,23 +112,19 @@ export class GoogleProvider implements Provider {
       if (signal?.aborted === true) throw abortReason(signal);
       throw asConnectError(err, 'fetch failed');
     }
-    if (!response.ok) {
-      throw new ProviderConnectError(`HTTP ${response.status}`);
-    }
-    const json = (await response.json()) as GeminiListModelsResponse;
-    const data = json.models ?? [];
-    const out: ProviderModel[] = [];
-    for (const m of data) {
-      if (typeof m.name !== 'string') continue;
-      const methods = Array.isArray(m.supportedGenerationMethods)
-        ? m.supportedGenerationMethods
-        : [];
-      if (!methods.includes('generateContent')) continue;
-      const id = m.name.startsWith('models/') ? m.name.slice('models/'.length) : m.name;
-      if (id.length > 0) out.push({ id });
-    }
-    return out;
   }
+}
+
+function mapGeminiModels(data: NonNullable<GeminiListModelsResponse['models']>): ProviderModel[] {
+  const out: ProviderModel[] = [];
+  for (const m of data) {
+    if (typeof m.name !== 'string') continue;
+    const methods = Array.isArray(m.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+    if (!methods.includes('generateContent')) continue;
+    const id = m.name.startsWith('models/') ? m.name.slice('models/'.length) : m.name;
+    if (id.length > 0) out.push({ id });
+  }
+  return out;
 }
 
 // Gemini's bindTools requires `{ name, description, schema }` shape — it

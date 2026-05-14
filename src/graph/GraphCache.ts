@@ -101,38 +101,36 @@ export class GraphCache {
     }
   }
 
-  private onResolved(): void {
-    const resolved = this.metadataCache.resolvedLinks;
-    let edgesAdded = 0;
-    let edgesRemoved = 0;
-    const pathsTouched = new Set<string>();
-    const seenSources = new Set<string>();
-
-    for (const source of Object.keys(resolved)) {
-      seenSources.add(source);
-      const fresh = new Set(Object.keys(resolved[source] ?? {}));
-      const prev = this.forward.get(source) ?? new Set<string>();
-      const added = diff(fresh, prev);
-      const removed = diff(prev, fresh);
-      if (added.size === 0 && removed.size === 0) continue;
-      pathsTouched.add(source);
-      for (const target of removed) {
-        this.removeEdge(source, target);
-        pathsTouched.add(target);
-        edgesRemoved += 1;
-      }
-      for (const target of added) {
-        this.addEdge(source, target);
-        pathsTouched.add(target);
-        edgesAdded += 1;
-      }
-      if (fresh.size === 0) {
-        this.forward.delete(source);
-      } else {
-        this.forward.set(source, fresh);
-      }
+  private applyEdgeDiff(
+    source: string,
+    fresh: Set<string>,
+    pathsTouched: Set<string>,
+    counts: { added: number; removed: number },
+  ): void {
+    const prev = this.forward.get(source) ?? new Set<string>();
+    const added = diff(fresh, prev);
+    const removed = diff(prev, fresh);
+    if (added.size === 0 && removed.size === 0) return;
+    pathsTouched.add(source);
+    for (const target of removed) {
+      this.removeEdge(source, target);
+      pathsTouched.add(target);
+      counts.removed += 1;
     }
+    for (const target of added) {
+      this.addEdge(source, target);
+      pathsTouched.add(target);
+      counts.added += 1;
+    }
+    if (fresh.size === 0) this.forward.delete(source);
+    else this.forward.set(source, fresh);
+  }
 
+  private dropOrphanedSources(
+    seenSources: ReadonlySet<string>,
+    pathsTouched: Set<string>,
+    counts: { added: number; removed: number },
+  ): void {
     for (const source of [...this.forward.keys()]) {
       if (seenSources.has(source)) continue;
       const prev = this.forward.get(source)!;
@@ -140,15 +138,30 @@ export class GraphCache {
       for (const target of prev) {
         this.removeEdge(source, target);
         pathsTouched.add(target);
-        edgesRemoved += 1;
+        counts.removed += 1;
       }
       this.forward.delete(source);
     }
+  }
+
+  private onResolved(): void {
+    const resolved = this.metadataCache.resolvedLinks;
+    const counts = { added: 0, removed: 0 };
+    const pathsTouched = new Set<string>();
+    const seenSources = new Set<string>();
+
+    for (const source of Object.keys(resolved)) {
+      seenSources.add(source);
+      const fresh = new Set(Object.keys(resolved[source] ?? {}));
+      this.applyEdgeDiff(source, fresh, pathsTouched, counts);
+    }
+
+    this.dropOrphanedSources(seenSources, pathsTouched, counts);
 
     this.logger?.debug('graph.resolved.tick', {
       pathsTouched: pathsTouched.size,
-      edgesAdded,
-      edgesRemoved,
+      edgesAdded: counts.added,
+      edgesRemoved: counts.removed,
     });
   }
 

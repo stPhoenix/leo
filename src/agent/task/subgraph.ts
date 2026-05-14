@@ -39,6 +39,68 @@ export interface SubagentEventSink {
  * appear in the main UI. The subagent's own `EventChannel` is consumed by the
  * widget projection loop; events are NOT forwarded to the parent chat stream.
  */
+interface SubagentRunOutcome {
+  readonly cancelled: boolean;
+  readonly errored: boolean;
+  readonly errorMessage: string | null;
+}
+
+async function handleInterruptResume(
+  deps: SubagentTurnDeps,
+  result: Record<string, unknown>,
+): Promise<Command | null> {
+  if (deps.signal.aborted) return null;
+  const interrupts = result[INTERRUPT] as { value?: ToolConfirmationInterruptPayload }[];
+  const intr = interrupts[0];
+  if (intr?.value === undefined) return null;
+  const argsJson = intr.value.argsJson;
+  const decision = await deps.confirmation.request({
+    toolId: intr.value.toolId,
+    thread: intr.value.thread,
+    argsJson,
+    argsPretty: prettifyArgs(argsJson),
+    category: intr.value.category,
+    disableAllowForThread: true,
+  });
+  if (deps.signal.aborted) return null;
+  return new Command({ resume: decision });
+}
+
+async function runGraphLoop(
+  deps: SubagentTurnDeps,
+  graph: ReturnType<typeof buildAgentGraph>,
+  config: { configurable: { thread_id: string }; signal: AbortSignal },
+): Promise<SubagentRunOutcome> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let input: any = {};
+  try {
+    for (;;) {
+      const result = (await graph.invoke(input, config)) as Record<string, unknown>;
+      if (!isInterrupted<ToolConfirmationInterruptPayload>(result)) break;
+      const next = await handleInterruptResume(deps, result);
+      if (next === null)
+        return { cancelled: deps.signal.aborted, errored: false, errorMessage: null };
+      input = next;
+    }
+    return { cancelled: false, errored: false, errorMessage: null };
+  } catch (err) {
+    if (deps.signal.aborted) {
+      return { cancelled: true, errored: false, errorMessage: null };
+    }
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    deps.logger?.error(TASK_LOG.error, { thread: deps.turn.thread, error: errorMessage });
+    return { cancelled: false, errored: true, errorMessage };
+  }
+}
+
+function lastAssistantText(history: readonly { role: string; content: string }[]): string {
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const m = history[i]!;
+    if (m.role === 'assistant' && m.content.length > 0) return m.content;
+  }
+  return '';
+}
+
 export async function runSubagentTurn(
   deps: SubagentTurnDeps,
   sink: SubagentEventSink,
@@ -49,73 +111,24 @@ export async function runSubagentTurn(
     signal: deps.signal,
   };
 
-  let cancelled = false;
-  let errored = false;
-  let errorMessage: string | null = null;
-
   const counter = { count: 0 };
   const drainPromise = drainEvents(deps.turn.events, sink, deps.signal, counter);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let input: any = {};
+  let outcome: SubagentRunOutcome;
   try {
-    for (;;) {
-      const result = (await graph.invoke(input, config)) as Record<string, unknown>;
-      if (!isInterrupted<ToolConfirmationInterruptPayload>(result)) break;
-      if (deps.signal.aborted) {
-        cancelled = true;
-        break;
-      }
-      const interrupts = result[INTERRUPT] as { value?: ToolConfirmationInterruptPayload }[];
-      const intr = interrupts[0];
-      if (intr?.value === undefined) break;
-      const argsJson = intr.value.argsJson;
-      const decision = await deps.confirmation.request({
-        toolId: intr.value.toolId,
-        thread: intr.value.thread,
-        argsJson,
-        argsPretty: prettifyArgs(argsJson),
-        category: intr.value.category,
-        disableAllowForThread: true,
-      });
-      if (deps.signal.aborted) {
-        cancelled = true;
-        break;
-      }
-      input = new Command({ resume: decision });
-    }
-  } catch (err) {
-    if (deps.signal.aborted) {
-      cancelled = true;
-    } else {
-      errored = true;
-      errorMessage = err instanceof Error ? err.message : String(err);
-      deps.logger?.error(TASK_LOG.error, {
-        thread: deps.turn.thread,
-        error: errorMessage,
-      });
-    }
+    outcome = await runGraphLoop(deps, graph, config);
   } finally {
     if (!deps.turn.events.closed) deps.turn.events.close();
     await drainPromise;
   }
 
-  cancelled = cancelled || deps.signal.aborted;
-  const history = deps.graphDeps.getHistory(deps.turn.thread);
-  let finalAssistantText = '';
-  for (let i = history.length - 1; i >= 0; i -= 1) {
-    const m = history[i]!;
-    if (m.role === 'assistant' && m.content.length > 0) {
-      finalAssistantText = m.content;
-      break;
-    }
-  }
+  const cancelled = outcome.cancelled || deps.signal.aborted;
   return {
-    finalAssistantText,
+    finalAssistantText: lastAssistantText(deps.graphDeps.getHistory(deps.turn.thread)),
     toolResultCount: counter.count,
     cancelled,
-    errored,
-    errorMessage,
+    errored: outcome.errored,
+    errorMessage: outcome.errorMessage,
   };
 }
 

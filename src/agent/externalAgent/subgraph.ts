@@ -281,6 +281,57 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
       );
     });
 
+  const callRefineWithAbort = async (
+    userInput: string | null,
+  ): Promise<
+    | { kind: 'decision'; decision: RefineDecision }
+    | { kind: 'aborted' }
+    | { kind: 'error'; err: unknown }
+  > => {
+    try {
+      const refineCall = deps.refine.refine({
+        state,
+        userInput,
+        signal: cancelController.signal,
+        ...(traceHandle !== null ? { traceConfig: traceHandle.traceConfig } : {}),
+      });
+      const abortObserver = waitForAbort(cancelController.signal);
+      const winner = await Promise.race([
+        refineCall.then((d) => ({ kind: 'decision' as const, d })),
+        abortObserver.promise.then(() => ({ kind: 'aborted' as const })),
+      ]);
+      abortObserver.cancel();
+      if (winner.kind === 'aborted') return { kind: 'aborted' };
+      return { kind: 'decision', decision: winner.d };
+    } catch (err) {
+      return { kind: 'error', err };
+    }
+  };
+
+  const applyClarifyDecision = async (
+    decision: RefineDecision & { type: 'clarify' | string },
+    nextHistory: RefineMessage[],
+    nextIter: number,
+  ): Promise<string | null> => {
+    const question = decision.text;
+    setState({
+      ...state,
+      refineHistory: nextHistory,
+      refineIterations: nextIter,
+      clarifyingQuestion: question,
+    });
+    transitionTo('awaiting_clarify');
+    const answer = await awaitClarifyAnswer();
+    if (answer === null) return null;
+    setState({
+      ...state,
+      refineHistory: [...state.refineHistory, { role: 'user', content: answer }],
+      clarifyingQuestion: null,
+    });
+    transitionTo('preparing');
+    return answer;
+  };
+
   const runRefineLoop = async (initialUserInput: string | null): Promise<boolean> => {
     let userInput = initialUserInput;
     while (!isTerminal(state.phase)) {
@@ -293,33 +344,23 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
         transitionTo('ready', { refinedPrompt: draft });
         return true;
       }
-      let decision: RefineDecision;
-      try {
-        const refineCall = deps.refine.refine({
-          state,
-          userInput,
-          signal: cancelController.signal,
-          ...(traceHandle !== null ? { traceConfig: traceHandle.traceConfig } : {}),
-        });
-        const abortObserver = waitForAbort(cancelController.signal);
-        const winner = await Promise.race([
-          refineCall.then((d) => ({ kind: 'decision' as const, d })),
-          abortObserver.promise.then(() => ({ kind: 'aborted' as const })),
-        ]);
-        abortObserver.cancel();
-        if (winner.kind === 'aborted') {
-          finishCancelled('preparing');
-          return false;
-        }
-        decision = winner.d;
-      } catch (err) {
+      const callResult = await callRefineWithAbort(userInput);
+      if (callResult.kind === 'aborted') {
+        finishCancelled('preparing');
+        return false;
+      }
+      if (callResult.kind === 'error') {
         if (cancelController.signal.aborted) {
           finishCancelled('preparing');
           return false;
         }
-        await finishWithError('refine_failed', err instanceof Error ? err.message : String(err));
+        await finishWithError(
+          'refine_failed',
+          callResult.err instanceof Error ? callResult.err.message : String(callResult.err),
+        );
         return false;
       }
+      const decision = callResult.decision;
       userInput = null;
       const nextHistory: RefineMessage[] = [
         ...state.refineHistory,
@@ -337,27 +378,12 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
         transitionTo('ready', { refinedPrompt: finalPrompt });
         return true;
       }
-      // clarify
-      const question = decision.text;
-      setState({
-        ...state,
-        refineHistory: nextHistory,
-        refineIterations: nextIter,
-        clarifyingQuestion: question,
-      });
-      transitionTo('awaiting_clarify');
-      const answer = await awaitClarifyAnswer();
+      const answer = await applyClarifyDecision(decision, nextHistory, nextIter);
       if (answer === null) {
         finishCancelled('awaiting_clarify');
         return false;
       }
       userInput = answer;
-      setState({
-        ...state,
-        refineHistory: [...state.refineHistory, { role: 'user', content: answer }],
-        clarifyingQuestion: null,
-      });
-      transitionTo('preparing');
     }
     return false;
   };
@@ -633,6 +659,46 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
     done: () => terminalPromise,
   };
 
+  const dispatchSendAction = async (action: ReadyAction): Promise<void> => {
+    const adapterId = action.adapterId ?? state.selectedAdapterId;
+    const timeoutMs = action.timeoutMs ?? state.timeoutMs;
+    if (adapterId === null || adapterId === undefined) {
+      await finishWithError('adapter_missing', 'No adapter selected and no default available.');
+      return;
+    }
+    const adapter = deps.registry.get(adapterId);
+    if (adapter === undefined) {
+      await finishWithError('adapter_missing', `Adapter not registered: ${adapterId}`);
+      return;
+    }
+    setState({
+      ...state,
+      selectedAdapterId: adapterId,
+      timeoutMs,
+      ...(action.refineBudget !== undefined ? { refineBudget: action.refineBudget } : {}),
+    });
+    await runAdapterPhase(adapter);
+  };
+
+  // Returns next userInput to feed back into the refine loop, or null if loop should exit.
+  const handleReadyAction = async (action: ReadyAction | null): Promise<string | null | 'exit'> => {
+    if (action === null || action.type === 'cancel') {
+      finishCancelled('ready');
+      return 'exit';
+    }
+    if (action.type === 'edit') {
+      const edited = action.editedPrompt ?? '';
+      setState({
+        ...state,
+        refineHistory: [...state.refineHistory, { role: 'user', content: edited }],
+      });
+      transitionTo('preparing');
+      return edited;
+    }
+    await dispatchSendAction(action);
+    return 'exit';
+  };
+
   void (async (): Promise<void> => {
     try {
       let userInput: string | null = null;
@@ -641,44 +707,9 @@ export function startExternalAgentRun(deps: SubgraphDeps, input: RunInput): RunH
         userInput = null;
         if (!reachedReady || isTerminal(state.phase)) return;
         const action = await awaitReadyAction();
-        if (action === null) {
-          finishCancelled('ready');
-          return;
-        }
-        if (action.type === 'cancel') {
-          finishCancelled('ready');
-          return;
-        }
-        if (action.type === 'edit') {
-          const edited = action.editedPrompt ?? '';
-          setState({
-            ...state,
-            refineHistory: [...state.refineHistory, { role: 'user', content: edited }],
-          });
-          transitionTo('preparing');
-          userInput = edited;
-          continue;
-        }
-        // send
-        const adapterId = action.adapterId ?? state.selectedAdapterId;
-        const timeoutMs = action.timeoutMs ?? state.timeoutMs;
-        if (adapterId === null || adapterId === undefined) {
-          await finishWithError('adapter_missing', 'No adapter selected and no default available.');
-          return;
-        }
-        const adapter = deps.registry.get(adapterId);
-        if (adapter === undefined) {
-          await finishWithError('adapter_missing', `Adapter not registered: ${adapterId}`);
-          return;
-        }
-        setState({
-          ...state,
-          selectedAdapterId: adapterId,
-          timeoutMs,
-          ...(action.refineBudget !== undefined ? { refineBudget: action.refineBudget } : {}),
-        });
-        await runAdapterPhase(adapter);
-        return;
+        const next = await handleReadyAction(action);
+        if (next === 'exit') return;
+        userInput = next;
       }
     } catch (err) {
       deps.logger?.error('externalAgent.subgraph.unhandled', {

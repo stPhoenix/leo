@@ -304,6 +304,34 @@ function deriveConfirmation(decl: UserToolDeclaration): boolean {
   return decl.requiresConfirmation ?? true;
 }
 
+async function performReadOp(vault: VaultAdapter, path: string): Promise<ToolResult<unknown>> {
+  if (!(await vault.exists(path))) return { ok: false, error: `not found: ${path}` };
+  const content = await vault.read(path);
+  return { ok: true, data: { path, content } };
+}
+
+async function performCreateOp(
+  vault: VaultAdapter,
+  path: string,
+  content: string,
+): Promise<ToolResult<unknown>> {
+  if (await vault.exists(path)) return { ok: false, error: `already exists: ${path}` };
+  await vault.write(path, content);
+  return { ok: true, data: { path, bytes: content.length, op: 'create' } };
+}
+
+async function performAppendOp(
+  vault: VaultAdapter,
+  path: string,
+  content: string,
+): Promise<ToolResult<unknown>> {
+  const prior = (await vault.exists(path)) ? await vault.read(path) : '';
+  const sep = prior.length === 0 || prior.endsWith('\n') ? '' : '\n';
+  const joined = `${prior}${sep}${content}`;
+  await vault.write(path, joined);
+  return { ok: true, data: { path, bytes: joined.length, op: 'append' } };
+}
+
 async function invokeVaultOp(
   impl: VaultOpDeclaration,
   args: unknown,
@@ -318,37 +346,19 @@ async function invokeVaultOp(
   }
   if (!isSafeVaultPath(path)) return { ok: false, error: 'unsafe path' };
   try {
-    if (impl.op === 'read') {
-      if (!(await vault.exists(path))) return { ok: false, error: `not found: ${path}` };
-      const content = await vault.read(path);
-      return { ok: true, data: { path, content } };
-    }
+    if (impl.op === 'read') return await performReadOp(vault, path);
     const contentKey = impl.contentArg ?? 'content';
     const content = argsObj[contentKey];
     if (typeof content !== 'string') return { ok: false, error: `missing arg: ${contentKey}` };
-    if (impl.op === 'create') {
-      if (await vault.exists(path)) return { ok: false, error: `already exists: ${path}` };
-      await vault.write(path, content);
-      return { ok: true, data: { path, bytes: content.length, op: 'create' } };
-    }
-    const prior = (await vault.exists(path)) ? await vault.read(path) : '';
-    let joined: string;
-    if (prior.length === 0) {
-      joined = content;
-    } else {
-      const sep = prior.endsWith('\n') ? '' : '\n';
-      joined = `${prior}${sep}${content}`;
-    }
-    await vault.write(path, joined);
-    return { ok: true, data: { path, bytes: joined.length, op: 'append' } };
+    if (impl.op === 'create') return await performCreateOp(vault, path, content);
+    return await performAppendOp(vault, path, content);
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
 function compileJs(source: string): CompiledJsImpl {
-  // NOSONAR(typescript:S1523): user-defined tool snippets execute by design (documented user-extensibility); invocation gated by AbortSignal + ToolCtx.
-  const factory = new Function(
+  const factory = new Function( // NOSONAR(typescript:S1523): user-defined tool snippets execute by design (documented user-extensibility); invocation gated by AbortSignal + ToolCtx.
     'ctx',
     'args',
     `"use strict"; return (async function __leoUserTool(ctx, args) { ${source} })(ctx, args);`,

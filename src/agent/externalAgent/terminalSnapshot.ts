@@ -90,13 +90,7 @@ export function filterSecretFields(schema: z.ZodType, resolved: unknown): Record
     if (f.kind === 'object' && f.children !== undefined) {
       const childObj = obj[f.path[0]!];
       if (childObj !== undefined && typeof childObj === 'object' && childObj !== null) {
-        const filtered: Record<string, unknown> = {};
-        for (const child of f.children) {
-          const key = child.path[child.path.length - 1]!;
-          if (child.kind === 'secret') continue;
-          filtered[key] = (childObj as Record<string, unknown>)[key];
-        }
-        out[f.path[0]!] = filtered;
+        out[f.path[0]!] = filterObjectChildren(childObj as Record<string, unknown>, f.children);
       }
       continue;
     }
@@ -104,6 +98,19 @@ export function filterSecretFields(schema: z.ZodType, resolved: unknown): Record
     if (key in obj) out[key] = obj[key];
   }
   return out;
+}
+
+function filterObjectChildren(
+  childObj: Record<string, unknown>,
+  children: readonly { path: readonly string[]; kind: string }[],
+): Record<string, unknown> {
+  const filtered: Record<string, unknown> = {};
+  for (const child of children) {
+    if (child.kind === 'secret') continue;
+    const key = child.path[child.path.length - 1]!;
+    filtered[key] = childObj[key];
+  }
+  return filtered;
 }
 
 /**

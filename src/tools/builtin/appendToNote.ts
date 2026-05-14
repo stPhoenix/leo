@@ -1,10 +1,32 @@
 import { z } from 'zod';
 import type { AcceptRejectController, EditNoteProposal } from '@/agent/acceptRejectController';
 import type { Logger } from '@/platform/Logger';
-import type { ToolSpec } from '../types';
+import type { ToolCtx, ToolSpec } from '../types';
 import { isSafeVaultPath } from './readNote';
 import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
 import { ensureFreshRead } from './writeGuard';
+import { presentDecision } from './_toolGuards';
+
+async function syncReadStateAfterAppend(
+  ctx: ToolCtx,
+  path: string,
+  next: string,
+  reverted: boolean,
+): Promise<void> {
+  if (ctx.readState === undefined) return;
+  if (reverted) {
+    ctx.readState.invalidate(ctx.thread, path);
+    return;
+  }
+  const stat = await ctx.vault.stat(path);
+  ctx.readState.set(ctx.thread, path, {
+    content: next,
+    mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
+    offset: undefined,
+    limit: undefined,
+    isPartialView: false,
+  });
+}
 
 export interface AppendToNoteArgs {
   readonly path: string;
@@ -82,45 +104,16 @@ export function createAppendToNoteTool(
           lineEnd: 0,
           routedVia: 'vault',
         };
-        const decision = await opts.acceptReject.present(proposal);
-        let reverted = false;
-        if (decision === 'reject') {
-          try {
-            await ctx.vault.write(args.path, existing);
-            reverted = true;
-            opts.logger?.info('append_to_note.reject', {
-              toolId: 'append_to_note',
-              thread: ctx.thread,
-              path: args.path,
-            });
-          } catch (err) {
-            opts.logger?.error('append_to_note.reject.failed', {
-              path: args.path,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        } else {
-          opts.logger?.info('append_to_note.accept', {
-            toolId: 'append_to_note',
-            thread: ctx.thread,
-            path: args.path,
-          });
-        }
+        const { reverted } = await presentDecision({
+          acceptReject: opts.acceptReject,
+          proposal,
+          logger: opts.logger,
+          logKey: 'append_to_note',
+          logFields: { toolId: 'append_to_note', thread: ctx.thread, path: args.path },
+          revert: () => ctx.vault.write(args.path, existing),
+        });
 
-        if (ctx.readState !== undefined) {
-          if (reverted) {
-            ctx.readState.invalidate(ctx.thread, args.path);
-          } else {
-            const stat = await ctx.vault.stat(args.path);
-            ctx.readState.set(ctx.thread, args.path, {
-              content: next,
-              mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
-              offset: undefined,
-              limit: undefined,
-              isPartialView: false,
-            });
-          }
-        }
+        await syncReadStateAfterAppend(ctx, args.path, next, reverted);
 
         return {
           ok: true,

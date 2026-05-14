@@ -170,6 +170,48 @@ export class VectorStore {
     }
   }
 
+  private async ensureLoaded(): Promise<Result<void>> {
+    if (this.loaded) return { ok: true, value: undefined };
+    try {
+      await this.open();
+      return { ok: true, value: undefined };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err : new CorruptIndexError('open-failed'),
+      };
+    }
+  }
+
+  private writeChunkRows(
+    path: string,
+    chunks: readonly Chunk[],
+    vectors: readonly (readonly number[])[],
+  ): void {
+    const existing = this.byPath.get(path);
+    if (existing !== undefined) for (const id of existing) this.rows.delete(id);
+    const newIds = new Set<string>();
+    for (let i = 0; i < chunks.length; i += 1) {
+      const chunk = chunks[i]!;
+      const vector = vectors[i]!;
+      const row: VectorRow = {
+        id: chunkRowId(chunk.path, chunk.line_start, chunk.line_end),
+        path: chunk.path,
+        line_start: chunk.line_start,
+        line_end: chunk.line_end,
+        heading_path: chunk.heading_path,
+        frontmatter_tags: chunk.frontmatter_tags,
+        inline_tags: chunk.inline_tags,
+        text: chunk.text,
+        vector: [...vector],
+      };
+      this.rows.set(row.id, row);
+      newIds.add(row.id);
+    }
+    if (newIds.size > 0) this.byPath.set(path, newIds);
+    else this.byPath.delete(path);
+  }
+
   async upsert(
     path: string,
     chunks: readonly Chunk[],
@@ -181,44 +223,10 @@ export class VectorStore {
         error: new Error(`upsert mismatch: ${chunks.length} chunks vs ${vectors.length} vectors`),
       };
     }
-    if (!this.loaded) {
-      try {
-        await this.open();
-      } catch (err) {
-        return {
-          ok: false,
-          error: err instanceof Error ? err : new CorruptIndexError('open-failed'),
-        };
-      }
-    }
+    const loaded = await this.ensureLoaded();
+    if (!loaded.ok) return loaded;
     try {
-      const existing = this.byPath.get(path);
-      if (existing !== undefined) {
-        for (const id of existing) this.rows.delete(id);
-      }
-      const newIds = new Set<string>();
-      for (let i = 0; i < chunks.length; i += 1) {
-        const chunk = chunks[i]!;
-        const vector = vectors[i]!;
-        const row: VectorRow = {
-          id: chunkRowId(chunk.path, chunk.line_start, chunk.line_end),
-          path: chunk.path,
-          line_start: chunk.line_start,
-          line_end: chunk.line_end,
-          heading_path: chunk.heading_path,
-          frontmatter_tags: chunk.frontmatter_tags,
-          inline_tags: chunk.inline_tags,
-          text: chunk.text,
-          vector: [...vector],
-        };
-        this.rows.set(row.id, row);
-        newIds.add(row.id);
-      }
-      if (newIds.size > 0) {
-        this.byPath.set(path, newIds);
-      } else {
-        this.byPath.delete(path);
-      }
+      this.writeChunkRows(path, chunks, vectors);
       await this.flush();
       this.logger?.info('index.store.upsert', { path, count: chunks.length });
       return { ok: true, value: undefined };

@@ -294,6 +294,18 @@ function mergeToolSearch(raw: unknown): ToolSearchSettings {
   };
 }
 
+function parseAdapterInstance(val: unknown): ExternalAgentInstanceSettings | undefined {
+  if (val === null || typeof val !== 'object') return undefined;
+  const v = val as Record<string, unknown>;
+  return {
+    enabled: typeof v.enabled === 'boolean' ? v.enabled : true,
+    config:
+      v.config !== null && typeof v.config === 'object'
+        ? (v.config as Record<string, unknown>)
+        : {},
+  };
+}
+
 function mergeExternalAgents(raw: unknown): ExternalAgentsSettings {
   if (raw === null || typeof raw !== 'object') {
     return { ...DEFAULT_EXTERNAL_AGENTS, adapters: {} };
@@ -304,15 +316,8 @@ function mergeExternalAgents(raw: unknown): ExternalAgentsSettings {
   const adaptersRaw = o.adapters;
   if (adaptersRaw !== null && typeof adaptersRaw === 'object') {
     for (const [key, val] of Object.entries(adaptersRaw as Record<string, unknown>)) {
-      if (val === null || typeof val !== 'object') continue;
-      const v = val as Record<string, unknown>;
-      adapters[key] = {
-        enabled: typeof v.enabled === 'boolean' ? v.enabled : true,
-        config:
-          v.config !== null && typeof v.config === 'object'
-            ? (v.config as Record<string, unknown>)
-            : {},
-      };
+      const instance = parseAdapterInstance(val);
+      if (instance !== undefined) adapters[key] = instance;
     }
   }
   return { defaultAdapterId: defaultId, adapters };

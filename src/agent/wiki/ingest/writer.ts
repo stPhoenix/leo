@@ -301,8 +301,19 @@ export async function regenerateIndex(vault: VaultAdapter): Promise<string> {
   } catch {
     return defaultEmptyIndex();
   }
+  const pages = await loadPageEntries(vault, listing.files);
+  pages.sort((a, b) => a.slug.localeCompare(b.slug));
+  const byCategory = groupPagesByCategory(pages);
+  const categories = [...byCategory.keys()].sort((a, b) => a.localeCompare(b));
+  return renderIndex(categories, byCategory);
+}
+
+async function loadPageEntries(
+  vault: VaultAdapter,
+  files: readonly string[],
+): Promise<PageIndexEntry[]> {
   const pages: PageIndexEntry[] = [];
-  for (const path of listing.files) {
+  for (const path of files) {
     if (!path.endsWith('.md')) continue;
     let body: string;
     try {
@@ -313,12 +324,12 @@ export async function regenerateIndex(vault: VaultAdapter): Promise<string> {
     const fm = parseFrontmatter(body);
     const slug = path.replace(`${WIKI_PAGES_DIR}/`, '').replace(/\.md$/i, '');
     const title = extractTitle(body) ?? slug.replace(/-/g, ' ');
-    const summary = firstBodyLine(body);
-    const tags = parseTagsField(fm['tags']);
-    pages.push({ slug, title, summary, tags });
+    pages.push({ slug, title, summary: firstBodyLine(body), tags: parseTagsField(fm['tags']) });
   }
-  pages.sort((a, b) => a.slug.localeCompare(b.slug));
+  return pages;
+}
 
+function groupPagesByCategory(pages: readonly PageIndexEntry[]): Map<string, PageIndexEntry[]> {
   const byCategory = new Map<string, PageIndexEntry[]>();
   for (const p of pages) {
     const cats = p.tags.length > 0 ? p.tags : ['Untagged'];
@@ -328,8 +339,13 @@ export async function regenerateIndex(vault: VaultAdapter): Promise<string> {
       else list.push(p);
     }
   }
-  const categories = [...byCategory.keys()].sort((a, b) => a.localeCompare(b));
+  return byCategory;
+}
 
+function renderIndex(
+  categories: readonly string[],
+  byCategory: ReadonlyMap<string, readonly PageIndexEntry[]>,
+): string {
   const lines: string[] = ['# Wiki index', ''];
   for (const c of categories) {
     lines.push(`## ${c}`, '');

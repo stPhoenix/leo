@@ -279,6 +279,68 @@ export async function runManualCompaction(
   return runCompaction(messages, { ...opts, trigger: 'manual' });
 }
 
+function failNoStream(opts: AutocompactOptions, preCompactTokenCount: number): null {
+  opts.logger.warn('tengu_compact_failed', {
+    reason: FAILURE_REASON_NO_STREAM,
+    preCompactTokenCount,
+  });
+  recordFailureIfTracked(opts);
+  if (opts.signal?.aborted) opts.phaseSink?.cancelled();
+  else opts.phaseSink?.error('no_stream', 'No streaming response from provider');
+  return null;
+}
+
+function throwPtl(opts: AutocompactOptions, preCompactTokenCount: number): never {
+  opts.logger.warn('tengu_compact_failed', { reason: 'prompt_too_long', preCompactTokenCount });
+  recordFailureIfTracked(opts);
+  opts.phaseSink?.error('prompt_too_long', ERROR_MESSAGE_PROMPT_TOO_LONG);
+  throw new Error(ERROR_MESSAGE_PROMPT_TOO_LONG);
+}
+
+interface SummarizationLoopResult {
+  readonly result: StreamCallResult | null;
+}
+
+async function runSummarizationLoop(
+  initial: readonly ChatMessage[],
+  opts: AutocompactOptions,
+  preCompactTokenCount: number,
+): Promise<SummarizationLoopResult> {
+  let messagesToSummarize: readonly ChatMessage[] = initial;
+  let ptlAttempts = 0;
+  for (;;) {
+    if (opts.signal?.aborted) {
+      opts.phaseSink?.cancelled();
+      return { result: null };
+    }
+    const streamResult = await runSummarizationWithRetries(
+      {
+        systemPrompt: COMPACT_SYSTEM_PROMPT,
+        messages: messagesToSummarize,
+        querySource: 'compact',
+      },
+      opts,
+    );
+    if (streamResult === null) {
+      failNoStream(opts, preCompactTokenCount);
+      return { result: null };
+    }
+    if (!streamResult.text.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) {
+      return { result: streamResult };
+    }
+    ptlAttempts += 1;
+    if (ptlAttempts > MAX_PTL_RETRIES) throwPtl(opts, preCompactTokenCount);
+    const truncated = truncateHeadForPTLRetry(messagesToSummarize, streamResult.text);
+    if (truncated === null) throwPtl(opts, preCompactTokenCount);
+    opts.logger.info('tengu_compact_ptl_retry', {
+      attempt: ptlAttempts,
+      droppedMessages: truncated.droppedMessages,
+      remainingMessages: truncated.remainingMessages,
+    });
+    messagesToSummarize = truncated.messages;
+  }
+}
+
 export async function runCompaction(
   messages: readonly ChatMessage[],
   opts: AutocompactOptions,
@@ -294,60 +356,12 @@ export async function runCompaction(
 
   opts.phaseSink?.summarizing();
 
-  let messagesToSummarize: readonly ChatMessage[] = normalized;
-  let streamResult: StreamCallResult | null = null;
-  let ptlAttempts = 0;
-  for (;;) {
-    if (opts.signal?.aborted) {
-      opts.phaseSink?.cancelled();
-      return null;
-    }
-    streamResult = await runSummarizationWithRetries(
-      {
-        systemPrompt: COMPACT_SYSTEM_PROMPT,
-        messages: messagesToSummarize,
-        querySource: 'compact',
-      },
-      opts,
-    );
-    if (streamResult === null) {
-      opts.logger.warn('tengu_compact_failed', {
-        reason: FAILURE_REASON_NO_STREAM,
-        preCompactTokenCount,
-      });
-      recordFailureIfTracked(opts);
-      if (opts.signal?.aborted) opts.phaseSink?.cancelled();
-      else opts.phaseSink?.error('no_stream', 'No streaming response from provider');
-      return null;
-    }
-    if (!streamResult.text.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break;
-    ptlAttempts += 1;
-    if (ptlAttempts > MAX_PTL_RETRIES) {
-      opts.logger.warn('tengu_compact_failed', {
-        reason: 'prompt_too_long',
-        preCompactTokenCount,
-      });
-      recordFailureIfTracked(opts);
-      opts.phaseSink?.error('prompt_too_long', ERROR_MESSAGE_PROMPT_TOO_LONG);
-      throw new Error(ERROR_MESSAGE_PROMPT_TOO_LONG);
-    }
-    const truncated = truncateHeadForPTLRetry(messagesToSummarize, streamResult.text);
-    if (truncated === null) {
-      opts.logger.warn('tengu_compact_failed', {
-        reason: 'prompt_too_long',
-        preCompactTokenCount,
-      });
-      recordFailureIfTracked(opts);
-      opts.phaseSink?.error('prompt_too_long', ERROR_MESSAGE_PROMPT_TOO_LONG);
-      throw new Error(ERROR_MESSAGE_PROMPT_TOO_LONG);
-    }
-    opts.logger.info('tengu_compact_ptl_retry', {
-      attempt: ptlAttempts,
-      droppedMessages: truncated.droppedMessages,
-      remainingMessages: truncated.remainingMessages,
-    });
-    messagesToSummarize = truncated.messages;
-  }
+  const { result: streamResult } = await runSummarizationLoop(
+    normalized,
+    opts,
+    preCompactTokenCount,
+  );
+  if (streamResult === null) return null;
 
   let formattedSummary: string;
   try {
@@ -445,6 +459,26 @@ interface StreamCallResult {
   readonly outputTokens: number;
 }
 
+async function delayBeforeRetry(
+  attempt: number,
+  err: unknown,
+  retryBaseMs: number,
+  opts: AutocompactOptions,
+  sleep: (ms: number, signal?: AbortSignal) => Promise<void>,
+): Promise<boolean> {
+  opts.logger.warn('tengu_compact_streaming_retry', {
+    attempt: attempt + 1,
+    error: err instanceof Error ? err.message : String(err),
+  });
+  const delay = retryBaseMs * Math.pow(2, attempt);
+  try {
+    await sleep(delay, opts.signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function runSummarizationWithRetries(
   call: {
     readonly systemPrompt: string;
@@ -459,27 +493,47 @@ async function runSummarizationWithRetries(
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (opts.signal?.aborted) return null;
     try {
-      const result = await runStreamOnce(call, opts);
-      return result;
+      return await runStreamOnce(call, opts);
     } catch (err) {
       if (opts.signal?.aborted) return null;
-      if (attempt < maxAttempts - 1) {
-        opts.logger.warn('tengu_compact_streaming_retry', {
-          attempt: attempt + 1,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        const delay = retryBaseMs * Math.pow(2, attempt);
-        try {
-          await sleep(delay, opts.signal);
-        } catch {
-          return null;
-        }
-        continue;
-      }
-      return null;
+      if (attempt >= maxAttempts - 1) return null;
+      const slept = await delayBeforeRetry(attempt, err, retryBaseMs, opts, sleep);
+      if (!slept) return null;
     }
   }
   return null;
+}
+
+interface StreamAccumulator {
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+// Returns true if loop should break.
+function applyStreamEvent(ev: StreamEvent, acc: StreamAccumulator): boolean {
+  if (ev.type === 'token') {
+    acc.text += ev.text;
+    return false;
+  }
+  if (ev.type === 'block_delta' && ev.delta.type === 'text_delta') {
+    // langchain-backed providers (lmstudio/openai/anthropic/ollama/custom)
+    // emit text through content-block framing, not the legacy `token` shape.
+    acc.text += ev.delta.text;
+    return false;
+  }
+  if (ev.type === 'usage') {
+    acc.inputTokens = ev.input;
+    acc.outputTokens = ev.output;
+    return false;
+  }
+  if (ev.type === 'message_delta' && ev.usage !== undefined) {
+    if (typeof ev.usage.input === 'number') acc.inputTokens = ev.usage.input;
+    if (typeof ev.usage.output === 'number') acc.outputTokens = ev.usage.output;
+    return false;
+  }
+  if (ev.type === 'error') throw ev.error;
+  return ev.type === 'done';
 }
 
 async function runStreamOnce(
@@ -507,42 +561,22 @@ async function runStreamOnce(
   const keepAlive = setIntervalFn((): void => {
     opts.logger.debug('keepAlive.tick', { querySource: call.querySource });
   }, keepAliveMs);
-  let text = '';
-  let inputTokens = 0;
-  let outputTokens = 0;
+  const acc: StreamAccumulator = { text: '', inputTokens: 0, outputTokens: 0 };
   let sawEvent = false;
   try {
     for await (const ev of opts.provider.stream(req, innerAbort.signal)) {
       sawEvent = true;
       if (innerAbort.signal.aborted) break;
-      if (ev.type === 'token') {
-        text += ev.text;
-      } else if (ev.type === 'block_delta' && ev.delta.type === 'text_delta') {
-        // langchain-backed providers (lmstudio/openai/anthropic/ollama/custom)
-        // emit text through content-block framing, not the legacy `token` shape.
-        // Without this branch the summarizer always saw empty output for those
-        // providers and tripped the circuit breaker.
-        text += ev.delta.text;
-      } else if (ev.type === 'usage') {
-        inputTokens = ev.input;
-        outputTokens = ev.output;
-      } else if (ev.type === 'message_delta' && ev.usage !== undefined) {
-        if (typeof ev.usage.input === 'number') inputTokens = ev.usage.input;
-        if (typeof ev.usage.output === 'number') outputTokens = ev.usage.output;
-      } else if (ev.type === 'error') {
-        throw ev.error;
-      } else if (ev.type === 'done') {
-        break;
-      }
+      if (applyStreamEvent(ev, acc)) break;
     }
   } finally {
     clearIntervalFn(keepAlive);
     detach();
   }
-  if (!sawEvent || text.length === 0) {
+  if (!sawEvent || acc.text.length === 0) {
     throw new Error('empty summarization response');
   }
-  return { text, inputTokens, outputTokens };
+  return { text: acc.text, inputTokens: acc.inputTokens, outputTokens: acc.outputTokens };
 }
 
 function linkSignals(outer: AbortSignal | undefined, inner: AbortController): () => void {
@@ -789,8 +823,7 @@ function collectVisibleFilePaths(messages: readonly ChatMessage[]): ReadonlySet<
   const paths = new Set<string>();
   for (const m of messages) {
     const matches = chatContentText(m.content).match(
-      // NOSONAR(typescript:S5852): bounded char class + literal extension alternation, linear time.
-      /[A-Za-z0-9_\-./]+\.(?:md|ts|tsx|js|jsx|json|canvas)/g,
+      /[A-Za-z0-9_\-./]+\.(?:md|ts|tsx|js|jsx|json|canvas)/g, // NOSONAR(typescript:S5852): bounded char class + literal extension alternation, linear time.
     );
     if (matches !== null) {
       for (const p of matches) paths.add(p);

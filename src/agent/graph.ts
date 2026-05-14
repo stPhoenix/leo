@@ -322,51 +322,41 @@ function toCompactMessages(
 ): CompactMessage[] {
   const out: CompactMessage[] = [];
   for (let i = 0; i < messages.length; i += 1) {
-    const m = messages[i]!;
-    const ts = timestamps[i];
-    const text = chatContentText(m.content);
-    if (m.role === 'assistant') {
-      const calls = m.toolCalls ?? [];
-      const toolCalls: CompactToolCallRef[] = calls.map((c) => ({
-        id: c.id,
-        name: c.name,
-        argsJson: c.argsJson,
-      }));
-      const assistant: CompactAssistantMessage = {
-        role: 'assistant',
-        content: text,
-        ...(toolCalls.length > 0 ? { toolCalls } : {}),
-        ...(ts !== undefined ? { timestamp: ts } : {}),
-      };
-      out.push(assistant);
-      continue;
-    }
-    if (m.role === 'tool') {
-      const tool: CompactToolMessage = {
-        role: 'tool',
-        toolCallId: m.toolCallId ?? '',
-        toolName: m.name ?? '',
-        content: text,
-        ...(ts !== undefined ? { timestamp: ts } : {}),
-      };
-      out.push(tool);
-      continue;
-    }
-    if (m.role === 'user') {
-      out.push({
-        role: 'user',
-        content: text,
-        ...(ts !== undefined ? { timestamp: ts } : {}),
-      });
-      continue;
-    }
-    out.push({
-      role: 'system',
-      content: text,
-      ...(ts !== undefined ? { timestamp: ts } : {}),
-    });
+    out.push(toCompactMessage(messages[i]!, timestamps[i]));
   }
   return out;
+}
+
+function toCompactMessage(m: ChatMessage, ts: number | undefined): CompactMessage {
+  const text = chatContentText(m.content);
+  const tsField = ts !== undefined ? { timestamp: ts } : {};
+  if (m.role === 'assistant') {
+    const calls = m.toolCalls ?? [];
+    const toolCalls: CompactToolCallRef[] = calls.map((c) => ({
+      id: c.id,
+      name: c.name,
+      argsJson: c.argsJson,
+    }));
+    const assistant: CompactAssistantMessage = {
+      role: 'assistant',
+      content: text,
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      ...tsField,
+    };
+    return assistant;
+  }
+  if (m.role === 'tool') {
+    const tool: CompactToolMessage = {
+      role: 'tool',
+      toolCallId: m.toolCallId ?? '',
+      toolName: m.name ?? '',
+      content: text,
+      ...tsField,
+    };
+    return tool;
+  }
+  if (m.role === 'user') return { role: 'user', content: text, ...tsField };
+  return { role: 'system', content: text, ...tsField };
 }
 
 function fromCompactMessages(messages: readonly CompactMessage[]): {
@@ -438,46 +428,131 @@ export class GraphBuilder {
   }
 }
 
+function buildAutocompactGateOpts(
+  state: AgentState,
+  ac: GraphAutocompactOptions,
+  deps: GraphDeps,
+  turn: TurnBinding,
+  userOverride: number | undefined,
+): Parameters<typeof shouldAutoCompactExact>[0] {
+  return {
+    messages: state.workingMessages,
+    model: state.effectiveModel,
+    logger: deps.logger,
+    signal: turn.signal,
+    ...(ac.providerMaxInputTokens !== undefined
+      ? { providerMaxInputTokens: ac.providerMaxInputTokens }
+      : {}),
+    ...(userOverride !== undefined ? { userOverride } : {}),
+    ...(ac.maxOutputTokensForModel !== undefined
+      ? { maxOutputTokensForModel: ac.maxOutputTokensForModel }
+      : {}),
+    ...(ac.exactCounter !== undefined ? { exactCounter: ac.exactCounter } : {}),
+  };
+}
+
+function buildAutocompactRunOpts(
+  state: AgentState,
+  ac: GraphAutocompactOptions,
+  deps: GraphDeps,
+  turn: TurnBinding,
+  userOverride: number | undefined,
+  phaseSink: CompactPhaseSink | undefined,
+): Parameters<typeof autoCompactIfNeeded>[1] {
+  return {
+    logger: deps.logger,
+    provider: ac.provider,
+    model: state.effectiveModel,
+    querySource: 'agent_loop',
+    trigger: 'auto',
+    signal: turn.signal,
+    tracking: ac.tracking,
+    ...(ac.providerMaxInputTokens !== undefined
+      ? { providerMaxInputTokens: ac.providerMaxInputTokens }
+      : {}),
+    ...(userOverride !== undefined ? { userOverride } : {}),
+    ...(ac.maxOutputTokensForModel !== undefined
+      ? { maxOutputTokensForModel: ac.maxOutputTokensForModel }
+      : {}),
+    ...(ac.breakerNotifications !== undefined
+      ? { breakerNotifications: ac.breakerNotifications }
+      : {}),
+    ...(ac.recentFiles !== undefined ? { recentFiles: ac.recentFiles } : {}),
+    ...(ac.invokedSkills !== undefined ? { invokedSkills: ac.invokedSkills() } : {}),
+    ...(ac.plan !== undefined ? { plan: ac.plan } : {}),
+    ...(ac.planMode !== undefined ? { planMode: ac.planMode } : {}),
+    ...(phaseSink !== undefined ? { phaseSink } : {}),
+    ...(ac.exactCounter !== undefined ? { exactCounter: ac.exactCounter } : {}),
+  };
+}
+
+async function runAutocompactStep(
+  state: AgentState,
+  ac: GraphAutocompactOptions,
+  deps: GraphDeps,
+  turn: TurnBinding,
+  userOverride: number | undefined,
+  phaseSink: CompactPhaseSink | undefined,
+): Promise<CompactionResult | null> {
+  try {
+    return await autoCompactIfNeeded(
+      state.workingMessages,
+      buildAutocompactRunOpts(state, ac, deps, turn, userOverride, phaseSink),
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    deps.logger.warn('agent.autocompact.error', { thread: turn.thread, error: message });
+    phaseSink?.error('unknown', message);
+    return null;
+  }
+}
+
+async function executeRagQuery(deps: GraphDeps, turn: TurnBinding): Promise<readonly RagHit[]> {
+  if (deps.ragEngine !== null) {
+    const engineHits = await deps.ragEngine.query(turn.message.content, {
+      signal: turn.signal,
+    });
+    return engineHits.map(
+      (h): RagHit => ({
+        path: h.path,
+        score: h.score,
+        line_start: h.line_start,
+        line_end: h.line_end,
+      }),
+    );
+  }
+  return await deps.rag.query(turn.message, turn.focus);
+}
+
+async function runRagPhase(deps: GraphDeps, turn: TurnBinding): Promise<readonly RagHit[]> {
+  const thread = turn.thread;
+  const mode = deps.ragMode();
+  const shouldRunRag = mode === 'auto' || (mode === 'no-focus' && turn.focus.file === null);
+  if (!shouldRunRag) {
+    deps.logger.debug('agent.turn.rag.skip', { thread, mode, focusFile: turn.focus.file });
+    return [];
+  }
+  const ragStart = nowMs();
+  let ragHits: readonly RagHit[] = [];
+  try {
+    ragHits = await executeRagQuery(deps, turn);
+  } catch (err) {
+    deps.logger.warn('agent.rag.failure', {
+      thread,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  deps.logger.debug('agent.turn.rag.ms', { thread, ms: Math.round(nowMs() - ragStart) });
+  deps.logger.debug('agent.turn.rag.hits', { thread, hits: ragHits.length });
+  return ragHits;
+}
+
 export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
   const prepareContext = async (_state: AgentState): Promise<Partial<AgentState>> => {
     const thread = turn.thread;
     const history = deps.getHistory(thread);
     const historyWithUser: readonly AgentHistoryMessage[] = [...history, turn.message];
-    let ragHits: readonly RagHit[] = [];
-    const mode = deps.ragMode();
-    const shouldRunRag = mode === 'auto' || (mode === 'no-focus' && turn.focus.file === null);
-    if (shouldRunRag) {
-      const ragStart = nowMs();
-      try {
-        if (deps.ragEngine !== null) {
-          const engineHits = await deps.ragEngine.query(turn.message.content, {
-            signal: turn.signal,
-          });
-          ragHits = engineHits.map(
-            (h): RagHit => ({
-              path: h.path,
-              score: h.score,
-              line_start: h.line_start,
-              line_end: h.line_end,
-            }),
-          );
-        } else {
-          ragHits = await deps.rag.query(turn.message, turn.focus);
-        }
-      } catch (err) {
-        deps.logger.warn('agent.rag.failure', {
-          thread,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      deps.logger.debug('agent.turn.rag.ms', {
-        thread,
-        ms: Math.round(nowMs() - ragStart),
-      });
-      deps.logger.debug('agent.turn.rag.hits', { thread, hits: ragHits.length });
-    } else {
-      deps.logger.debug('agent.turn.rag.skip', { thread, mode, focusFile: turn.focus.file });
-    }
+    const ragHits = await runRagPhase(deps, turn);
     const agentId = turn.agentId;
     const skillListing = deps.skillListing?.buildFor({ thread, agentId }) ?? null;
     const prompt = assembleContext({
@@ -556,58 +631,12 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     if (state.workingMessages.length === 0) return {};
     const userOverride = ac.userOverride?.();
     const breakerTripped = ac.tracking !== undefined && shouldSkipForCircuitBreaker(ac.tracking);
-    const willRun = await shouldAutoCompactExact({
-      messages: state.workingMessages,
-      model: state.effectiveModel,
-      logger: deps.logger,
-      signal: turn.signal,
-      ...(ac.providerMaxInputTokens !== undefined
-        ? { providerMaxInputTokens: ac.providerMaxInputTokens }
-        : {}),
-      ...(userOverride !== undefined ? { userOverride } : {}),
-      ...(ac.maxOutputTokensForModel !== undefined
-        ? { maxOutputTokensForModel: ac.maxOutputTokensForModel }
-        : {}),
-      ...(ac.exactCounter !== undefined ? { exactCounter: ac.exactCounter } : {}),
-    });
+    const willRun = await shouldAutoCompactExact(
+      buildAutocompactGateOpts(state, ac, deps, turn, userOverride),
+    );
     if (!willRun && !breakerTripped) return {};
     const phaseSink = ac.beginRun?.({ trigger: 'auto', threadId: turn.thread });
-    let result: CompactionResult | null = null;
-    try {
-      result = await autoCompactIfNeeded(state.workingMessages, {
-        logger: deps.logger,
-        provider: ac.provider,
-        model: state.effectiveModel,
-        querySource: 'agent_loop',
-        trigger: 'auto',
-        signal: turn.signal,
-        tracking: ac.tracking,
-        ...(ac.providerMaxInputTokens !== undefined
-          ? { providerMaxInputTokens: ac.providerMaxInputTokens }
-          : {}),
-        ...(userOverride !== undefined ? { userOverride } : {}),
-        ...(ac.maxOutputTokensForModel !== undefined
-          ? { maxOutputTokensForModel: ac.maxOutputTokensForModel }
-          : {}),
-        ...(ac.breakerNotifications !== undefined
-          ? { breakerNotifications: ac.breakerNotifications }
-          : {}),
-        ...(ac.recentFiles !== undefined ? { recentFiles: ac.recentFiles } : {}),
-        ...(ac.invokedSkills !== undefined ? { invokedSkills: ac.invokedSkills() } : {}),
-        ...(ac.plan !== undefined ? { plan: ac.plan } : {}),
-        ...(ac.planMode !== undefined ? { planMode: ac.planMode } : {}),
-        ...(phaseSink !== undefined ? { phaseSink } : {}),
-        ...(ac.exactCounter !== undefined ? { exactCounter: ac.exactCounter } : {}),
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      deps.logger.warn('agent.autocompact.error', {
-        thread: turn.thread,
-        error: message,
-      });
-      phaseSink?.error('unknown', message);
-      return {};
-    }
+    const result = await runAutocompactStep(state, ac, deps, turn, userOverride, phaseSink);
     if (result === null) return {};
     ac.onResult?.(result);
     ac.replaceHistory?.(turn.thread, result);
@@ -796,6 +825,27 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
     turn.events.close();
   };
 
+  const consumeProviderStream = async (
+    req: ReturnType<typeof buildProviderRequest>,
+    accum: StreamAccumulator,
+    offset: number,
+  ): Promise<'ok' | 'errored' | 'cancelled'> => {
+    try {
+      for await (const ev of deps.provider.stream(req, turn.signal)) {
+        if (turn.signal.aborted) break;
+        const outcome = applyStreamEvent(ev, accum, offset);
+        if (outcome === 'errored') return 'errored';
+        if (outcome === 'break') break;
+      }
+      return 'ok';
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (turn.signal.aborted) return 'cancelled';
+      reportTurnError(error);
+      return 'errored';
+    }
+  };
+
   const callModelNode = async (state: AgentState): Promise<Partial<AgentState>> => {
     if (turn.signal.aborted) return { cancelled: true };
     const { tools: activeTools, providerHints, announcement } = buildActiveTools(state);
@@ -813,24 +863,12 @@ export function buildAgentGraph(deps: GraphDeps, turn: TurnBinding) {
       pendingToolCalls: [],
     };
     const offset = state.blockIndexOffset;
-    try {
-      for await (const ev of deps.provider.stream(req, turn.signal)) {
-        if (turn.signal.aborted) break;
-        const outcome = applyStreamEvent(ev, accum, offset);
-        if (outcome === 'errored') return { errored: true };
-        if (outcome === 'break') break;
-      }
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      if (turn.signal.aborted) return { cancelled: true };
-      reportTurnError(error);
-      return { errored: true };
-    }
+    const status = await consumeProviderStream(req, accum, offset);
+    if (status === 'cancelled') return { cancelled: true };
+    if (status === 'errored') return { errored: true };
 
-    let turnCalledTodoWrite = state.turnCalledTodoWrite;
-    for (const c of accum.pendingToolCalls) {
-      if (c.name === 'TodoWrite') turnCalledTodoWrite = true;
-    }
+    const turnCalledTodoWrite =
+      state.turnCalledTodoWrite || accum.pendingToolCalls.some((c) => c.name === 'TodoWrite');
     const nextOffset =
       accum.maxIndexInIteration >= 0 ? offset + accum.maxIndexInIteration + 1 : offset;
     return {

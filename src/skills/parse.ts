@@ -28,42 +28,51 @@ export function parseFrontmatter(source: string): ParsedFrontmatter {
   return { fields, body };
 }
 
+interface YamlState {
+  currentKey: string | null;
+  blockList: string[] | null;
+}
+
+function flushBlockList(state: YamlState, out: Record<string, unknown>): void {
+  if (state.blockList === null) return;
+  if (state.currentKey !== null) out[state.currentKey] = state.blockList;
+  state.blockList = null;
+  state.currentKey = null;
+}
+
+function applyKeyValueLine(line: string, state: YamlState, out: Record<string, unknown>): void {
+  const idx = line.indexOf(':');
+  if (idx < 0) return;
+  const key = line.slice(0, idx).trim();
+  const valueRaw = line.slice(idx + 1).trim();
+  if (key.length === 0) return;
+  if (valueRaw.length === 0) {
+    state.currentKey = key;
+    state.blockList = [];
+    return;
+  }
+  out[key] = parseScalar(valueRaw);
+}
+
+function isSkippableLine(line: string): boolean {
+  return line.length === 0 || /^\s*#/.test(line);
+}
+
 export function parseSimpleYaml(text: string): Readonly<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
   const lines = text.split(/\r?\n/);
-  let currentKey: string | null = null;
-  let blockList: string[] | null = null;
+  const state: YamlState = { currentKey: null, blockList: null };
   for (const rawLine of lines) {
     const line = rawLine.replace(/\s+$/, ''); // NOSONAR(typescript:S5852): anchored trailing-whitespace trim, linear.
-    if (line.length === 0) continue;
-    if (/^\s*#/.test(line)) continue;
-    if (blockList !== null && /^\s+-\s+/.test(line)) {
-      const item = line.replace(/^\s+-\s+/, '');
-      blockList.push(stripQuotes(item));
+    if (isSkippableLine(line)) continue;
+    if (state.blockList !== null && /^\s+-\s+/.test(line)) {
+      state.blockList.push(stripQuotes(line.replace(/^\s+-\s+/, '')));
       continue;
     }
-    if (blockList !== null) {
-      if (currentKey !== null) {
-        out[currentKey] = blockList;
-      }
-      blockList = null;
-      currentKey = null;
-    }
-    const idx = line.indexOf(':');
-    if (idx < 0) continue;
-    const key = line.slice(0, idx).trim();
-    const valueRaw = line.slice(idx + 1).trim();
-    if (key.length === 0) continue;
-    if (valueRaw.length === 0) {
-      currentKey = key;
-      blockList = [];
-      continue;
-    }
-    out[key] = parseScalar(valueRaw);
+    flushBlockList(state, out);
+    applyKeyValueLine(line, state, out);
   }
-  if (blockList !== null && currentKey !== null) {
-    out[currentKey] = blockList;
-  }
+  flushBlockList(state, out);
   return out;
 }
 
@@ -98,57 +107,85 @@ export interface ParseSkillOptions {
   readonly canonicalName: string;
 }
 
-export function parseSkillMarkdown(source: string, opts: ParseSkillOptions): SkillParseResult {
-  const { fields, body } = parseFrontmatter(source);
-  if (body.length === 0) {
-    return { ok: false, error: 'skill body is empty' };
-  }
+interface SkillFieldExtract {
+  readonly nameField: string | undefined;
+  readonly description: string;
+  readonly paths: readonly string[] | undefined;
+  readonly normalizedPaths: readonly string[] | undefined;
+  readonly argumentNames: readonly string[] | undefined;
+  readonly allowedTools: readonly string[];
+  readonly whenToUse: string | undefined;
+  readonly argumentHint: string | undefined;
+  readonly model: string | undefined;
+  readonly effort: EffortValue | undefined;
+  readonly context: SkillContext | undefined;
+  readonly agent: string | undefined;
+  readonly version: string | undefined;
+  readonly shell: ShellSpec | undefined;
+  readonly disableModelInvocation: boolean;
+  readonly userInvocable: boolean;
+  readonly aliases: readonly string[] | undefined;
+}
 
-  const nameField = typeof fields['name'] === 'string' ? (fields['name'] as string) : undefined;
-  const description = deriveDescription(fields, body);
-  if (description === null) {
-    return { ok: false, error: 'skill description is missing' };
-  }
+function extractSkillFields(
+  fields: Readonly<Record<string, unknown>>,
+  description: string,
+): SkillFieldExtract {
   const paths = asStringArray(fields['paths']);
-  const normalizedPaths = paths !== undefined ? normalizePaths(paths) : undefined;
-  const argumentNames = asStringArray(fields['arguments']);
-  const allowedTools =
-    asStringArray(fields['allowed-tools']) ?? asStringArray(fields['allowedTools']) ?? [];
-  const whenToUse = pickString(fields, 'when_to_use', 'whenToUse');
-  const argumentHint = pickString(fields, 'argument-hint', 'argumentHint');
   const modelRaw = pickString(fields, 'model');
-  const model = modelRaw === 'inherit' ? undefined : modelRaw;
-  const effort = parseEffort(fields['effort']);
-  const context = parseContext(fields['context']);
-  const agent = pickString(fields, 'agent');
-  const version = pickString(fields, 'version');
-  const shell = parseShellSpec(fields['shell']);
-  const disableModelInvocation =
-    pickBoolean(fields, 'disable-model-invocation', 'disableModelInvocation') ?? false;
-  const userInvocable = pickBoolean(fields, 'user-invocable', 'userInvocable') ?? true;
-  const aliases = asStringArray(fields['aliases']);
-
-  const blueprint: SkillBlueprint = {
-    name: opts.canonicalName,
-    displayName: nameField ?? opts.canonicalName,
+  return {
+    nameField: typeof fields['name'] === 'string' ? (fields['name'] as string) : undefined,
     description,
-    ...(whenToUse !== undefined ? { whenToUse } : {}),
-    ...(aliases !== undefined ? { aliases } : {}),
-    ...(argumentHint !== undefined ? { argumentHint } : {}),
-    ...(argumentNames !== undefined ? { argNames: argumentNames } : {}),
-    allowedTools,
-    ...(model !== undefined ? { model } : {}),
-    ...(effort !== undefined ? { effort } : {}),
-    ...(context !== undefined ? { context } : {}),
-    ...(agent !== undefined ? { agent } : {}),
-    ...(normalizedPaths !== undefined ? { paths: normalizedPaths } : {}),
-    ...(shell !== undefined ? { shell } : {}),
-    disableModelInvocation,
-    userInvocable,
-    ...(version !== undefined ? { version } : {}),
+    paths,
+    normalizedPaths: paths !== undefined ? normalizePaths(paths) : undefined,
+    argumentNames: asStringArray(fields['arguments']),
+    allowedTools:
+      asStringArray(fields['allowed-tools']) ?? asStringArray(fields['allowedTools']) ?? [],
+    whenToUse: pickString(fields, 'when_to_use', 'whenToUse'),
+    argumentHint: pickString(fields, 'argument-hint', 'argumentHint'),
+    model: modelRaw === 'inherit' ? undefined : modelRaw,
+    effort: parseEffort(fields['effort']),
+    context: parseContext(fields['context']),
+    agent: pickString(fields, 'agent'),
+    version: pickString(fields, 'version'),
+    shell: parseShellSpec(fields['shell']),
+    disableModelInvocation:
+      pickBoolean(fields, 'disable-model-invocation', 'disableModelInvocation') ?? false,
+    userInvocable: pickBoolean(fields, 'user-invocable', 'userInvocable') ?? true,
+    aliases: asStringArray(fields['aliases']),
+  };
+}
+
+function buildBlueprint(e: SkillFieldExtract, canonicalName: string, body: string): SkillBlueprint {
+  return {
+    name: canonicalName,
+    displayName: e.nameField ?? canonicalName,
+    description: e.description,
+    ...(e.whenToUse !== undefined ? { whenToUse: e.whenToUse } : {}),
+    ...(e.aliases !== undefined ? { aliases: e.aliases } : {}),
+    ...(e.argumentHint !== undefined ? { argumentHint: e.argumentHint } : {}),
+    ...(e.argumentNames !== undefined ? { argNames: e.argumentNames } : {}),
+    allowedTools: e.allowedTools,
+    ...(e.model !== undefined ? { model: e.model } : {}),
+    ...(e.effort !== undefined ? { effort: e.effort } : {}),
+    ...(e.context !== undefined ? { context: e.context } : {}),
+    ...(e.agent !== undefined ? { agent: e.agent } : {}),
+    ...(e.normalizedPaths !== undefined ? { paths: e.normalizedPaths } : {}),
+    ...(e.shell !== undefined ? { shell: e.shell } : {}),
+    disableModelInvocation: e.disableModelInvocation,
+    userInvocable: e.userInvocable,
+    ...(e.version !== undefined ? { version: e.version } : {}),
     body,
   };
-  return { ok: true, skill: blueprint };
+}
+
+export function parseSkillMarkdown(source: string, opts: ParseSkillOptions): SkillParseResult {
+  const { fields, body } = parseFrontmatter(source);
+  if (body.length === 0) return { ok: false, error: 'skill body is empty' };
+  const description = deriveDescription(fields, body);
+  if (description === null) return { ok: false, error: 'skill description is missing' };
+  const extracted = extractSkillFields(fields, description);
+  return { ok: true, skill: buildBlueprint(extracted, opts.canonicalName, body) };
 }
 
 function deriveDescription(fields: Readonly<Record<string, unknown>>, body: string): string | null {
@@ -211,25 +248,28 @@ function parseContext(value: unknown): SkillContext | undefined {
   return undefined;
 }
 
+function parseShellSpecFromString(value: string): ShellSpec | undefined {
+  const match = /timeoutMs\s*:\s*(\d+)/.exec(value);
+  if (match === null) return undefined;
+  return { timeoutMs: Number.parseInt(match[1]!, 10) };
+}
+
+function parseShellSpecFromObject(obj: Record<string, unknown>): ShellSpec | undefined {
+  const timeout = typeof obj['timeoutMs'] === 'number' ? (obj['timeoutMs'] as number) : undefined;
+  const allowed = Array.isArray(obj['allowedCommands'])
+    ? (obj['allowedCommands'] as unknown[]).filter((x): x is string => typeof x === 'string')
+    : undefined;
+  if (timeout === undefined && allowed === undefined) return undefined;
+  return {
+    ...(timeout !== undefined ? { timeoutMs: timeout } : {}),
+    ...(allowed !== undefined ? { allowedCommands: allowed } : {}),
+  };
+}
+
 function parseShellSpec(value: unknown): ShellSpec | undefined {
   if (value === undefined || value === null) return undefined;
-  if (typeof value === 'string') {
-    const match = /timeoutMs\s*:\s*(\d+)/.exec(value);
-    if (match !== null) return { timeoutMs: Number.parseInt(match[1]!, 10) };
-    return undefined;
-  }
-  if (typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    const timeout = typeof obj['timeoutMs'] === 'number' ? (obj['timeoutMs'] as number) : undefined;
-    const allowed = Array.isArray(obj['allowedCommands'])
-      ? (obj['allowedCommands'] as unknown[]).filter((x): x is string => typeof x === 'string')
-      : undefined;
-    if (timeout === undefined && allowed === undefined) return undefined;
-    return {
-      ...(timeout !== undefined ? { timeoutMs: timeout } : {}),
-      ...(allowed !== undefined ? { allowedCommands: allowed } : {}),
-    };
-  }
+  if (typeof value === 'string') return parseShellSpecFromString(value);
+  if (typeof value === 'object') return parseShellSpecFromObject(value as Record<string, unknown>);
   return undefined;
 }
 

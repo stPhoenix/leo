@@ -79,6 +79,49 @@ export async function analyzeContextUsage(inputs: ContextAnalyzerInputs): Promis
     ...(inputs.signal !== undefined ? { signal: inputs.signal } : {}),
   };
 
+  const counts = await runParallelCounters(inputs, counterCtx);
+  throwIfAborted(inputs.signal);
+  const { skillTokens, skillCountFailed } = await countSkillsTolerant(inputs, counterCtx);
+
+  const estimatedTotal = sumEstimatedTotal(counts, skillTokens);
+  const originalAsTokenMessages = counterCtx.originalMessages as unknown as readonly TokenMessage[];
+  const apiTotal = apiUsageTokens(originalAsTokenMessages);
+  const hybridTotal = apiTotal === null ? tokenCountWithEstimation(originalAsTokenMessages) : null;
+  const exactTotal = await safeExactCount(inputs, microcompacted);
+
+  const { totalTokens, tokenTotalSource } = pickTokenTotal({
+    exactTotal,
+    apiTotal,
+    hybridTotal,
+    estimatedTotal,
+  });
+
+  return {
+    ...counts,
+    skillTokens,
+    skillCountFailed,
+    totalTokens,
+    tokenTotalSource,
+    pipelineMessageCount: microcompacted.length,
+    model: inputs.model,
+  };
+}
+
+interface ParallelCounts {
+  systemTokens: number;
+  memoryFileTokens: number;
+  builtInToolTokens: number;
+  mcpToolTokens: number;
+  customAgentTokens: number;
+  slashCommandTokens: number;
+  messageTokens: number;
+  messageBreakdown: ContextData['messageBreakdown'];
+}
+
+async function runParallelCounters(
+  inputs: ContextAnalyzerInputs,
+  counterCtx: CounterContext,
+): Promise<ParallelCounts> {
   const [
     systemTokens,
     memoryFileTokens,
@@ -96,64 +139,6 @@ export async function analyzeContextUsage(inputs: ContextAnalyzerInputs): Promis
     inputs.counters.countSlashCommandTokens(counterCtx),
     inputs.counters.approximateMessageTokens(counterCtx),
   ]);
-  const messageTokens = messageResult.total;
-  const messageBreakdown = messageResult.breakdown;
-
-  throwIfAborted(inputs.signal);
-
-  let skillTokens = 0;
-  let skillCountFailed = false;
-  try {
-    skillTokens = await inputs.counters.countSkillTokens(counterCtx);
-  } catch (err) {
-    if (isAbortError(err)) throw err;
-    skillCountFailed = true;
-    inputs.logger.warn('context.skill_count_failed', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  const estimatedTotal =
-    systemTokens +
-    memoryFileTokens +
-    builtInToolTokens +
-    mcpToolTokens +
-    customAgentTokens +
-    slashCommandTokens +
-    messageTokens +
-    skillTokens;
-  const originalAsTokenMessages = counterCtx.originalMessages as unknown as readonly TokenMessage[];
-  const apiTotal = apiUsageTokens(originalAsTokenMessages);
-  const hybridTotal = apiTotal === null ? tokenCountWithEstimation(originalAsTokenMessages) : null;
-
-  let exactTotal: number | null = null;
-  if (inputs.exactCounter !== undefined) {
-    try {
-      exactTotal = await inputs.exactCounter(microcompacted, inputs.signal);
-    } catch (err) {
-      if (isAbortError(err)) throw err;
-      inputs.logger.warn('context.exact_counter_failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  let totalTokens: number;
-  let tokenTotalSource: TokenTotalSource;
-  if (exactTotal !== null && exactTotal > 0) {
-    totalTokens = exactTotal;
-    tokenTotalSource = 'exact';
-  } else if (apiTotal !== null && apiTotal > 0) {
-    totalTokens = apiTotal;
-    tokenTotalSource = 'api';
-  } else if (hybridTotal !== null && hybridTotal > 0) {
-    totalTokens = hybridTotal;
-    tokenTotalSource = 'hybrid';
-  } else {
-    totalTokens = estimatedTotal;
-    tokenTotalSource = 'estimated';
-  }
-
   return {
     systemTokens,
     memoryFileTokens,
@@ -161,15 +146,75 @@ export async function analyzeContextUsage(inputs: ContextAnalyzerInputs): Promis
     mcpToolTokens,
     customAgentTokens,
     slashCommandTokens,
-    messageTokens,
-    messageBreakdown,
-    skillTokens,
-    skillCountFailed,
-    totalTokens,
-    tokenTotalSource,
-    pipelineMessageCount: microcompacted.length,
-    model: inputs.model,
+    messageTokens: messageResult.total,
+    messageBreakdown: messageResult.breakdown,
   };
+}
+
+async function countSkillsTolerant(
+  inputs: ContextAnalyzerInputs,
+  counterCtx: CounterContext,
+): Promise<{ skillTokens: number; skillCountFailed: boolean }> {
+  try {
+    return {
+      skillTokens: await inputs.counters.countSkillTokens(counterCtx),
+      skillCountFailed: false,
+    };
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    inputs.logger.warn('context.skill_count_failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { skillTokens: 0, skillCountFailed: true };
+  }
+}
+
+function sumEstimatedTotal(c: ParallelCounts, skillTokens: number): number {
+  return (
+    c.systemTokens +
+    c.memoryFileTokens +
+    c.builtInToolTokens +
+    c.mcpToolTokens +
+    c.customAgentTokens +
+    c.slashCommandTokens +
+    c.messageTokens +
+    skillTokens
+  );
+}
+
+async function safeExactCount(
+  inputs: ContextAnalyzerInputs,
+  microcompacted: readonly ChatMessage[],
+): Promise<number | null> {
+  if (inputs.exactCounter === undefined) return null;
+  try {
+    return await inputs.exactCounter(microcompacted, inputs.signal);
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    inputs.logger.warn('context.exact_counter_failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+function pickTokenTotal(args: {
+  exactTotal: number | null;
+  apiTotal: number | null;
+  hybridTotal: number | null;
+  estimatedTotal: number;
+}): { totalTokens: number; tokenTotalSource: TokenTotalSource } {
+  const { exactTotal, apiTotal, hybridTotal, estimatedTotal } = args;
+  if (exactTotal !== null && exactTotal > 0) {
+    return { totalTokens: exactTotal, tokenTotalSource: 'exact' };
+  }
+  if (apiTotal !== null && apiTotal > 0) {
+    return { totalTokens: apiTotal, tokenTotalSource: 'api' };
+  }
+  if (hybridTotal !== null && hybridTotal > 0) {
+    return { totalTokens: hybridTotal, tokenTotalSource: 'hybrid' };
+  }
+  return { totalTokens: estimatedTotal, tokenTotalSource: 'estimated' };
 }
 
 export function filterAfterLastBoundary(messages: readonly ChatMessage[]): ChatMessage[] {

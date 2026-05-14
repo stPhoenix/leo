@@ -171,6 +171,29 @@ async function* runPlanPhase(args: {
   return { route: 'simple', plan: [] };
 }
 
+interface BranchConsumeResult {
+  readonly deferredError: ExternalEvent | null;
+  readonly earlyReturn: boolean;
+}
+
+async function* consumeBranchOutcome(
+  branchOutcome: AsyncIterable<BranchEvent>,
+): AsyncGenerator<ExternalEvent, BranchConsumeResult> {
+  let deferredError: ExternalEvent | null = null;
+  for await (const ev of branchOutcome) {
+    if (ev.type === 'deferred-error') {
+      deferredError = ev.event;
+      continue;
+    }
+    if (ev.type === 'early-return') {
+      yield ev.event;
+      return { deferredError, earlyReturn: true };
+    }
+    yield ev;
+  }
+  return { deferredError, earlyReturn: false };
+}
+
 export async function* runInlineAgentGraph(
   deps: InlineAgentGraphDeps,
   input: InlineAgentGraphInput,
@@ -233,42 +256,20 @@ export async function* runInlineAgentGraph(
     const searchWebApiKey =
       deps.resolveSearchWebApiKey?.(parsed) ?? parsed.tools.searchWeb.apiKeyRef ?? '';
 
-    // Recursion-guard pre-check on tool-list assembly.
-    const simpleTools = buildSimpleBranchTools({
-      config: parsed,
+    const toolBundle = buildAllBranchTools({
+      parsed,
       sandbox,
       runState,
       logger: deps.logger,
       signal: composed.signal,
       searchWebApiKey,
     });
-    const researchTools = buildResearchStepTools({
-      config: parsed,
-      sandbox,
-      runState,
-      logger: deps.logger,
-      signal: composed.signal,
-      searchWebApiKey,
-    });
-    const synthTools = buildSynthesizeTools({
-      config: parsed,
-      sandbox,
-      runState,
-      logger: deps.logger,
-    });
-    try {
-      assertNoExternalDelegate([
-        { branch: 'simple', tools: simpleTools },
-        { branch: 'researchStep', tools: researchTools },
-        { branch: 'synthesize', tools: synthTools },
-      ]);
-    } catch (err) {
-      yield mapAdapterError({
-        code: 'recursion_guard_violation',
-        message: err instanceof Error ? err.message : String(err),
-      });
+    const guardError = guardRecursion(toolBundle);
+    if (guardError !== null) {
+      yield guardError;
       return;
     }
+    const { simpleTools, researchTools, synthTools } = toolBundle;
 
     const composedSystemPrompt = resolveSystemPrompt({
       hostPrompt: input.systemPrompt,
@@ -340,21 +341,9 @@ export async function* runInlineAgentGraph(
             logger: deps.logger,
           });
 
-    let deferredError: ExternalEvent | null = null;
-    let earlyReturn = false;
-    for await (const ev of branchOutcome) {
-      if (ev.type === 'deferred-error') {
-        deferredError = ev.event;
-        continue;
-      }
-      if (ev.type === 'early-return') {
-        yield ev.event;
-        earlyReturn = true;
-        break;
-      }
-      yield ev;
-    }
-    if (earlyReturn) return;
+    const branchResult = yield* consumeBranchOutcome(branchOutcome);
+    if (branchResult.earlyReturn) return;
+    const deferredError = branchResult.deferredError;
 
     // Phase 3 — flush artifacts (partial-flush on error path is intentional;
     // FR-IA-36 keeps prior nominations even when the branch terminated with
@@ -370,6 +359,57 @@ export async function* runInlineAgentGraph(
   } finally {
     composed.cancel();
     await sandbox.cleanup();
+  }
+}
+
+interface ToolBundle {
+  simpleTools: ReturnType<typeof buildSimpleBranchTools>;
+  researchTools: ReturnType<typeof buildResearchStepTools>;
+  synthTools: ReturnType<typeof buildSynthesizeTools>;
+}
+
+function buildAllBranchTools(args: {
+  parsed: InlineAgentConfig;
+  sandbox: Sandbox;
+  runState: InlineAgentRunState;
+  logger: InlineAgentLogger;
+  signal: AbortSignal;
+  searchWebApiKey: string;
+}): ToolBundle {
+  const { parsed, sandbox, runState, logger, signal, searchWebApiKey } = args;
+  const simpleTools = buildSimpleBranchTools({
+    config: parsed,
+    sandbox,
+    runState,
+    logger,
+    signal,
+    searchWebApiKey,
+  });
+  const researchTools = buildResearchStepTools({
+    config: parsed,
+    sandbox,
+    runState,
+    logger,
+    signal,
+    searchWebApiKey,
+  });
+  const synthTools = buildSynthesizeTools({ config: parsed, sandbox, runState, logger });
+  return { simpleTools, researchTools, synthTools };
+}
+
+function guardRecursion(bundle: ToolBundle): ExternalEvent | null {
+  try {
+    assertNoExternalDelegate([
+      { branch: 'simple', tools: bundle.simpleTools },
+      { branch: 'researchStep', tools: bundle.researchTools },
+      { branch: 'synthesize', tools: bundle.synthTools },
+    ]);
+    return null;
+  } catch (err) {
+    return mapAdapterError({
+      code: 'recursion_guard_violation',
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

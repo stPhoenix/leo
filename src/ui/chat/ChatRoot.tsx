@@ -103,39 +103,52 @@ const STATIC_NORMAL_PLAN_SOURCE: PlanModeSource = {
   subscribe: () => () => undefined,
 };
 
+function usePhaseStream(phaseSource: PhaseSource | undefined): {
+  source: PhaseSource;
+  phase: StreamingPhase;
+} {
+  const source = phaseSource ?? STATIC_IDLE_SOURCE;
+  const phase = useSyncExternalStore<StreamingPhase>(
+    source.subscribe,
+    source.getPhase,
+    source.getPhase,
+  );
+  return { source, phase };
+}
+
+function useQueueLength(queueSource: QueueSource | undefined): number {
+  const source = queueSource ?? STATIC_EMPTY_QUEUE;
+  return useSyncExternalStore<number>(source.subscribe, source.getLength, source.getLength);
+}
+
+function usePlanModeFlag(planModeSource: PlanModeSource | undefined): boolean {
+  const source = planModeSource ?? STATIC_NORMAL_PLAN_SOURCE;
+  const planMode = useSyncExternalStore<PlanMode>(source.subscribe, source.getMode, source.getMode);
+  return planMode === 'plan';
+}
+
+function buildMcpUiContextValue(
+  props: ChatRootProps,
+  theme: ReturnType<typeof useObsidianThemeVars>,
+): McpUiContextValue | null {
+  if (props.mcpUiDispatchAction === undefined) return null;
+  return {
+    theme,
+    dispatchAction: props.mcpUiDispatchAction,
+    ...(props.mcpUiOnError !== undefined ? { onError: props.mcpUiOnError } : {}),
+  };
+}
+
 export function ChatRoot(props: ChatRootProps): JSX.Element {
   const [collapsed, setCollapsed] = useState<boolean>(isCollapsed(props.initialWidth ?? 0));
   const rootRef = useRef<HTMLDivElement>(null);
-  const phaseSource = props.phaseSource ?? STATIC_IDLE_SOURCE;
-  const phase = useSyncExternalStore<StreamingPhase>(
-    phaseSource.subscribe,
-    phaseSource.getPhase,
-    phaseSource.getPhase,
-  );
-  const queueSource = props.queueSource ?? STATIC_EMPTY_QUEUE;
-  const queueLength = useSyncExternalStore<number>(
-    queueSource.subscribe,
-    queueSource.getLength,
-    queueSource.getLength,
-  );
-  const planModeSource = props.planModeSource ?? STATIC_NORMAL_PLAN_SOURCE;
-  const planMode = useSyncExternalStore<PlanMode>(
-    planModeSource.subscribe,
-    planModeSource.getMode,
-    planModeSource.getMode,
-  );
-  const planModeActive = planMode === 'plan';
+  const { source: phaseSource, phase } = usePhaseStream(props.phaseSource);
+  const queueLength = useQueueLength(props.queueSource);
+  const planModeActive = usePlanModeFlag(props.planModeSource);
   const isSubmitting = phase === 'streaming' || phase === 'cancelling';
 
   const themeSnapshot = useObsidianThemeVars(props.mcpUiThemeOptions ?? {});
-  const mcpUiContextValue: McpUiContextValue | null =
-    props.mcpUiDispatchAction !== undefined
-      ? {
-          theme: themeSnapshot,
-          dispatchAction: props.mcpUiDispatchAction,
-          ...(props.mcpUiOnError !== undefined ? { onError: props.mcpUiOnError } : {}),
-        }
-      : null;
+  const mcpUiContextValue = buildMcpUiContextValue(props, themeSnapshot);
 
   useEffect(() => {
     const observe = props.observeWidth;

@@ -34,34 +34,39 @@ function parseV4(s: string): number | null {
 
 function parseV6(s: string): { hi: bigint; lo: bigint } | null {
   if (!s.includes(':')) return null;
-  // IPv4-mapped suffix (e.g. ::ffff:127.0.0.1).
-  let mappedSuffix: string | null = null;
+  const folded = foldMappedV4Suffix(s);
+  if (folded === null) return null;
+  const expanded = expandDoubleColon(folded);
+  if (expanded === null) return null;
+  if (expanded.length !== 8) return null;
+  return packV6Groups(expanded);
+}
+
+function foldMappedV4Suffix(s: string): string | null {
   const lastColon = s.lastIndexOf(':');
   const tail = s.slice(lastColon + 1);
-  if (tail.includes('.')) {
-    const v4 = parseV4(tail);
-    if (v4 === null) return null;
-    const hi16 = (v4 >>> 16) & 0xffff;
-    const lo16 = v4 & 0xffff;
-    mappedSuffix = `${hi16.toString(16)}:${lo16.toString(16)}`;
-    s = `${s.slice(0, lastColon + 1)}${mappedSuffix}`;
-  }
-  // Reject more than one '::'.
+  if (!tail.includes('.')) return s;
+  const v4 = parseV4(tail);
+  if (v4 === null) return null;
+  const hi16 = (v4 >>> 16) & 0xffff;
+  const lo16 = v4 & 0xffff;
+  return `${s.slice(0, lastColon + 1)}${hi16.toString(16)}:${lo16.toString(16)}`;
+}
+
+function expandDoubleColon(s: string): string[] | null {
   const dblIdx = s.indexOf('::');
   if (dblIdx !== s.lastIndexOf('::')) return null;
-  let groups: string[];
-  if (dblIdx >= 0) {
-    const left = s.slice(0, dblIdx);
-    const right = s.slice(dblIdx + 2);
-    const leftGroups = left.length > 0 ? left.split(':') : [];
-    const rightGroups = right.length > 0 ? right.split(':') : [];
-    const fillCount = 8 - leftGroups.length - rightGroups.length;
-    if (fillCount < 0) return null;
-    groups = [...leftGroups, ...new Array<string>(fillCount).fill('0'), ...rightGroups];
-  } else {
-    groups = s.split(':');
-  }
-  if (groups.length !== 8) return null;
+  if (dblIdx < 0) return s.split(':');
+  const left = s.slice(0, dblIdx);
+  const right = s.slice(dblIdx + 2);
+  const leftGroups = left.length > 0 ? left.split(':') : [];
+  const rightGroups = right.length > 0 ? right.split(':') : [];
+  const fillCount = 8 - leftGroups.length - rightGroups.length;
+  if (fillCount < 0) return null;
+  return [...leftGroups, ...new Array<string>(fillCount).fill('0'), ...rightGroups];
+}
+
+function packV6Groups(groups: readonly string[]): { hi: bigint; lo: bigint } | null {
   let hi = 0n;
   let lo = 0n;
   for (let i = 0; i < 8; i += 1) {
@@ -127,15 +132,15 @@ const PRIVATE_V4_CIDRS = [
 
 const PRIVATE_V6_CIDRS = ['::1/128', 'fc00::/7', 'fe80::/10', '64:ff9b::/96'] as const; // NOSONAR(typescript:S1313): IPv6 loopback + ULA + link-local + NAT64 ranges, SSRF guard.
 
+const IPV4_MAPPED_V6_PREFIX = '::ffff:0:0/96'; // NOSONAR(typescript:S1313): RFC 4291 IPv4-mapped IPv6 prefix; SSRF re-check guard.
+
 export function isPrivateOrLoopbackIp(ip: string): boolean {
   const parsed = parseIp(ip);
   if (parsed === null) return false;
   if (parsed.kind === 'v4') {
     return PRIVATE_V4_CIDRS.some((c) => cidrContains(c, ip));
   }
-  // IPv4-mapped (::ffff:0:0/96) — extract embedded v4 and re-check.
-  if (cidrContains('::ffff:0:0/96', ip)) {
-    // NOSONAR(typescript:S1313): IPv4-mapped IPv6 prefix, re-check embedded v4 against private CIDRs.
+  if (cidrContains(IPV4_MAPPED_V6_PREFIX, ip)) {
     const lo = parsed.lo;
     const v4n = Number(lo & 0xffffffffn);
     const a = (v4n >>> 24) & 0xff;

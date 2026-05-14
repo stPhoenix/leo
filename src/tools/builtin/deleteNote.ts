@@ -1,10 +1,32 @@
 import { z } from 'zod';
 import type { AcceptRejectController, EditNoteProposal } from '@/agent/acceptRejectController';
 import type { Logger } from '@/platform/Logger';
-import type { ToolSpec } from '../types';
+import type { ToolCtx, ToolSpec } from '../types';
 import { isSafeVaultPath } from './readNote';
 import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
 import { ensureFreshRead } from './writeGuard';
+import { presentDecision } from './_toolGuards';
+
+async function syncReadStateAfterDelete(
+  ctx: ToolCtx,
+  path: string,
+  before: string,
+  reverted: boolean,
+): Promise<void> {
+  if (ctx.readState === undefined) return;
+  if (!reverted) {
+    ctx.readState.invalidate(ctx.thread, path);
+    return;
+  }
+  const stat = await ctx.vault.stat(path);
+  ctx.readState.set(ctx.thread, path, {
+    content: before,
+    mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
+    offset: undefined,
+    limit: undefined,
+    isPartialView: false,
+  });
+}
 
 export interface DeleteNoteArgs {
   readonly path: string;
@@ -73,45 +95,16 @@ export function createDeleteNoteTool(
           lineEnd: 0,
           routedVia: 'vault',
         };
-        const decision = await opts.acceptReject.present(proposal);
-        let reverted = false;
-        if (decision === 'reject') {
-          try {
-            await ctx.vault.write(args.path, before);
-            reverted = true;
-            opts.logger?.info('delete_note.reject', {
-              toolId: 'delete_note',
-              thread: ctx.thread,
-              path: args.path,
-            });
-          } catch (err) {
-            opts.logger?.error('delete_note.reject.failed', {
-              path: args.path,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        } else {
-          opts.logger?.info('delete_note.accept', {
-            toolId: 'delete_note',
-            thread: ctx.thread,
-            path: args.path,
-          });
-        }
+        const { reverted } = await presentDecision({
+          acceptReject: opts.acceptReject,
+          proposal,
+          logger: opts.logger,
+          logKey: 'delete_note',
+          logFields: { toolId: 'delete_note', thread: ctx.thread, path: args.path },
+          revert: () => ctx.vault.write(args.path, before),
+        });
 
-        if (ctx.readState !== undefined) {
-          if (reverted) {
-            const stat = await ctx.vault.stat(args.path);
-            ctx.readState.set(ctx.thread, args.path, {
-              content: before,
-              mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
-              offset: undefined,
-              limit: undefined,
-              isPartialView: false,
-            });
-          } else {
-            ctx.readState.invalidate(ctx.thread, args.path);
-          }
-        }
+        await syncReadStateAfterDelete(ctx, args.path, before, reverted);
 
         return {
           ok: true,

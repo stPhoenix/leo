@@ -1,9 +1,31 @@
 import { z } from 'zod';
 import type { AcceptRejectController, EditNoteProposal } from '@/agent/acceptRejectController';
 import type { Logger } from '@/platform/Logger';
-import type { ToolSpec } from '../types';
+import type { ToolCtx, ToolSpec } from '../types';
 import { isSafeVaultPath } from './readNote';
 import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
+import { presentDecision } from './_toolGuards';
+
+async function syncReadStateAfterCreate(
+  ctx: ToolCtx,
+  path: string,
+  content: string,
+  reverted: boolean,
+): Promise<void> {
+  if (ctx.readState === undefined) return;
+  if (reverted) {
+    ctx.readState.invalidate(ctx.thread, path);
+    return;
+  }
+  const stat = await ctx.vault.stat(path);
+  ctx.readState.set(ctx.thread, path, {
+    content,
+    mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
+    offset: undefined,
+    limit: undefined,
+    isPartialView: false,
+  });
+}
 
 export interface CreateNoteArgs {
   readonly path: string;
@@ -76,45 +98,16 @@ export function createCreateNoteTool(
           lineEnd: 0,
           routedVia: 'vault',
         };
-        const decision = await opts.acceptReject.present(proposal);
-        let reverted = false;
-        if (decision === 'reject') {
-          try {
-            await ctx.vault.remove(args.path);
-            reverted = true;
-            opts.logger?.info('create_note.reject', {
-              toolId: 'create_note',
-              thread: ctx.thread,
-              path: args.path,
-            });
-          } catch (err) {
-            opts.logger?.error('create_note.reject.failed', {
-              path: args.path,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        } else {
-          opts.logger?.info('create_note.accept', {
-            toolId: 'create_note',
-            thread: ctx.thread,
-            path: args.path,
-          });
-        }
+        const { reverted } = await presentDecision({
+          acceptReject: opts.acceptReject,
+          proposal,
+          logger: opts.logger,
+          logKey: 'create_note',
+          logFields: { toolId: 'create_note', thread: ctx.thread, path: args.path },
+          revert: () => ctx.vault.remove(args.path),
+        });
 
-        if (ctx.readState !== undefined) {
-          if (reverted) {
-            ctx.readState.invalidate(ctx.thread, args.path);
-          } else {
-            const stat = await ctx.vault.stat(args.path);
-            ctx.readState.set(ctx.thread, args.path, {
-              content: args.content,
-              mtimeMs: Math.floor(stat?.mtimeMs ?? Date.now()),
-              offset: undefined,
-              limit: undefined,
-              isPartialView: false,
-            });
-          }
-        }
+        await syncReadStateAfterCreate(ctx, args.path, args.content, reverted);
 
         return {
           ok: true,

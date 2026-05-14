@@ -50,45 +50,67 @@ export async function processSourceFetchPersist(
   const dup = await findDuplicateRawBySha(deps.vault, sha256);
 
   if (dup !== null) {
-    deps.logger?.debug(WIKI_LOG.ingest.persist.duplicate, {
-      rawPath: dup.rawPath,
-      sourceRef: fetched.sourceRef,
-    });
-    const choice = await resolveDuplicateChoice(dup, {
-      request: deps.requestDuplicateChoice,
-      ...(deps.reingestPromptTimeoutMs !== undefined
-        ? { timeoutMs: deps.reingestPromptTimeoutMs }
-        : {}),
-      signal,
-    });
-    if (choice === 'skip') {
-      return { sourceRef: fetched.sourceRef, status: 'skipped', rawPath: dup.rawPath };
-    }
-    if (choice === 'reprocess') {
-      return { sourceRef: fetched.sourceRef, status: 'reprocessed', rawPath: dup.rawPath };
-    }
-    // replace: overwrite existing raw path with new fetched body
-    try {
-      await persistRaw(
-        { fetched, overwriteRawPath: dup.rawPath },
-        {
-          vault: deps.vault,
-          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-          ...(deps.now !== undefined ? { now: deps.now } : {}),
-        },
-      );
-      return { sourceRef: fetched.sourceRef, status: 'replaced', rawPath: dup.rawPath };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        sourceRef: fetched.sourceRef,
-        status: 'error',
-        rawPath: dup.rawPath,
-        error: `persist_failed: ${message}`,
-      };
-    }
+    return handleDuplicateFetched(dup, fetched, deps, signal);
   }
+  return persistFreshFetched(fetched, deps);
+}
 
+async function handleDuplicateFetched(
+  dup: DuplicateMatch,
+  fetched: Awaited<ReturnType<typeof fetchIngestSource>> extends infer R
+    ? R extends { ok: true; fetched: infer F }
+      ? F
+      : never
+    : never,
+  deps: ProcessSourceDeps,
+  signal: AbortSignal,
+): Promise<SourceTerminalRecord> {
+  deps.logger?.debug(WIKI_LOG.ingest.persist.duplicate, {
+    rawPath: dup.rawPath,
+    sourceRef: fetched.sourceRef,
+  });
+  const choice = await resolveDuplicateChoice(dup, {
+    request: deps.requestDuplicateChoice,
+    ...(deps.reingestPromptTimeoutMs !== undefined
+      ? { timeoutMs: deps.reingestPromptTimeoutMs }
+      : {}),
+    signal,
+  });
+  if (choice === 'skip') {
+    return { sourceRef: fetched.sourceRef, status: 'skipped', rawPath: dup.rawPath };
+  }
+  if (choice === 'reprocess') {
+    return { sourceRef: fetched.sourceRef, status: 'reprocessed', rawPath: dup.rawPath };
+  }
+  try {
+    await persistRaw(
+      { fetched, overwriteRawPath: dup.rawPath },
+      {
+        vault: deps.vault,
+        ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+      },
+    );
+    return { sourceRef: fetched.sourceRef, status: 'replaced', rawPath: dup.rawPath };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      sourceRef: fetched.sourceRef,
+      status: 'error',
+      rawPath: dup.rawPath,
+      error: `persist_failed: ${message}`,
+    };
+  }
+}
+
+async function persistFreshFetched(
+  fetched: Awaited<ReturnType<typeof fetchIngestSource>> extends infer R
+    ? R extends { ok: true; fetched: infer F }
+      ? F
+      : never
+    : never,
+  deps: ProcessSourceDeps,
+): Promise<SourceTerminalRecord> {
   try {
     const persisted = await persistRaw(
       { fetched },

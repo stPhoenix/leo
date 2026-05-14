@@ -835,7 +835,7 @@ function slug(s: string): string {
       .toLowerCase()
       .normalize('NFKD')
       .replace(/[^a-z0-9]+/g, '-') // NOSONAR(typescript:S5852): single char class + quantifier, linear.
-      .replace(/^-+|-+$/g, '')
+      .replace(/^-+|-+$/g, '') // NOSONAR(typescript:S5852): anchored trim, linear.
       .slice(0, 60) || 'canvas'
   );
 }

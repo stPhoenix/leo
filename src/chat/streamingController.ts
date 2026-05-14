@@ -134,53 +134,61 @@ export class StreamingTurnController {
     turn.lastEventAt = this.nowMs();
     this.deps.onEvent?.(event);
 
-    if (event.type === 'block_start') {
-      this.applyBlockStart(turn, event.index, event.block);
-      return;
+    switch (event.type) {
+      case 'block_start':
+        this.applyBlockStart(turn, event.index, event.block);
+        return;
+      case 'block_delta':
+        this.consumeBlockDelta(turn, event.index, event.delta);
+        return;
+      case 'block_stop':
+        this.applyBlockStop(turn, event.index);
+        return;
+      case 'message_delta':
+      case 'progress':
+        return;
+      case 'done':
+        this.flushPending();
+        this.finalise(turn.phase !== 'cancelling' ? 'done' : 'cancelled');
+        return;
+      case 'error':
+        this.flushPending();
+        this.finaliseError(event.error);
+        return;
+      default:
+        return;
     }
-    if (event.type === 'block_delta') {
-      const d = event.delta;
-      if (turn.phase === 'cancelling') return;
-      if (d.type === 'text_delta' || d.type === 'tool_result_delta') {
-        const prev = turn.pendingTextByIndex.get(event.index) ?? '';
-        turn.pendingTextByIndex.set(event.index, prev + d.text);
-      } else if (d.type === 'thinking_delta') {
-        const prev = turn.pendingThinkingByIndex.get(event.index) ?? '';
-        turn.pendingThinkingByIndex.set(event.index, prev + d.thinking);
-      } else if (d.type === 'signature_delta') {
-        turn.pendingSignatureByIndex.set(event.index, d.signature);
-      } else if (d.type === 'input_json_delta') {
-        const prev = turn.jsonBuffers.get(event.index) ?? '';
-        turn.jsonBuffers.set(event.index, prev + d.partial_json);
-      }
-      this.ensureRafScheduled();
-      return;
+  }
+
+  private consumeBlockDelta(
+    turn: ActiveTurn,
+    index: number,
+    d: Extract<StreamEvent, { type: 'block_delta' }>['delta'],
+  ): void {
+    if (turn.phase === 'cancelling') return;
+    if (d.type === 'text_delta' || d.type === 'tool_result_delta') {
+      const prev = turn.pendingTextByIndex.get(index) ?? '';
+      turn.pendingTextByIndex.set(index, prev + d.text);
+    } else if (d.type === 'thinking_delta') {
+      const prev = turn.pendingThinkingByIndex.get(index) ?? '';
+      turn.pendingThinkingByIndex.set(index, prev + d.thinking);
+    } else if (d.type === 'signature_delta') {
+      turn.pendingSignatureByIndex.set(index, d.signature);
+    } else if (d.type === 'input_json_delta') {
+      const prev = turn.jsonBuffers.get(index) ?? '';
+      turn.jsonBuffers.set(index, prev + d.partial_json);
     }
-    if (event.type === 'block_stop') {
-      this.applyBlockStop(turn, event.index);
-      return;
-    }
-    if (event.type === 'message_delta') {
-      // usage merge — never overwrite a non-zero input/output with a zero
-      return;
-    }
-    if (event.type === 'progress') {
-      // F08 hooks runStateStore externally via deps.onEvent
-      return;
-    }
-    if (event.type === 'done') {
-      this.flushPending();
-      if (turn.phase !== 'cancelling') {
-        this.finalise('done');
-      } else {
-        this.finalise('cancelled');
-      }
-      return;
-    }
-    if (event.type === 'error') {
-      this.flushPending();
-      this.finaliseError(event.error);
-      return;
+    this.ensureRafScheduled();
+  }
+
+  private handleIterableError(err: unknown): void {
+    if (this.active === null) return;
+    const error = err instanceof Error ? err : new Error(String(err));
+    this.flushPending();
+    if (this.active.phase === 'cancelling' || this.active.controller.signal.aborted) {
+      this.finalise('cancelled');
+    } else {
+      this.finaliseError(error);
     }
   }
 
@@ -195,15 +203,7 @@ export class StreamingTurnController {
         this.consume({ type: 'done' });
       }
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      if (this.active !== null) {
-        this.flushPending();
-        if (this.active.phase === 'cancelling' || this.active.controller.signal.aborted) {
-          this.finalise('cancelled');
-        } else {
-          this.finaliseError(error);
-        }
-      }
+      this.handleIterableError(err);
     }
   }
 

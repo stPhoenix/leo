@@ -122,6 +122,42 @@ export class TurnDispatcher {
     this.listeners.clear();
   }
 
+  private invokeStarter(
+    turn: PendingTurn,
+    signal: AbortSignal,
+    starter: NonNullable<TurnDispatcherOptions['starter']>,
+  ): AsyncIterable<StreamEvent> {
+    const starterOptions: TurnStarterOptions =
+      turn.initialAllowedTools !== undefined && turn.initialAllowedTools.length > 0
+        ? { initialAllowedTools: turn.initialAllowedTools }
+        : {};
+    const hasOptions = starterOptions.initialAllowedTools !== undefined;
+    const hasBlocks = turn.blocks !== undefined && turn.blocks.length > 0;
+    if (hasBlocks) {
+      return starter(turn.text, signal, turn.blocks, hasOptions ? starterOptions : undefined);
+    }
+    if (hasOptions) return starter(turn.text, signal, undefined, starterOptions);
+    return starter(turn.text, signal);
+  }
+
+  private async runOnePending(turn: PendingTurn): Promise<void> {
+    this.notify();
+    const signal = this.deps.controller.startTurn(turn.assistantId);
+    const starter = this.deps.starter;
+    if (starter === undefined) {
+      this.commitUsage(turn, 0, {});
+      this.deps.controller.consume({ type: 'done' });
+      return;
+    }
+    const stream = this.invokeStarter(turn, signal, starter);
+    const tracked = this.trackUsage(turn, stream);
+    try {
+      await this.deps.controller.consumeIterable(tracked);
+    } catch {
+      /* controller handles error finalisation; trackUsage's finally already committed */
+    }
+  }
+
   private async pump(): Promise<void> {
     if (this.pumping) return;
     this.pumping = true;
@@ -129,31 +165,7 @@ export class TurnDispatcher {
       while (!this.disposed && this.pending.length > 0) {
         const turn = this.pending.shift();
         if (turn === undefined) break;
-        this.notify();
-        const signal = this.deps.controller.startTurn(turn.assistantId);
-        const starter = this.deps.starter;
-        if (starter === undefined) {
-          this.commitUsage(turn, 0, {});
-          this.deps.controller.consume({ type: 'done' });
-          continue;
-        }
-        const starterOptions: TurnStarterOptions =
-          turn.initialAllowedTools !== undefined && turn.initialAllowedTools.length > 0
-            ? { initialAllowedTools: turn.initialAllowedTools }
-            : {};
-        const hasOptions = starterOptions.initialAllowedTools !== undefined;
-        const hasBlocks = turn.blocks !== undefined && turn.blocks.length > 0;
-        const stream = hasBlocks
-          ? starter(turn.text, signal, turn.blocks, hasOptions ? starterOptions : undefined)
-          : hasOptions
-            ? starter(turn.text, signal, undefined, starterOptions)
-            : starter(turn.text, signal);
-        const tracked = this.trackUsage(turn, stream);
-        try {
-          await this.deps.controller.consumeIterable(tracked);
-        } catch {
-          /* controller handles error finalisation; trackUsage's finally already committed */
-        }
+        await this.runOnePending(turn);
       }
     } finally {
       this.pumping = false;

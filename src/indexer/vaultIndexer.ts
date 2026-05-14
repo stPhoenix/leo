@@ -123,44 +123,49 @@ export class VaultIndexer {
     });
   }
 
+  private async handleHeaderMismatch(expected: { model: string }): Promise<'continue' | 'done'> {
+    this.logger?.info('indexer.header.mismatch', {
+      storedModel: this.lastHeader?.model ?? null,
+      storedVersion: this.lastHeader?.version ?? null,
+      expectedModel: expected.model,
+    });
+    const choice = await this.promptHeaderMismatch();
+    this.logger?.info('indexer.header.user-choice', { choice });
+    if (choice === 'now') {
+      for (const entry of this.files.listMarkdown()) {
+        if (!INDEXABLE_EXTENSIONS.has(entry.extension)) continue;
+        if (this.isExcluded(entry.path)) continue;
+        this.queue.add(entry.path);
+      }
+      await writeIndexHeader(this.vault, {
+        model: expected.model,
+        version: this.lastHeader?.version ?? 1,
+        manifest: [],
+      });
+      return 'continue';
+    }
+    if (choice === 'revert-model') {
+      if (this.lastHeader !== null && this.revertModel !== null) {
+        await this.revertModel({ model: this.lastHeader.model });
+      }
+      this.waitingOnUser = false;
+      this.registerListeners();
+      return 'done';
+    }
+    this.waitingOnUser = true;
+    this.emitDrain({ kind: 'error', message: WAITING_ON_USER_MESSAGE });
+    this.registerListeners();
+    return 'done';
+  }
+
   async init(): Promise<void> {
     await this.queue.load();
     this.emitDirtyIfChanged();
     this.lastHeader = await readIndexHeader(this.vault, this.logger);
     const expected = this.spec();
-    const headerOk = headerMatches(this.lastHeader, expected);
-    if (!headerOk) {
-      this.logger?.info('indexer.header.mismatch', {
-        storedModel: this.lastHeader?.model ?? null,
-        storedVersion: this.lastHeader?.version ?? null,
-        expectedModel: expected.model,
-      });
-      const choice = await this.promptHeaderMismatch();
-      this.logger?.info('indexer.header.user-choice', { choice });
-      if (choice === 'now') {
-        for (const entry of this.files.listMarkdown()) {
-          if (!INDEXABLE_EXTENSIONS.has(entry.extension)) continue;
-          if (this.isExcluded(entry.path)) continue;
-          this.queue.add(entry.path);
-        }
-        await writeIndexHeader(this.vault, {
-          model: expected.model,
-          version: this.lastHeader?.version ?? 1,
-          manifest: [],
-        });
-      } else if (choice === 'revert-model') {
-        if (this.lastHeader !== null && this.revertModel !== null) {
-          await this.revertModel({ model: this.lastHeader.model });
-        }
-        this.waitingOnUser = false;
-        this.registerListeners();
-        return;
-      } else {
-        this.waitingOnUser = true;
-        this.emitDrain({ kind: 'error', message: WAITING_ON_USER_MESSAGE });
-        this.registerListeners();
-        return;
-      }
+    if (!headerMatches(this.lastHeader, expected)) {
+      const status = await this.handleHeaderMismatch(expected);
+      if (status === 'done') return;
     } else {
       this.logger?.info('indexer.header.match', { model: expected.model });
     }
@@ -216,9 +221,21 @@ export class VaultIndexer {
     return null;
   }
 
+  private async processPathSafe(path: string, signal: AbortSignal): Promise<void> {
+    this.queue.remove(path);
+    try {
+      await this.processPath(path, signal);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger?.warn('indexer.process.failed', { path, error: message });
+      this.emitDrain({ kind: 'error', path, message });
+    }
+    this.logger?.debug('indexer.drain.tick', { path });
+    this.emitDrain({ kind: 'tick', path, remaining: this.queue.size() });
+  }
+
   async processDueWork(signal: AbortSignal): Promise<void> {
-    if (this.draining) return;
-    if (this.queue.size() === 0) return;
+    if (this.draining || this.queue.size() === 0) return;
     const bail = this.checkDrainPreconditions();
     if (bail !== null) {
       this.bailDrain(bail);
@@ -234,21 +251,11 @@ export class VaultIndexer {
       while (this.queue.size() > 0 && !controller.signal.aborted) {
         const deadline = await this.awaitIdleTick();
         if (controller.signal.aborted) break;
-        const batch = this.queue.snapshot();
-        const { now } = chunkIteration(batch, deadline, this.minChunkBudget);
+        const { now } = chunkIteration(this.queue.snapshot(), deadline, this.minChunkBudget);
         if (now.length === 0) break;
         for (const path of now) {
           if (controller.signal.aborted) break;
-          this.queue.remove(path);
-          try {
-            await this.processPath(path, controller.signal);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            this.logger?.warn('indexer.process.failed', { path, error: message });
-            this.emitDrain({ kind: 'error', path, message });
-          }
-          this.logger?.debug('indexer.drain.tick', { path });
-          this.emitDrain({ kind: 'tick', path, remaining: this.queue.size() });
+          await this.processPathSafe(path, controller.signal);
         }
       }
     } finally {
@@ -334,10 +341,23 @@ export class VaultIndexer {
    * Used for user-triggered "reindex changed" so we never get stuck under a
    * tight `requestIdleCallback` deadline that returns zero work per tick.
    */
+  private async processPathTracked(path: string, signal: AbortSignal): Promise<boolean> {
+    this.queue.remove(path);
+    let processed = false;
+    try {
+      await this.processPath(path, signal);
+      processed = true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger?.warn('indexer.process.failed', { path, error: message });
+      this.emitDrain({ kind: 'error', path, message });
+    }
+    this.emitDrain({ kind: 'tick', path, remaining: this.queue.size() });
+    return processed;
+  }
+
   async drainPending(signal?: AbortSignal): Promise<number> {
-    if (this.disposed) return 0;
-    if (this.draining) return 0;
-    if (this.queue.size() === 0) return 0;
+    if (this.disposed || this.draining || this.queue.size() === 0) return 0;
     const bail = this.checkDrainPreconditions();
     if (bail !== null) {
       this.bailDrain(bail);
@@ -353,19 +373,9 @@ export class VaultIndexer {
     this.emitDrain({ kind: 'start', size: startSize });
     try {
       while (this.queue.size() > 0 && !controller.signal.aborted) {
-        const batch = this.queue.snapshot();
-        for (const path of batch) {
+        for (const path of this.queue.snapshot()) {
           if (controller.signal.aborted) break;
-          this.queue.remove(path);
-          try {
-            await this.processPath(path, controller.signal);
-            processed += 1;
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            this.logger?.warn('indexer.process.failed', { path, error: message });
-            this.emitDrain({ kind: 'error', path, message });
-          }
-          this.emitDrain({ kind: 'tick', path, remaining: this.queue.size() });
+          if (await this.processPathTracked(path, controller.signal)) processed += 1;
         }
       }
       return processed;

@@ -30,43 +30,36 @@ type LcToolContentPart =
 export function toLangchainMessages(messages: readonly ChatMessage[]): BaseMessage[] {
   const out: BaseMessage[] = [];
   for (const m of messages) {
-    if (m.role === 'system') {
-      out.push(new SystemMessage({ content: contentToString(m.content) }));
-      continue;
-    }
-    if (m.role === 'user') {
-      out.push(new HumanMessage({ content: toLcContent(m.content) }));
-      continue;
-    }
-    if (m.role === 'assistant') {
-      const tool_calls = m.toolCalls?.map((c) => ({
-        id: c.id,
-        name: c.name,
-        args: parseArgs(c.argsJson),
-        type: 'tool_call' as const,
-      }));
-      out.push(
-        new AIMessage({
-          content: contentToString(m.content),
-          ...(tool_calls !== undefined && tool_calls.length > 0 ? { tool_calls } : {}),
-        }),
-      );
-      continue;
-    }
-    if (m.role === 'tool') {
-      if (m.toolCallId === undefined) continue;
-      const structured = toToolMessageContent(m.content);
-      out.push(
-        new ToolMessage({
-          content: structured,
-          tool_call_id: m.toolCallId,
-          ...(m.name !== undefined ? { name: m.name } : {}),
-        }),
-      );
-      continue;
-    }
+    const lc = toLangchainMessage(m);
+    if (lc !== null) out.push(lc);
   }
   return out;
+}
+
+function toLangchainMessage(m: ChatMessage): BaseMessage | null {
+  if (m.role === 'system') return new SystemMessage({ content: contentToString(m.content) });
+  if (m.role === 'user') return new HumanMessage({ content: toLcContent(m.content) });
+  if (m.role === 'assistant') {
+    const tool_calls = m.toolCalls?.map((c) => ({
+      id: c.id,
+      name: c.name,
+      args: parseArgs(c.argsJson),
+      type: 'tool_call' as const,
+    }));
+    return new AIMessage({
+      content: contentToString(m.content),
+      ...(tool_calls !== undefined && tool_calls.length > 0 ? { tool_calls } : {}),
+    });
+  }
+  if (m.role === 'tool') {
+    if (m.toolCallId === undefined) return null;
+    return new ToolMessage({
+      content: toToolMessageContent(m.content),
+      tool_call_id: m.toolCallId,
+      ...(m.name !== undefined ? { name: m.name } : {}),
+    });
+  }
+  return null;
 }
 
 function toLcContent(content: ChatMessageContent): string | LcContentPart[] {

@@ -32,36 +32,42 @@ export function applySubstitutions(input: SubstitutionInput): string {
   return out;
 }
 
+interface SplitState {
+  buf: string;
+  quote: '"' | "'" | null;
+}
+
+function stepQuotedChar(state: SplitState, c: string): void {
+  if (c === state.quote) state.quote = null;
+  else state.buf += c;
+}
+
+function stepUnquotedChar(state: SplitState, c: string, out: string[]): void {
+  if (c === '"' || c === "'") {
+    state.quote = c;
+    return;
+  }
+  if (c === ' ' || c === '\t') {
+    if (state.buf.length > 0) {
+      out.push(state.buf);
+      state.buf = '';
+    }
+    return;
+  }
+  state.buf += c;
+}
+
 function splitArgs(raw: string): string[] {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return [];
   const out: string[] = [];
-  let buf = '';
-  let quote: '"' | "'" | null = null;
+  const state: SplitState = { buf: '', quote: null };
   for (let i = 0; i < trimmed.length; i += 1) {
     const c = trimmed[i]!;
-    if (quote !== null) {
-      if (c === quote) {
-        quote = null;
-      } else {
-        buf += c;
-      }
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      quote = c;
-      continue;
-    }
-    if (c === ' ' || c === '\t') {
-      if (buf.length > 0) {
-        out.push(buf);
-        buf = '';
-      }
-      continue;
-    }
-    buf += c;
+    if (state.quote !== null) stepQuotedChar(state, c);
+    else stepUnquotedChar(state, c, out);
   }
-  if (buf.length > 0) out.push(buf);
+  if (state.buf.length > 0) out.push(state.buf);
   return out;
 }
 

@@ -23,30 +23,34 @@ export interface ArtifactDeps {
 
 export function selectFileRefs(task: A2aTask): readonly FileRefSelection[] {
   const out: FileRefSelection[] = [];
-  const artifacts = task.artifacts ?? [];
-  for (const art of artifacts) {
+  for (const art of task.artifacts ?? []) {
     const parts = art?.parts ?? [];
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i] as Record<string, unknown>;
-      if (!part || part.type !== 'fileRef') continue;
-      const url = typeof part.url === 'string' ? part.url : '';
-      if (!url) continue;
-      const partName = typeof part.name === 'string' ? part.name : undefined;
-      const artName = typeof art.name === 'string' ? art.name : undefined;
-      const name = partName ?? artName ?? `artifact-${art.id ?? 'unknown'}`;
-      const mimeType = typeof part.mimeType === 'string' ? part.mimeType : undefined;
-      const size = typeof part.size === 'number' ? part.size : undefined;
-      out.push({
-        artifactId: String(art.id ?? ''),
-        partIndex: i,
-        name,
-        mimeType,
-        url,
-        size,
-      });
+    for (let i = 0; i < parts.length; i += 1) {
+      const sel = selectFileRefPart(art, parts[i] as Record<string, unknown>, i);
+      if (sel !== null) out.push(sel);
     }
   }
   return out;
+}
+
+function selectFileRefPart(
+  art: A2aTask['artifacts'][number],
+  part: Record<string, unknown>,
+  i: number,
+): FileRefSelection | null {
+  if (!part || part.type !== 'fileRef') return null;
+  const url = typeof part.url === 'string' ? part.url : '';
+  if (!url) return null;
+  const partName = typeof part.name === 'string' ? part.name : undefined;
+  const artName = typeof art.name === 'string' ? art.name : undefined;
+  return {
+    artifactId: String(art.id ?? ''),
+    partIndex: i,
+    name: partName ?? artName ?? `artifact-${art.id ?? 'unknown'}`,
+    mimeType: typeof part.mimeType === 'string' ? part.mimeType : undefined,
+    url,
+    size: typeof part.size === 'number' ? part.size : undefined,
+  };
 }
 
 function shortId(id: string): string {
@@ -89,14 +93,7 @@ export async function* downloadArtifacts(
   task: A2aTask,
   signal: AbortSignal,
 ): AsyncIterable<ExternalEvent> {
-  for (const art of task.artifacts ?? []) {
-    for (const part of art?.parts ?? []) {
-      const t = (part as { type?: string }).type;
-      if (t && t !== 'fileRef' && t !== 'text' && t !== 'data') {
-        deps.log('debug', 'openfang.artifact.skip', { type: t, artifactId: art.id });
-      }
-    }
-  }
+  logSkippedPartTypes(deps, task);
 
   const selected = selectFileRefs(task);
   const deduped = dedupeRelPaths(selected);
@@ -107,57 +104,80 @@ export async function* downloadArtifacts(
 
   let downloaded = 0;
   let evicted = 0;
+  const logComplete = (): void => {
+    deps.log('info', 'openfang.artifacts.complete', {
+      downloaded,
+      evicted,
+      total: deduped.length,
+    });
+  };
 
   for (const item of deduped) {
     if (signal.aborted) {
-      deps.log('info', 'openfang.artifacts.complete', {
-        downloaded,
-        evicted,
-        total: deduped.length,
-      });
+      logComplete();
       return;
     }
-    const { url, mimeType, size, artifactId, name } = item.original;
-    deps.log('debug', 'openfang.artifact.fetch_start', {
-      relPath: item.relPath,
-      mimeType,
-      size,
-    });
-    let dl: Awaited<ReturnType<OpenfangHttp['downloadArtifact']>>;
-    try {
-      dl = await deps.http.downloadArtifact(url, signal);
-    } catch (err) {
-      if (signal.aborted || isAbortError(err)) {
-        deps.log('info', 'openfang.artifacts.complete', {
-          downloaded,
-          evicted,
-          total: deduped.length,
-        });
-        return;
-      }
-      if (err instanceof OpenfangHttpError && err.status === 404) {
-        deps.log('warn', 'openfang.artifact.evicted', { artifactId, name });
-        evicted += 1;
-        continue;
-      }
-      throw err;
+    const outcome = await tryDownloadArtifact(deps, item, signal);
+    if (outcome.kind === 'aborted') {
+      logComplete();
+      return;
     }
+    if (outcome.kind === 'evicted') {
+      evicted += 1;
+      continue;
+    }
+    downloaded += 1;
+    yield {
+      type: 'file',
+      relPath: item.relPath,
+      content: outcome.bytes,
+      mime: outcome.mime,
+    };
+  }
+  logComplete();
+}
+
+function logSkippedPartTypes(deps: ArtifactDeps, task: A2aTask): void {
+  for (const art of task.artifacts ?? []) {
+    for (const part of art?.parts ?? []) {
+      const t = (part as { type?: string }).type;
+      if (t && t !== 'fileRef' && t !== 'text' && t !== 'data') {
+        deps.log('debug', 'openfang.artifact.skip', { type: t, artifactId: art.id });
+      }
+    }
+  }
+}
+
+type DownloadOutcome =
+  | { kind: 'aborted' }
+  | { kind: 'evicted' }
+  | { kind: 'ok'; bytes: Uint8Array; mime?: string };
+
+async function tryDownloadArtifact(
+  deps: ArtifactDeps,
+  item: DedupedFileRef,
+  signal: AbortSignal,
+): Promise<DownloadOutcome> {
+  const { url, mimeType, size, artifactId, name } = item.original;
+  deps.log('debug', 'openfang.artifact.fetch_start', {
+    relPath: item.relPath,
+    mimeType,
+    size,
+  });
+  try {
+    const dl = await deps.http.downloadArtifact(url, signal);
     deps.log('info', 'openfang.artifact.download', {
       relPath: item.relPath,
       mimeType: dl.mime ?? mimeType,
       size: dl.size,
     });
-    downloaded += 1;
-    yield {
-      type: 'file',
-      relPath: item.relPath,
-      content: dl.bytes,
-      mime: dl.mime,
-    };
+    return { kind: 'ok', bytes: dl.bytes, mime: dl.mime };
+  } catch (err) {
+    if (signal.aborted || isAbortError(err)) return { kind: 'aborted' };
+    if (err instanceof OpenfangHttpError && err.status === 404) {
+      deps.log('warn', 'openfang.artifact.evicted', { artifactId, name });
+      return { kind: 'evicted' };
+    }
+    throw err;
   }
-  deps.log('info', 'openfang.artifacts.complete', {
-    downloaded,
-    evicted,
-    total: deduped.length,
-  });
 }

@@ -97,6 +97,42 @@ export function makeProcessPath(deps: {
   readonly logger: Logger;
   readonly embeddingModel: () => string;
 }): (path: string, signal: AbortSignal) => Promise<void> {
+  const chunkFile = (tfile: TFileLike, path: string, source: string): readonly Chunk[] => {
+    if (tfile.extension === 'canvas') {
+      return chunkCanvas({ path, source }, { logger: deps.logger });
+    }
+    const cache = deps.app.metadataCache.getFileCache(tfile) ?? {};
+    return chunkMarkdown({ path, source, fileCache: cache });
+  };
+
+  const readSource = async (tfile: TFileLike, path: string): Promise<string | null> => {
+    try {
+      return await deps.app.vault.cachedRead(tfile);
+    } catch (err) {
+      deps.logger.warn('indexer.process.read-failed', {
+        path,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  };
+
+  const embedChunks = async (
+    texts: readonly string[],
+    path: string,
+    signal: AbortSignal,
+  ): Promise<number[][] | null> => {
+    try {
+      return await deps.embeddingClient.embed(texts, signal);
+    } catch (err) {
+      deps.logger.warn('indexer.process.embed-failed', {
+        path,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  };
+
   return async (path, signal) => {
     if (signal.aborted) return;
     const abs = deps.app.vault.getAbstractFileByPath(path);
@@ -106,40 +142,19 @@ export function makeProcessPath(deps: {
     }
     const tfile = abs as TFileLike;
     if (tfile.extension !== 'md' && tfile.extension !== 'canvas') return;
-    let source: string;
-    try {
-      source = await deps.app.vault.cachedRead(tfile);
-    } catch (err) {
-      deps.logger.warn('indexer.process.read-failed', {
-        path,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return;
-    }
-    let chunks: readonly Chunk[];
-    if (tfile.extension === 'canvas') {
-      chunks = chunkCanvas({ path, source }, { logger: deps.logger });
-    } else {
-      const cache = deps.app.metadataCache.getFileCache(tfile) ?? {};
-      chunks = chunkMarkdown({ path, source, fileCache: cache });
-    }
+    const source = await readSource(tfile, path);
+    if (source === null) return;
+    const chunks = chunkFile(tfile, path, source);
     if (chunks.length === 0) {
       await deps.vectorStore.deleteByPath(path);
       return;
     }
-    const texts = chunks.map((c) => c.text);
-    let vectors: number[][];
-    try {
-      vectors = await deps.embeddingClient.embed(texts, signal);
-    } catch (err) {
-      deps.logger.warn('indexer.process.embed-failed', {
-        path,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return;
-    }
-    if (signal.aborted) return;
-    if (vectors.length === 0) return;
+    const vectors = await embedChunks(
+      chunks.map((c) => c.text),
+      path,
+      signal,
+    );
+    if (vectors === null || signal.aborted || vectors.length === 0) return;
     await deps.vectorStore.upsert(path, chunks, vectors);
     const firstVector = vectors[0];
     if (firstVector !== undefined) {

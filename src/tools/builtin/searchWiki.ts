@@ -63,6 +63,41 @@ export interface SearchWikiDeps {
   readonly notifyBusy?: WikiBusyNotifier;
 }
 
+interface WikiCandidate {
+  readonly path: string;
+  readonly summary: string;
+  readonly score: number;
+}
+
+async function readWikiBody(vault: VaultAdapter, path: string): Promise<string> {
+  try {
+    return (await vault.exists(path)) ? await vault.read(path) : '';
+  } catch {
+    return '';
+  }
+}
+
+async function collectWikiMatches(
+  candidates: readonly WikiCandidate[],
+  query: string,
+  deps: SearchWikiDeps,
+  signal: AbortSignal,
+): Promise<readonly SearchWikiMatch[] | 'aborted'> {
+  const matches: SearchWikiMatch[] = [];
+  for (const c of candidates) {
+    if (signal.aborted) return 'aborted';
+    if (!c.path.startsWith(WIKI_DIR_PREFIX) || c.path.startsWith('wiki/raw/')) continue;
+    const body = await readWikiBody(deps.vault, c.path);
+    matches.push({
+      path: c.path,
+      summary: summarizeFromBody(body, c.summary),
+      snippet: buildSnippet(body, query),
+      score: c.score,
+    });
+  }
+  return matches;
+}
+
 export function createSearchWikiTool(
   deps: SearchWikiDeps,
 ): ToolSpec<SearchWikiArgs, SearchWikiResult> {
@@ -81,12 +116,9 @@ export function createSearchWikiTool(
       if (ctx.signal.aborted) return { ok: false, error: 'aborted' };
       const mutexState = deps.getMutexState?.() ?? { kind: 'idle' as const };
       const warning = mutexState.kind === 'busy' ? formatWikiBusyWarning(mutexState) : undefined;
-      if (warning !== undefined) {
-        deps.notifyBusy?.(ctx.thread, warning);
-      }
+      if (warning !== undefined) deps.notifyBusy?.(ctx.thread, warning);
       try {
-        const indexExists = await deps.vault.exists(WIKI_INDEX_PATH);
-        if (!indexExists) {
+        if (!(await deps.vault.exists(WIKI_INDEX_PATH))) {
           return {
             ok: true,
             data: SearchWikiResultSchema.parse({
@@ -99,23 +131,8 @@ export function createSearchWikiTool(
         const indexBody = await deps.vault.read(WIKI_INDEX_PATH);
         const entries = parseWikiIndex(indexBody);
         const candidates = topNCandidates(entries, args.query, maxMatches);
-        const matches: SearchWikiMatch[] = [];
-        for (const c of candidates) {
-          if (ctx.signal.aborted) return { ok: false, error: 'aborted' };
-          if (!c.path.startsWith(WIKI_DIR_PREFIX) || c.path.startsWith('wiki/raw/')) continue;
-          let body = '';
-          try {
-            body = (await deps.vault.exists(c.path)) ? await deps.vault.read(c.path) : '';
-          } catch {
-            body = '';
-          }
-          matches.push({
-            path: c.path,
-            summary: summarizeFromBody(body, c.summary),
-            snippet: buildSnippet(body, args.query),
-            score: c.score,
-          });
-        }
+        const matches = await collectWikiMatches(candidates, args.query, deps, ctx.signal);
+        if (matches === 'aborted') return { ok: false, error: 'aborted' };
         const result = SearchWikiResultSchema.parse({
           indexConsulted: true,
           matches,

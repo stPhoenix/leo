@@ -48,91 +48,111 @@ const PER_TOOL_RULES: Record<string, { severity: 'info' | 'warning'; multiplier:
 
 const GENERIC_TOOL_RULE = { severity: 'info' as const, multiplier: 0.2 };
 
-export function generateContextSuggestions(data: ContextSuggestionInputs): ContextSuggestion[] {
-  const out: ContextSuggestion[] = [];
+function checkNearCapacity(data: ContextSuggestionInputs): ContextSuggestion | null {
   const t = CONTEXT_SUGGESTION_THRESHOLDS;
+  if (data.percentage < t.NEAR_CAPACITY_PERCENT) return null;
+  const detail = data.isAutoCompactEnabled
+    ? 'Use /compact now to control what gets kept'
+    : 'Use /compact or enable autocompact';
+  const savings =
+    data.autoCompactThreshold !== undefined
+      ? Math.max(0, data.totalTokens - data.autoCompactThreshold)
+      : undefined;
+  return {
+    id: 'near_capacity',
+    severity: 'warning',
+    title: `Context near capacity (${Math.round(data.percentage)}%)`,
+    detail,
+    ...(savings !== undefined ? { savingsTokens: savings } : {}),
+  };
+}
 
-  if (data.percentage >= t.NEAR_CAPACITY_PERCENT) {
-    const detail = data.isAutoCompactEnabled
-      ? 'Use /compact now to control what gets kept'
-      : 'Use /compact or enable autocompact';
-    const savings =
-      data.autoCompactThreshold !== undefined
-        ? Math.max(0, data.totalTokens - data.autoCompactThreshold)
-        : undefined;
-    out.push({
-      id: 'near_capacity',
-      severity: 'warning',
-      title: `Context near capacity (${Math.round(data.percentage)}%)`,
-      detail,
-      ...(savings !== undefined ? { savingsTokens: savings } : {}),
-    });
-  }
-
-  const tools = data.toolResultsByType ?? [];
-  const toolsFlagged = new Set<string>();
-  for (const tool of tools) {
+function checkToolBloat(
+  data: ContextSuggestionInputs,
+  toolsFlagged: Set<string>,
+): ContextSuggestion[] {
+  const t = CONTEXT_SUGGESTION_THRESHOLDS;
+  const out: ContextSuggestion[] = [];
+  for (const tool of data.toolResultsByType ?? []) {
     const toolPercent = (tool.tokens / data.contextWindow) * 100;
     const isLarge =
       tool.tokens > t.LARGE_TOOL_RESULT_TOKENS && toolPercent > t.LARGE_TOOL_RESULT_PERCENT;
     if (!isLarge) continue;
     const rule = PER_TOOL_RULES[tool.name] ?? (toolPercent >= 20 ? GENERIC_TOOL_RULE : null);
     if (rule === null) continue;
-    const savings = Math.round(tool.tokens * rule.multiplier);
     out.push({
       id: `large_tool_result:${tool.name}`,
       severity: rule.severity,
       title: `${tool.name} results using ${Math.round(toolPercent)}% of context`,
       detail: `Consider consolidating ${tool.name} calls or narrowing scope.`,
-      savingsTokens: savings,
+      savingsTokens: Math.round(tool.tokens * rule.multiplier),
     });
     toolsFlagged.add(tool.name);
   }
+  return out;
+}
 
+function checkReadBloat(
+  data: ContextSuggestionInputs,
+  toolsFlagged: ReadonlySet<string>,
+): ContextSuggestion | null {
+  const t = CONTEXT_SUGGESTION_THRESHOLDS;
   const readTokens = data.readTokens ?? 0;
-  if (!toolsFlagged.has('Read') && readTokens >= t.READ_BLOAT_TOKENS) {
-    const pct = (readTokens / data.contextWindow) * 100;
-    if (pct >= t.READ_BLOAT_PERCENT) {
-      out.push({
-        id: 'read_bloat',
-        severity: 'info',
-        title: 'Earlier file reads are heavy in context',
-        detail: 'Re-read with smaller offset/limit or drop stale Read calls.',
-        savingsTokens: Math.round(readTokens * 0.3),
-      });
-    }
-  }
+  if (toolsFlagged.has('Read') || readTokens < t.READ_BLOAT_TOKENS) return null;
+  const pct = (readTokens / data.contextWindow) * 100;
+  if (pct < t.READ_BLOAT_PERCENT) return null;
+  return {
+    id: 'read_bloat',
+    severity: 'info',
+    title: 'Earlier file reads are heavy in context',
+    detail: 'Re-read with smaller offset/limit or drop stale Read calls.',
+    savingsTokens: Math.round(readTokens * 0.3),
+  };
+}
 
+function checkMemoryBloat(data: ContextSuggestionInputs): ContextSuggestion | null {
+  const t = CONTEXT_SUGGESTION_THRESHOLDS;
   const memoryTokens = data.memoryTokens ?? 0;
-  if (memoryTokens >= t.MEMORY_HIGH_TOKENS) {
-    const pct = (memoryTokens / data.contextWindow) * 100;
-    if (pct >= t.MEMORY_HIGH_PERCENT) {
-      const files = [...(data.memoryFiles ?? [])].sort((a, b) => b.tokens - a.tokens).slice(0, 3);
-      const names = files.map((f) => f.path).join(', ');
-      const topTokens = files.reduce((s, f) => s + f.tokens, 0);
-      out.push({
-        id: 'memory_bloat',
-        severity: 'info',
-        title: 'Memory files using significant context',
-        detail: `Largest: ${names}. Trim via /memory.`,
-        savingsTokens: topTokens,
-      });
-    }
-  }
+  if (memoryTokens < t.MEMORY_HIGH_TOKENS) return null;
+  const pct = (memoryTokens / data.contextWindow) * 100;
+  if (pct < t.MEMORY_HIGH_PERCENT) return null;
+  const files = [...(data.memoryFiles ?? [])].sort((a, b) => b.tokens - a.tokens).slice(0, 3);
+  const names = files.map((f) => f.path).join(', ');
+  const topTokens = files.reduce((s, f) => s + f.tokens, 0);
+  return {
+    id: 'memory_bloat',
+    severity: 'info',
+    title: 'Memory files using significant context',
+    detail: `Largest: ${names}. Trim via /memory.`,
+    savingsTokens: topTokens,
+  };
+}
 
-  if (
-    !data.isAutoCompactEnabled &&
-    data.percentage >= t.AUTOCOMPACT_DISABLED_LOWER_PERCENT &&
-    data.percentage < t.NEAR_CAPACITY_PERCENT
-  ) {
-    out.push({
-      id: 'autocompact_disabled',
-      severity: 'info',
-      title: 'Autocompact is disabled',
-      detail: 'Enable autocompact in settings to automatically manage context.',
-    });
-  }
+function checkAutocompactDisabled(data: ContextSuggestionInputs): ContextSuggestion | null {
+  const t = CONTEXT_SUGGESTION_THRESHOLDS;
+  if (data.isAutoCompactEnabled) return null;
+  if (data.percentage < t.AUTOCOMPACT_DISABLED_LOWER_PERCENT) return null;
+  if (data.percentage >= t.NEAR_CAPACITY_PERCENT) return null;
+  return {
+    id: 'autocompact_disabled',
+    severity: 'info',
+    title: 'Autocompact is disabled',
+    detail: 'Enable autocompact in settings to automatically manage context.',
+  };
+}
 
+export function generateContextSuggestions(data: ContextSuggestionInputs): ContextSuggestion[] {
+  const out: ContextSuggestion[] = [];
+  const nearCapacity = checkNearCapacity(data);
+  if (nearCapacity !== null) out.push(nearCapacity);
+  const toolsFlagged = new Set<string>();
+  out.push(...checkToolBloat(data, toolsFlagged));
+  const readBloat = checkReadBloat(data, toolsFlagged);
+  if (readBloat !== null) out.push(readBloat);
+  const memoryBloat = checkMemoryBloat(data);
+  if (memoryBloat !== null) out.push(memoryBloat);
+  const autoCompactDisabled = checkAutocompactDisabled(data);
+  if (autoCompactDisabled !== null) out.push(autoCompactDisabled);
   return sortSuggestions(out);
 }
 

@@ -129,34 +129,7 @@ export function buildRequestBody(req: ProviderChatRequest): AnthropicRequestBody
   const systemParts: string[] = [];
   const apiMessages: AnthropicApiMessage[] = [];
   for (const m of req.messages) {
-    if (m.role === 'system') {
-      systemParts.push(typeof m.content === 'string' ? m.content : flattenBlocksToText(m.content));
-      continue;
-    }
-    if (m.role === 'tool') {
-      const text = typeof m.content === 'string' ? m.content : flattenBlocksToText(m.content);
-      apiMessages.push({
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: m.toolCallId ?? 'unknown',
-            content: text,
-          },
-        ],
-      });
-      continue;
-    }
-    const apiRole: 'user' | 'assistant' = m.role === 'assistant' ? 'assistant' : 'user';
-    if (typeof m.content === 'string') {
-      apiMessages.push({ role: apiRole, content: m.content });
-      continue;
-    }
-    const blocks = m.content
-      .map(toAnthropicBlock)
-      .filter((b): b is AnthropicContentBlock => b !== null);
-    if (blocks.length === 0) continue;
-    apiMessages.push({ role: apiRole, content: blocks });
+    appendRequestMessage(m, systemParts, apiMessages);
   }
   const body: AnthropicRequestBody & {
     system?: string;
@@ -170,6 +143,41 @@ export function buildRequestBody(req: ProviderChatRequest): AnthropicRequestBody
     body.tools = sanitizeToolNames(req.tools).tools.map(toApiTool);
   }
   return body;
+}
+
+function appendRequestMessage(
+  m: ProviderChatRequest['messages'][number],
+  systemParts: string[],
+  apiMessages: AnthropicApiMessage[],
+): void {
+  if (m.role === 'system') {
+    systemParts.push(typeof m.content === 'string' ? m.content : flattenBlocksToText(m.content));
+    return;
+  }
+  if (m.role === 'tool') {
+    const text = typeof m.content === 'string' ? m.content : flattenBlocksToText(m.content);
+    apiMessages.push({
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: m.toolCallId ?? 'unknown',
+          content: text,
+        },
+      ],
+    });
+    return;
+  }
+  const apiRole: 'user' | 'assistant' = m.role === 'assistant' ? 'assistant' : 'user';
+  if (typeof m.content === 'string') {
+    apiMessages.push({ role: apiRole, content: m.content });
+    return;
+  }
+  const blocks = m.content
+    .map(toAnthropicBlock)
+    .filter((b): b is AnthropicContentBlock => b !== null);
+  if (blocks.length === 0) return;
+  apiMessages.push({ role: apiRole, content: blocks });
 }
 
 function toApiTool(t: OpenAITool): AnthropicApiTool {
@@ -236,7 +244,7 @@ function flattenBlocksToText(blocks: readonly ContentBlock[]): string {
 function resolveUrl(endpoint: string | undefined): string {
   const base =
     endpoint !== undefined && endpoint.length > 0
-      ? endpoint.replace(/\/+$/, '')
+      ? endpoint.replace(/\/+$/, '') // NOSONAR(typescript:S5852): literal `/` with `+` quantifier, linear.
       : 'https://api.anthropic.com';
   return `${base}${ANTHROPIC_COUNT_TOKENS_PATH}`;
 }

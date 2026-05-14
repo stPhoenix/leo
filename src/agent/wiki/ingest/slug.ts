@@ -3,9 +3,9 @@ export function slugifyLabel(label: string, max = 50): string {
     .toLowerCase()
     .replace(/https?:\/\//g, '') // NOSONAR(typescript:S5852): literal scheme strip, linear.
     .replace(/[^a-z0-9]+/g, '-') // NOSONAR(typescript:S5852): single char class + quantifier, linear.
-    .replace(/^-+|-+$/g, '');
+    .replace(/^-+|-+$/g, ''); // NOSONAR(typescript:S5852): anchored alternation over single-char class, linear.
   const trimmed = ascii.length === 0 ? 'source' : ascii;
-  return trimmed.length > max ? trimmed.slice(0, max).replace(/-+$/, '') : trimmed;
+  return trimmed.length > max ? trimmed.slice(0, max).replace(/-+$/, '') : trimmed; // NOSONAR(typescript:S5852): anchored trailing single-char class, linear.
 }
 
 function pad(n: number, width: number): string {

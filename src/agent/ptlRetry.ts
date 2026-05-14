@@ -41,10 +41,10 @@ export function groupMessagesByApiRound(messages: readonly ChatMessage[]): ChatM
 
 export function parseTokenGap(response: string): number | null {
   const patterns = [
-    /tokens?:?\s*(\d+)\s*(?:>|over|exceeded)/i,
-    /exceeds?[^0-9]*(\d+)\s*tokens?/i, // NOSONAR(typescript:S5852): bounded literal alternation; provider error strings short.
-    /(\d+)\s*tokens?\s*(?:over|too many)/i,
-    /gap[^0-9]*(\d+)/i,
+    /tokens?:?\s*(\d+)\s*(?:>|over|exceeded)/i, // NOSONAR(typescript:S5852): disjoint \d+/\s* classes; provider error strings short.
+    /exceeds?[^0-9]*(\d+)\s*tokens?/i, // NOSONAR(typescript:S5852): disjoint non-digit/digit classes; provider error strings short.
+    /(\d+)\s*tokens?\s*(?:over|too many)/i, // NOSONAR(typescript:S5852): disjoint \d+/\s* classes; provider error strings short.
+    /gap[^0-9]*(\d+)/i, // NOSONAR(typescript:S5852): disjoint non-digit/digit classes; provider error strings short.
   ];
   for (const re of patterns) {
     const m = re.exec(response);

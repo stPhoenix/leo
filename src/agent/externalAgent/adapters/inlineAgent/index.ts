@@ -101,6 +101,7 @@ export class InlineAgentAdapter extends ExternalAgentAdapter {
     | undefined;
   private readonly resolveSearchWebApiKey: ((config: InlineAgentConfig) => string) | undefined;
   private readonly beginTurn: BeginInlineTurn | undefined;
+  private orphanSweepStarted = false;
 
   constructor(deps: InlineAgentAdapterDeps) {
     super();
@@ -111,42 +112,13 @@ export class InlineAgentAdapter extends ExternalAgentAdapter {
     this.chatModelAdapter = deps.chatModelAdapter;
     this.resolveSearchWebApiKey = deps.resolveSearchWebApiKey;
     this.beginTurn = deps.beginTurn;
-    Sandbox.sweepOrphans({ logger: this.logger }).catch((err) => {
-      this.logger.warn('externalAgent.adapter.inlineAgent.sandbox.sweep-failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    });
   }
 
   async *start(input: ExternalAgentInput): AsyncIterable<ExternalEvent> {
-    // Provider whitelist gate runs before the graph so the error code matches
-    // the F02 contract regardless of LangChain availability.
-    let parsed: InlineAgentConfig;
-    try {
-      parsed = inlineAgentConfigSchema.parse(input.config ?? {});
-    } catch (err) {
-      this.logger.warn('externalAgent.adapter.inlineAgent.config-invalid', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      yield {
-        type: 'error',
-        error: {
-          code: 'invalid_config',
-          message: err instanceof Error ? err.message : 'invalid inline-agent config',
-        },
-      };
-      return;
-    }
-
-    const known = this.knownProviderIds();
-    if (!known.includes(parsed.providerId)) {
-      yield {
-        type: 'error',
-        error: {
-          code: 'invalid_provider',
-          message: `unknown providerId '${parsed.providerId}' (expected one of: ${known.join(', ')})`,
-        },
-      };
+    this.ensureOrphanSweep();
+    const validated = this.validateStartConfig(input);
+    if (validated.kind === 'error') {
+      yield validated.event;
       return;
     }
 
@@ -158,37 +130,86 @@ export class InlineAgentAdapter extends ExternalAgentAdapter {
         : null;
     const traceConfig = turnHandle?.traceConfig;
     try {
-      yield* runInlineAgentGraph(
-        {
-          providerFactory: this.providerFactory,
-          logger: this.logger,
-          ...(this.chatModelAdapter !== undefined
-            ? { chatModelAdapter: this.chatModelAdapter }
-            : {}),
-          ...(this.resolveSearchWebApiKey !== undefined
-            ? { resolveSearchWebApiKey: this.resolveSearchWebApiKey }
-            : {}),
-          ...(traceConfig !== undefined ? { traceConfig } : {}),
-        },
-        {
-          refinedAsk: input.refinedAsk,
-          systemPrompt: input.systemPrompt,
-          signal: input.signal,
-          timeoutMs: input.timeoutMs,
-          config: input.config,
-          runId,
-        },
-      );
+      yield* runInlineAgentGraph(this.buildGraphDeps(traceConfig), {
+        refinedAsk: input.refinedAsk,
+        systemPrompt: input.systemPrompt,
+        signal: input.signal,
+        timeoutMs: input.timeoutMs,
+        config: input.config,
+        runId,
+      });
     } finally {
-      if (turnHandle !== null) {
-        try {
-          await turnHandle.end();
-        } catch (err) {
-          this.logger.warn('externalAgent.adapter.inlineAgent.trace.end-failed', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
+      await this.endTurn(turnHandle);
+    }
+  }
+
+  private ensureOrphanSweep(): void {
+    if (this.orphanSweepStarted) return;
+    this.orphanSweepStarted = true;
+    Sandbox.sweepOrphans({ logger: this.logger }).catch((err) => {
+      this.logger.warn('externalAgent.adapter.inlineAgent.sandbox.sweep-failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+
+  private validateStartConfig(
+    input: ExternalAgentInput,
+  ): { kind: 'ok'; parsed: InlineAgentConfig } | { kind: 'error'; event: ExternalEvent } {
+    let parsed: InlineAgentConfig;
+    try {
+      parsed = inlineAgentConfigSchema.parse(input.config ?? {});
+    } catch (err) {
+      this.logger.warn('externalAgent.adapter.inlineAgent.config-invalid', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return {
+        kind: 'error',
+        event: {
+          type: 'error',
+          error: {
+            code: 'invalid_config',
+            message: err instanceof Error ? err.message : 'invalid inline-agent config',
+          },
+        },
+      };
+    }
+    const known = this.knownProviderIds();
+    if (!known.includes(parsed.providerId)) {
+      return {
+        kind: 'error',
+        event: {
+          type: 'error',
+          error: {
+            code: 'invalid_provider',
+            message: `unknown providerId '${parsed.providerId}' (expected one of: ${known.join(', ')})`,
+          },
+        },
+      };
+    }
+    return { kind: 'ok', parsed };
+  }
+
+  private buildGraphDeps(traceConfig: InvokeTraceConfig | undefined) {
+    return {
+      providerFactory: this.providerFactory,
+      logger: this.logger,
+      ...(this.chatModelAdapter !== undefined ? { chatModelAdapter: this.chatModelAdapter } : {}),
+      ...(this.resolveSearchWebApiKey !== undefined
+        ? { resolveSearchWebApiKey: this.resolveSearchWebApiKey }
+        : {}),
+      ...(traceConfig !== undefined ? { traceConfig } : {}),
+    };
+  }
+
+  private async endTurn(turnHandle: InlineTurnHandle | null): Promise<void> {
+    if (turnHandle === null) return;
+    try {
+      await turnHandle.end();
+    } catch (err) {
+      this.logger.warn('externalAgent.adapter.inlineAgent.trace.end-failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 }

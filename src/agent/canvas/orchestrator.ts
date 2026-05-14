@@ -103,74 +103,16 @@ export class CanvasOrchestrator {
     const runId = input.runId ?? generateCanvasRunId();
     const targetPath = resolveTargetPath(input);
 
-    // Pre-build controller so the widget renders the config picker before
-    // any LLM call happens. Actions for cancel/preview are bound after the
-    // subgraph hands us a real RunHandle.
-    let abortFn: () => void = () => {};
-    const initialActions: CanvasWidgetActions = {
-      cancel: () => abortFn(),
-      ...(this.deps.resolvePreviewing !== undefined
-        ? {
-            resolvePreviewing: (action) => this.deps.resolvePreviewing!(runId, action),
-          }
-        : {}),
-      ...(this.deps.openPreview !== undefined
-        ? {
-            openPreview: (path: string) => this.deps.openPreview!(path),
-          }
-        : {}),
-    };
-
-    const initialPhase: CanvasViewModel['phase'] =
-      this.deps.picker !== undefined ? 'awaiting_config' : 'preparing';
-    const controller = new CanvasWidgetController({
-      runId,
-      threadId: input.threadId,
-      op: input.op,
-      targetPath,
-      originalAsk: input.originalAsk,
-      initialViewModel: makeInitialCanvasViewModel({
-        runId,
-        threadId: input.threadId,
-        op: input.op,
-        targetPath,
-        originalAsk: input.originalAsk,
-        phase: initialPhase,
-      }),
-      actions: initialActions,
-    });
+    const abortRef: { fn: () => void } = { fn: () => {} };
+    const controller = this.setupController(input, runId, targetPath, abortRef);
     registerCanvasLiveController(runId, controller);
-    try {
-      this.deps.appendWidgetBlock?.({
-        runId,
-        threadId: input.threadId,
-        op: input.op,
-        targetPath,
-        originalAsk: input.originalAsk,
-      });
-    } catch (err) {
-      this.deps.logger?.warn?.('canvas.live.append-failed', {
-        runId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    this.tryAppendWidgetBlock(runId, input, targetPath);
 
-    // Pre-flight picker — blocks until user confirms or cancels.
-    let override: CanvasConfigOverride | null = null;
-    if (this.deps.picker !== undefined) {
-      const init = this.deps.picker.buildInit({
-        originalAsk: input.originalAsk,
-        op: input.op,
-        targetPath,
-      });
-      override = await controller.startConfigPhase(this.deps.picker.deps, init);
-      if (override === null) {
-        controller.setPhase('cancelled');
-        releaseCanvasLiveController(runId);
-        return { ok: false, cancelledByPicker: true };
-      }
-      controller.update({ paletteId: override.paletteId });
+    const pickerResult = await this.preFlightPicker(controller, input, runId, targetPath);
+    if (pickerResult.cancelled) {
+      return { ok: false, cancelledByPicker: true };
     }
+    const override = pickerResult.override;
 
     // Begin the trace span only after the user has confirmed — avoids a
     // dangling span when the picker is cancelled.
@@ -214,7 +156,7 @@ export class CanvasOrchestrator {
       return { ok: false, busy: result.busy };
     }
     const handle = result.handle;
-    abortFn = () => handle.abort();
+    abortRef.fn = () => handle.abort();
     this.liveHandles.set(handle.runId, handle);
 
     const unsubscribe = handle.subscribe((event) => {
@@ -260,6 +202,80 @@ export class CanvasOrchestrator {
     }
 
     return { ok: true, handle, terminal };
+  }
+
+  private setupController(
+    input: StartCanvasInput,
+    runId: string,
+    targetPath: string,
+    abortRef: { fn: () => void },
+  ): CanvasWidgetController {
+    const initialActions: CanvasWidgetActions = {
+      cancel: () => abortRef.fn(),
+      ...(this.deps.resolvePreviewing !== undefined
+        ? { resolvePreviewing: (action) => this.deps.resolvePreviewing!(runId, action) }
+        : {}),
+      ...(this.deps.openPreview !== undefined
+        ? { openPreview: (path: string) => this.deps.openPreview!(path) }
+        : {}),
+    };
+    const initialPhase: CanvasViewModel['phase'] =
+      this.deps.picker !== undefined ? 'awaiting_config' : 'preparing';
+    return new CanvasWidgetController({
+      runId,
+      threadId: input.threadId,
+      op: input.op,
+      targetPath,
+      originalAsk: input.originalAsk,
+      initialViewModel: makeInitialCanvasViewModel({
+        runId,
+        threadId: input.threadId,
+        op: input.op,
+        targetPath,
+        originalAsk: input.originalAsk,
+        phase: initialPhase,
+      }),
+      actions: initialActions,
+    });
+  }
+
+  private tryAppendWidgetBlock(runId: string, input: StartCanvasInput, targetPath: string): void {
+    try {
+      this.deps.appendWidgetBlock?.({
+        runId,
+        threadId: input.threadId,
+        op: input.op,
+        targetPath,
+        originalAsk: input.originalAsk,
+      });
+    } catch (err) {
+      this.deps.logger?.warn?.('canvas.live.append-failed', {
+        runId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private async preFlightPicker(
+    controller: CanvasWidgetController,
+    input: StartCanvasInput,
+    runId: string,
+    targetPath: string,
+  ): Promise<{ cancelled: boolean; override: CanvasConfigOverride | null }> {
+    if (this.deps.picker === undefined) return { cancelled: false, override: null };
+    const init = this.deps.picker.buildInit({
+      originalAsk: input.originalAsk,
+      op: input.op,
+      targetPath,
+    });
+    const override = await controller.startConfigPhase(this.deps.picker.deps, init);
+    if (override === null) {
+      controller.setPhase('cancelled');
+      releaseCanvasLiveController(runId);
+      return { cancelled: true, override: null };
+    }
+    controller.update({ paletteId: override.paletteId });
+    return { cancelled: false, override };
   }
 
   private viewFromTerminal(

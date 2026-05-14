@@ -99,113 +99,14 @@ export function createSearchWebTool(ctx: SearchWebCtx): SearchWebTool {
         }
         return { ok: false, error: 'not_configured' };
       }
-      const start = now();
-      const composed = new AbortController();
-      const onParentAbort = (): void => composed.abort();
-      if (ctx.signal.aborted) composed.abort();
-      else ctx.signal.addEventListener('abort', onParentAbort, { once: true });
-      const timer = setTimeout(() => composed.abort(), Math.max(1, ctx.config.timeoutMs));
-      const maxResults = parsed.maxResults ?? ctx.config.defaultMaxResults;
-      const depth = parsed.searchDepth ?? ctx.config.defaultSearchDepth;
-      try {
-        const body = JSON.stringify({
-          api_key: ctx.config.apiKey,
-          query: parsed.query,
-          search_depth: depth,
-          max_results: maxResults,
-          topic: parsed.topic ?? ctx.config.defaultTopic,
-          include_answer: parsed.includeAnswer ?? ctx.config.includeAnswer,
-          include_raw_content: false,
-          include_images: false,
-          ...(parsed.includeDomains !== undefined
-            ? { include_domains: parsed.includeDomains }
-            : {}),
-          ...(parsed.excludeDomains !== undefined
-            ? { exclude_domains: parsed.excludeDomains }
-            : {}),
-        });
-        let response: Response;
-        try {
-          response = await fetchImpl(endpoint, {
-            method: 'POST',
-            signal: composed.signal,
-            headers: { 'content-type': 'application/json' },
-            body,
-          });
-        } catch (err) {
-          if (composed.signal.aborted && !ctx.signal.aborted) {
-            return { ok: false, error: 'timeout' };
-          }
-          if (ctx.signal.aborted) {
-            return { ok: false, error: 'timeout' };
-          }
-          if (err instanceof Error && /timeout/i.test(err.message)) {
-            return { ok: false, error: 'timeout' };
-          }
-          return { ok: false, error: 'http_error', status: 0 };
-        }
-
-        const status = response.status;
-        if (status >= 400) {
-          const mapped = mapHttpError(status);
-          report(metricsCallback, {
-            queryLength: parsed.query.length,
-            maxResults,
-            depth,
-            status,
-            durationMs: now() - start,
-            resultCount: 0,
-          });
-          return { ok: false, error: mapped, status };
-        }
-
-        const { text, totalBytes, truncated } = await readBoundedText(
-          response,
-          ctx.config.maxBytes,
-        );
-        if (truncated) {
-          report(metricsCallback, {
-            queryLength: parsed.query.length,
-            maxResults,
-            depth,
-            status,
-            durationMs: now() - start,
-            resultCount: 0,
-          });
-          return { ok: false, error: 'too_large', status };
-        }
-        let payload: unknown;
-        try {
-          payload = JSON.parse(text);
-        } catch {
-          report(metricsCallback, {
-            queryLength: parsed.query.length,
-            maxResults,
-            depth,
-            status,
-            durationMs: now() - start,
-            resultCount: 0,
-          });
-          return { ok: false, error: 'http_error', status };
-        }
-        const mapped = mapTavilyPayload(payload, now() - start);
-        ctx.logger.debug('externalAgent.adapter.inlineAgent.tool.search-web.payload', {
-          payloadLength: totalBytes,
-          resultCount: mapped.results.length,
-        });
-        report(metricsCallback, {
-          queryLength: parsed.query.length,
-          maxResults,
-          depth,
-          status,
-          durationMs: now() - start,
-          resultCount: mapped.results.length,
-        });
-        return { ok: true, data: mapped };
-      } finally {
-        clearTimeout(timer);
-        ctx.signal.removeEventListener('abort', onParentAbort);
-      }
+      return runSearchWeb({
+        parsed,
+        ctx,
+        endpoint,
+        fetchImpl,
+        now,
+        getMetricsCallback: () => metricsCallback,
+      });
     },
     withMetrics(cb): SearchWebTool {
       metricsCallback = cb;
@@ -214,6 +115,129 @@ export function createSearchWebTool(ctx: SearchWebCtx): SearchWebTool {
   };
 
   return tool;
+}
+
+interface RunSearchWebArgs {
+  parsed: SearchWebInput;
+  ctx: SearchWebCtx;
+  endpoint: string;
+  fetchImpl: (input: string, init: RequestInit) => Promise<Response>;
+  now: () => number;
+  getMetricsCallback: () => ((m: SearchWebMetricsEvent) => void) | null;
+}
+
+async function runSearchWeb(args: RunSearchWebArgs): Promise<SearchWebResult> {
+  const { parsed, ctx, endpoint, fetchImpl, now, getMetricsCallback } = args;
+  const start = now();
+  const composed = new AbortController();
+  const onParentAbort = (): void => composed.abort();
+  if (ctx.signal.aborted) composed.abort();
+  else ctx.signal.addEventListener('abort', onParentAbort, { once: true });
+  const timer = setTimeout(() => composed.abort(), Math.max(1, ctx.config.timeoutMs));
+  const maxResults = parsed.maxResults ?? ctx.config.defaultMaxResults;
+  const depth = parsed.searchDepth ?? ctx.config.defaultSearchDepth;
+  const reportMetrics = (extra: { status: number; resultCount: number }): void => {
+    const cb = getMetricsCallback();
+    if (cb === null) return;
+    cb({
+      queryLength: parsed.query.length,
+      maxResults,
+      depth,
+      status: extra.status,
+      durationMs: now() - start,
+      resultCount: extra.resultCount,
+    });
+  };
+  try {
+    const body = buildSearchBody(parsed, ctx, maxResults, depth);
+    const fetchResult = await fetchSearchEndpoint(fetchImpl, endpoint, body, composed, ctx);
+    if (!fetchResult.ok) return fetchResult.error;
+    return await parseSearchResponse(fetchResult.response, parsed, ctx, now, start, reportMetrics);
+  } finally {
+    clearTimeout(timer);
+    ctx.signal.removeEventListener('abort', onParentAbort);
+  }
+}
+
+function buildSearchBody(
+  parsed: SearchWebInput,
+  ctx: SearchWebCtx,
+  maxResults: number,
+  depth: string,
+): string {
+  return JSON.stringify({
+    api_key: ctx.config.apiKey,
+    query: parsed.query,
+    search_depth: depth,
+    max_results: maxResults,
+    topic: parsed.topic ?? ctx.config.defaultTopic,
+    include_answer: parsed.includeAnswer ?? ctx.config.includeAnswer,
+    include_raw_content: false,
+    include_images: false,
+    ...(parsed.includeDomains !== undefined ? { include_domains: parsed.includeDomains } : {}),
+    ...(parsed.excludeDomains !== undefined ? { exclude_domains: parsed.excludeDomains } : {}),
+  });
+}
+
+async function fetchSearchEndpoint(
+  fetchImpl: (input: string, init: RequestInit) => Promise<Response>,
+  endpoint: string,
+  body: string,
+  composed: AbortController,
+  ctx: SearchWebCtx,
+): Promise<{ ok: true; response: Response } | { ok: false; error: SearchWebResult }> {
+  try {
+    const response = await fetchImpl(endpoint, {
+      method: 'POST',
+      signal: composed.signal,
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    return { ok: true, response };
+  } catch (err) {
+    if (composed.signal.aborted && !ctx.signal.aborted) {
+      return { ok: false, error: { ok: false, error: 'timeout' } };
+    }
+    if (ctx.signal.aborted) return { ok: false, error: { ok: false, error: 'timeout' } };
+    if (err instanceof Error && /timeout/i.test(err.message)) {
+      return { ok: false, error: { ok: false, error: 'timeout' } };
+    }
+    return { ok: false, error: { ok: false, error: 'http_error', status: 0 } };
+  }
+}
+
+async function parseSearchResponse(
+  response: Response,
+  parsed: SearchWebInput,
+  ctx: SearchWebCtx,
+  now: () => number,
+  start: number,
+  reportMetrics: (extra: { status: number; resultCount: number }) => void,
+): Promise<SearchWebResult> {
+  const status = response.status;
+  if (status >= 400) {
+    reportMetrics({ status, resultCount: 0 });
+    return { ok: false, error: mapHttpError(status), status };
+  }
+  const { text, totalBytes, truncated } = await readBoundedText(response, ctx.config.maxBytes);
+  if (truncated) {
+    reportMetrics({ status, resultCount: 0 });
+    return { ok: false, error: 'too_large', status };
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    reportMetrics({ status, resultCount: 0 });
+    return { ok: false, error: 'http_error', status };
+  }
+  const mapped = mapTavilyPayload(payload, now() - start);
+  ctx.logger.debug('externalAgent.adapter.inlineAgent.tool.search-web.payload', {
+    payloadLength: totalBytes,
+    resultCount: mapped.results.length,
+  });
+  reportMetrics({ status, resultCount: mapped.results.length });
+  return { ok: true, data: mapped };
 }
 
 function mapHttpError(status: number): SearchWebError {
@@ -236,16 +260,21 @@ function mapTavilyPayload(
   if (typeof p.answer === 'string' && p.answer.length > 0) out.answer = stripInvisible(p.answer);
   const rawResults = Array.isArray(p.results) ? p.results : [];
   for (const raw of rawResults) {
-    if (raw === null || typeof raw !== 'object') continue;
-    const r = raw as Record<string, unknown>;
-    const title = typeof r.title === 'string' ? stripInvisible(r.title) : '';
-    const url = typeof r.url === 'string' ? r.url : '';
-    const content = typeof r.content === 'string' ? stripInvisible(r.content) : '';
-    const score = typeof r.score === 'number' ? r.score : 0;
-    if (url.length === 0) continue;
-    out.results.push({ title, url, content, score });
+    const row = mapTavilyResultRow(raw);
+    if (row !== null) out.results.push(row);
   }
   return out;
+}
+
+function mapTavilyResultRow(raw: unknown): SearchWebResultRow | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const url = typeof r.url === 'string' ? r.url : '';
+  if (url.length === 0) return null;
+  const title = typeof r.title === 'string' ? stripInvisible(r.title) : '';
+  const content = typeof r.content === 'string' ? stripInvisible(r.content) : '';
+  const score = typeof r.score === 'number' ? r.score : 0;
+  return { title, url, content, score };
 }
 
 async function readBoundedText(
@@ -281,11 +310,4 @@ async function readBoundedText(
     chunks.map((c) => Buffer.from(c.buffer, c.byteOffset, c.byteLength)),
   ).toString('utf8');
   return { text, totalBytes, truncated: false };
-}
-
-function report(
-  callback: ((m: SearchWebMetricsEvent) => void) | null,
-  metrics: SearchWebMetricsEvent,
-): void {
-  if (callback !== null) callback(metrics);
 }

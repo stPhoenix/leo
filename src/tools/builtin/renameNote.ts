@@ -4,6 +4,7 @@ import type { Logger } from '@/platform/Logger';
 import type { ToolCtx, ToolResult, ToolSpec } from '../types';
 import { isSafeVaultPath } from './readNote';
 import { jsonSchemaFromZod, validateFromZod } from '../zodAdapter';
+import { presentDecision } from './_toolGuards';
 
 export interface RenameNoteArgs {
   readonly path: string;
@@ -63,34 +64,22 @@ export async function runRename(
       lineEnd: 0,
       routedVia: 'vault',
     };
-    const decision = await opts.acceptReject.present(proposal);
-    let reverted = false;
-    if (decision === 'reject') {
-      try {
-        await renamer(args.new_path, args.path);
-        reverted = true;
-        opts.logger?.info(`${intent}_note.reject`, {
-          toolId: proposal.toolId,
-          thread: ctx.thread,
-          from: args.path,
-          to: args.new_path,
-        });
-      } catch (err) {
-        opts.logger?.warn(`${intent}_note.reject.partial`, {
-          toolId: proposal.toolId,
-          from: args.path,
-          to: args.new_path,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    } else {
-      opts.logger?.info(`${intent}_note.accept`, {
-        toolId: proposal.toolId,
-        thread: ctx.thread,
-        from: args.path,
-        to: args.new_path,
-      });
-    }
+    const logFields = {
+      toolId: proposal.toolId,
+      thread: ctx.thread,
+      from: args.path,
+      to: args.new_path,
+    };
+    const { reverted } = await presentDecision({
+      acceptReject: opts.acceptReject,
+      proposal,
+      logger: opts.logger,
+      logKey: `${intent}_note`,
+      logFields,
+      revert: () => renamer(args.new_path, args.path),
+      revertFailureLevel: 'warn',
+      revertFailureSuffix: '.reject.partial',
+    });
 
     if (ctx.readState !== undefined) {
       ctx.readState.invalidate(ctx.thread, args.path);

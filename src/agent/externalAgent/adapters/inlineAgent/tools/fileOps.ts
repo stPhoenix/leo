@@ -14,8 +14,6 @@ import {
   GLOB_DEFAULT_MAX_RESULTS,
   type ReadFileInput,
   type WriteFileInput,
-  type ListDirInput,
-  type DeleteFileInput,
   type AppendFileInput,
   type GrepInput,
   type GlobInput,
@@ -305,60 +303,82 @@ export function createListDirTool(ctx: FileOpsCtx): ListDirTool {
   return {
     name: 'list_dir',
     async invoke(input): Promise<ListDirResult> {
-      let parsed: ListDirInput;
-      try {
-        parsed = listDirInputSchema.parse(input);
-      } catch {
-        return { ok: false, error: 'invalid_args' };
-      }
-      const rel = parsed.relPath ?? '';
-      const resolved = ctx.sandbox.resolve(rel);
-      if (!resolved.ok) return { ok: false, error: 'path_outside_sandbox' };
-      const safe = await ctx.sandbox.checkSafe(resolved.absPath);
-      if (!safe.ok) {
-        if (safe.error === 'not_found') return { ok: false, error: 'not_found' };
-        return { ok: false, error: 'path_outside_sandbox' };
+      const parsedResult = parseToolInput(input, listDirInputSchema);
+      if (!parsedResult.ok) return { ok: false, error: 'invalid_args' };
+      const rel = parsedResult.data.relPath ?? '';
+      const checked = await resolveAndCheck(ctx, rel);
+      if (!checked.ok) {
+        return checked.error === 'not_found'
+          ? { ok: false, error: 'not_found' }
+          : { ok: false, error: 'path_outside_sandbox' };
       }
       let entries: Dirent[];
       try {
-        entries = await fs.readdir(resolved.absPath, { withFileTypes: true });
+        entries = await fs.readdir(checked.absPath, { withFileTypes: true });
       } catch (err) {
-        const code = errorCode(err);
-        if (code === 'ENOENT') return { ok: false, error: 'not_found' };
-        if (code === 'ENOTDIR') return { ok: false, error: 'not_directory' };
-        return { ok: false, error: 'path_outside_sandbox' };
+        return mapReaddirError(err);
       }
-      const out: ListDirEntry[] = [];
-      for (const e of entries) {
-        if (e.isFile()) {
-          let bytes = 0;
-          try {
-            const s = await fs.stat(resolved.absPath + '/' + e.name);
-            bytes = s.size;
-          } catch {
-            /* ignore */
-          }
-          out.push({ name: e.name, type: 'file', bytes });
-        } else if (e.isDirectory()) {
-          out.push({ name: e.name, type: 'dir' });
-        }
-      }
-      out.sort((a, b) => a.name.localeCompare(b.name));
-      return { ok: true, data: { entries: out } };
+      return { ok: true, data: { entries: await collectDirEntries(checked.absPath, entries) } };
     },
   };
+}
+
+function mapReaddirError(err: unknown): ListDirResult {
+  const code = errorCode(err);
+  if (code === 'ENOENT') return { ok: false, error: 'not_found' };
+  if (code === 'ENOTDIR') return { ok: false, error: 'not_directory' };
+  return { ok: false, error: 'path_outside_sandbox' };
+}
+
+async function collectDirEntries(absDir: string, entries: Dirent[]): Promise<ListDirEntry[]> {
+  const out: ListDirEntry[] = [];
+  for (const e of entries) {
+    if (e.isFile()) {
+      let bytes = 0;
+      try {
+        const s = await fs.stat(absDir + '/' + e.name);
+        bytes = s.size;
+      } catch {
+        /* ignore */
+      }
+      out.push({ name: e.name, type: 'file', bytes });
+    } else if (e.isDirectory()) {
+      out.push({ name: e.name, type: 'dir' });
+    }
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
+function parseToolInput<T>(
+  input: unknown,
+  schema: { parse: (i: unknown) => T },
+): { ok: true; data: T } | { ok: false } {
+  try {
+    return { ok: true, data: schema.parse(input) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function resolveAndCheck(
+  ctx: FileOpsCtx,
+  rel: string,
+): Promise<{ ok: true; absPath: string } | { ok: false; error: 'not_found' | 'outside' }> {
+  const resolved = ctx.sandbox.resolve(rel);
+  if (!resolved.ok) return { ok: false, error: 'outside' };
+  const safe = await ctx.sandbox.checkSafe(resolved.absPath);
+  if (!safe.ok) return { ok: false, error: safe.error === 'not_found' ? 'not_found' : 'outside' };
+  return { ok: true, absPath: resolved.absPath };
 }
 
 export function createDeleteFileTool(ctx: FileOpsCtx): DeleteFileTool {
   return {
     name: 'delete_file',
     async invoke(input): Promise<DeleteFileResult> {
-      let parsed: DeleteFileInput;
-      try {
-        parsed = deleteFileInputSchema.parse(input);
-      } catch {
-        return { ok: false, error: 'invalid_args' };
-      }
+      const parsedResult = parseToolInput(input, deleteFileInputSchema);
+      if (!parsedResult.ok) return { ok: false, error: 'invalid_args' };
+      const parsed = parsedResult.data;
       const resolved = ctx.sandbox.resolve(parsed.relPath);
       if (!resolved.ok) return { ok: false, error: 'path_outside_sandbox' };
       if (resolved.absPath === ctx.sandbox.root) {
@@ -366,33 +386,38 @@ export function createDeleteFileTool(ctx: FileOpsCtx): DeleteFileTool {
       }
       const safe = await ctx.sandbox.checkSafe(resolved.absPath);
       if (!safe.ok) {
-        if (safe.error === 'not_found') return { ok: false, error: 'not_found' };
-        return { ok: false, error: 'path_outside_sandbox' };
+        return safe.error === 'not_found'
+          ? { ok: false, error: 'not_found' }
+          : { ok: false, error: 'path_outside_sandbox' };
       }
-      let stat;
-      try {
-        stat = await fs.stat(resolved.absPath);
-      } catch (err) {
-        if (errorCode(err) === 'ENOENT') return { ok: false, error: 'not_found' };
-        return { ok: false, error: 'io_error' };
-      }
-      try {
-        if (stat.isDirectory()) {
-          const entries = await fs.readdir(resolved.absPath);
-          if (entries.length > 0) return { ok: false, error: 'not_empty' };
-          await fs.rmdir(resolved.absPath);
-        } else {
-          await fs.unlink(resolved.absPath);
-          ctx.sandbox.addBytes(-stat.size);
-        }
-      } catch (err) {
-        const code = errorCode(err);
-        if (code === 'ENOENT') return { ok: false, error: 'not_found' };
-        return { ok: false, error: 'io_error' };
-      }
-      return { ok: true, data: { deleted: true } };
+      return performDelete(ctx, resolved.absPath);
     },
   };
+}
+
+async function performDelete(ctx: FileOpsCtx, absPath: string): Promise<DeleteFileResult> {
+  let stat;
+  try {
+    stat = await fs.stat(absPath);
+  } catch (err) {
+    if (errorCode(err) === 'ENOENT') return { ok: false, error: 'not_found' };
+    return { ok: false, error: 'io_error' };
+  }
+  try {
+    if (stat.isDirectory()) {
+      const entries = await fs.readdir(absPath);
+      if (entries.length > 0) return { ok: false, error: 'not_empty' };
+      await fs.rmdir(absPath);
+    } else {
+      await fs.unlink(absPath);
+      ctx.sandbox.addBytes(-stat.size);
+    }
+  } catch (err) {
+    const code = errorCode(err);
+    if (code === 'ENOENT') return { ok: false, error: 'not_found' };
+    return { ok: false, error: 'io_error' };
+  }
+  return { ok: true, data: { deleted: true } };
 }
 
 export function createAppendFileTool(ctx: FileOpsCtx): AppendFileTool {
@@ -446,22 +471,31 @@ async function* walkSandboxFiles(root: string, start: string): AsyncIterable<str
   const stack: string[] = [start];
   while (stack.length > 0) {
     const dir = stack.pop() as string;
-    let entries: Dirent[];
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
+    const entries = await safeReaddir(dir);
+    if (entries === null) continue;
     for (const entry of entries) {
-      const child = join(dir, entry.name);
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
-        if (child === root || child.startsWith(root + sep)) stack.push(child);
-      } else if (entry.isFile()) {
-        yield child;
-      }
+      const yielded = handleWalkEntry(root, dir, entry, stack);
+      if (yielded !== null) yield yielded;
     }
   }
+}
+
+async function safeReaddir(dir: string): Promise<Dirent[] | null> {
+  try {
+    return await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+}
+
+function handleWalkEntry(root: string, dir: string, entry: Dirent, stack: string[]): string | null {
+  if (entry.isSymbolicLink()) return null;
+  const child = join(dir, entry.name);
+  if (entry.isDirectory()) {
+    if (child === root || child.startsWith(root + sep)) stack.push(child);
+    return null;
+  }
+  return entry.isFile() ? child : null;
 }
 
 function buildGrepMatcher(
@@ -507,58 +541,74 @@ export function createGrepTool(ctx: FileOpsCtx): GrepTool {
   return {
     name: 'grep',
     async invoke(input): Promise<GrepResult> {
-      let parsed: GrepInput;
-      try {
-        parsed = grepInputSchema.parse(input);
-      } catch {
-        return { ok: false, error: 'invalid_args' };
-      }
-      const rel = parsed.relPath ?? '';
-      const resolved = ctx.sandbox.resolve(rel);
-      if (!resolved.ok) return { ok: false, error: 'path_outside_sandbox' };
-      const safe = await ctx.sandbox.checkSafe(resolved.absPath);
-      if (!safe.ok) {
-        if (safe.error === 'not_found') return { ok: false, error: 'not_found' };
-        return { ok: false, error: 'path_outside_sandbox' };
+      const parsedResult = parseToolInput(input, grepInputSchema);
+      if (!parsedResult.ok) return { ok: false, error: 'invalid_args' };
+      const parsed = parsedResult.data;
+      const checked = await resolveAndCheck(ctx, parsed.relPath ?? '');
+      if (!checked.ok) {
+        return checked.error === 'not_found'
+          ? { ok: false, error: 'not_found' }
+          : { ok: false, error: 'path_outside_sandbox' };
       }
       const matcherResult = buildGrepMatcher(parsed);
       if (!matcherResult.ok) return { ok: false, error: matcherResult.error };
       const max = parsed.maxMatches ?? GREP_DEFAULT_MAX_MATCHES;
 
-      let stat;
-      try {
-        stat = await fs.stat(resolved.absPath);
-      } catch (err) {
-        if (errorCode(err) === 'ENOENT') return { ok: false, error: 'not_found' };
-        return { ok: false, error: 'path_outside_sandbox' };
-      }
-      const fileIter: AsyncIterable<string> = stat.isFile()
-        ? (async function* (): AsyncIterable<string> {
-            yield resolved.absPath;
-          })()
-        : walkSandboxFiles(ctx.sandbox.root, resolved.absPath);
-
-      const matches: GrepMatch[] = [];
-      let filesScanned = 0;
-      let truncated = false;
-      for await (const abs of fileIter) {
-        if (ctx.signal.aborted) break;
-        filesScanned += 1;
-        let raw: Buffer;
-        try {
-          raw = await fs.readFile(abs);
-        } catch {
-          continue;
-        }
-        if (looksBinary(raw)) continue;
-        if (scanFileForMatches(abs, raw, ctx.sandbox.root, matcherResult.matcher, max, matches)) {
-          truncated = true;
-          break;
-        }
-      }
-      return { ok: true, data: { matches, truncated, filesScanned } };
+      const fileIter = await openGrepIterator(ctx, checked.absPath);
+      if (!fileIter.ok) return fileIter.error;
+      return scanGrep(ctx, fileIter.iter, matcherResult.matcher, max);
     },
   };
+}
+
+async function openGrepIterator(
+  ctx: FileOpsCtx,
+  absPath: string,
+): Promise<
+  | { ok: true; iter: AsyncIterable<string> }
+  | { ok: false; error: { ok: false; error: 'not_found' | 'path_outside_sandbox' } }
+> {
+  try {
+    const stat = await fs.stat(absPath);
+    const iter: AsyncIterable<string> = stat.isFile()
+      ? (async function* (): AsyncIterable<string> {
+          yield absPath;
+        })()
+      : walkSandboxFiles(ctx.sandbox.root, absPath);
+    return { ok: true, iter };
+  } catch (err) {
+    if (errorCode(err) === 'ENOENT') {
+      return { ok: false, error: { ok: false, error: 'not_found' } };
+    }
+    return { ok: false, error: { ok: false, error: 'path_outside_sandbox' } };
+  }
+}
+
+async function scanGrep(
+  ctx: FileOpsCtx,
+  fileIter: AsyncIterable<string>,
+  matcher: (line: string) => boolean,
+  max: number,
+): Promise<GrepResult> {
+  const matches: GrepMatch[] = [];
+  let filesScanned = 0;
+  let truncated = false;
+  for await (const abs of fileIter) {
+    if (ctx.signal.aborted) break;
+    filesScanned += 1;
+    let raw: Buffer;
+    try {
+      raw = await fs.readFile(abs);
+    } catch {
+      continue;
+    }
+    if (looksBinary(raw)) continue;
+    if (scanFileForMatches(abs, raw, ctx.sandbox.root, matcher, max, matches)) {
+      truncated = true;
+      break;
+    }
+  }
+  return { ok: true, data: { matches, truncated, filesScanned } };
 }
 
 export function createDownloadToFileTool(
@@ -567,12 +617,9 @@ export function createDownloadToFileTool(
   return {
     name: 'download_to_file',
     async invoke(input): Promise<DownloadToFileResult> {
-      let parsed: DownloadToFileInput;
-      try {
-        parsed = downloadToFileInputSchema.parse(input);
-      } catch {
-        return { ok: false, error: 'invalid_args' };
-      }
+      const parsedResult = parseToolInput(input, downloadToFileInputSchema);
+      if (!parsedResult.ok) return { ok: false, error: 'invalid_args' };
+      const parsed = parsedResult.data;
       const resolved = ctx.sandbox.resolve(parsed.relPath);
       if (!resolved.ok) return { ok: false, error: 'path_outside_sandbox' };
       const safe = await ctx.sandbox.checkSafe(resolved.absPath);
@@ -580,37 +627,14 @@ export function createDownloadToFileTool(
         return { ok: false, error: 'path_outside_sandbox' };
       }
 
-      const fetchInput: Record<string, unknown> = {
-        url: parsed.url,
-        method: parsed.method,
-        responseFormat: 'text',
-      };
-      if (parsed.headers !== undefined) fetchInput.headers = parsed.headers;
-      if (parsed.body !== undefined) fetchInput.body = parsed.body;
-      const fetchResult = await ctx.fetchUrl.invoke(fetchInput);
-      if (!fetchResult.ok) {
-        return {
-          ok: false,
-          error: 'fetch_failed',
-          fetchError: fetchResult.error,
-          ...(fetchResult.status !== undefined ? { status: fetchResult.status } : {}),
-        };
-      }
-      const body = fetchResult.data.body;
-      const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
-      const buf = Buffer.from(bodyText, 'utf8');
+      const fetched = await downloadBodyViaFetch(ctx, parsed);
+      if (!fetched.ok) return fetched.error;
+      const { buf, fetchData } = fetched;
 
-      let existingBytes = 0;
-      try {
-        const stat = await fs.stat(resolved.absPath);
-        existingBytes = stat.isFile() ? stat.size : 0;
-      } catch (err) {
-        if (errorCode(err) !== 'ENOENT') return { ok: false, error: 'io_error' };
-      }
-      const delta = buf.byteLength - existingBytes;
-      if (delta > 0 && ctx.sandbox.willExceedQuota(delta)) {
-        return { ok: false, error: 'quota_exceeded' };
-      }
+      const quotaResult = await checkQuotaForWrite(ctx, resolved.absPath, buf.byteLength);
+      if (!quotaResult.ok) return quotaResult.error;
+      const delta = quotaResult.delta;
+
       try {
         await fs.mkdir(dirname(resolved.absPath), { recursive: true });
         await fs.writeFile(resolved.absPath, buf);
@@ -623,14 +647,70 @@ export function createDownloadToFileTool(
         data: {
           relPath: parsed.relPath,
           bytesWritten: buf.byteLength,
-          status: fetchResult.data.status,
-          url: fetchResult.data.url,
-          truncated: fetchResult.data.truncated === true,
+          status: fetchData.status,
+          url: fetchData.url,
+          truncated: fetchData.truncated === true,
           sandboxBytes: ctx.sandbox.bytes(),
         },
       };
     },
   };
+}
+
+async function downloadBodyViaFetch(
+  ctx: FileOpsCtx & { readonly fetchUrl: FetchUrlTool },
+  parsed: DownloadToFileInput,
+): Promise<
+  | { ok: true; buf: Buffer; fetchData: { status: number; url: string; truncated?: boolean } }
+  | { ok: false; error: DownloadToFileResult }
+> {
+  const fetchInput: Record<string, unknown> = {
+    url: parsed.url,
+    method: parsed.method,
+    responseFormat: 'text',
+  };
+  if (parsed.headers !== undefined) fetchInput.headers = parsed.headers;
+  if (parsed.body !== undefined) fetchInput.body = parsed.body;
+  const fetchResult = await ctx.fetchUrl.invoke(fetchInput);
+  if (!fetchResult.ok) {
+    return {
+      ok: false,
+      error: {
+        ok: false,
+        error: 'fetch_failed',
+        fetchError: fetchResult.error,
+        ...(fetchResult.status !== undefined ? { status: fetchResult.status } : {}),
+      },
+    };
+  }
+  const body = fetchResult.data.body;
+  const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
+  return {
+    ok: true,
+    buf: Buffer.from(bodyText, 'utf8'),
+    fetchData: fetchResult.data,
+  };
+}
+
+async function checkQuotaForWrite(
+  ctx: FileOpsCtx,
+  absPath: string,
+  newSize: number,
+): Promise<{ ok: true; delta: number } | { ok: false; error: DownloadToFileResult }> {
+  let existingBytes = 0;
+  try {
+    const stat = await fs.stat(absPath);
+    existingBytes = stat.isFile() ? stat.size : 0;
+  } catch (err) {
+    if (errorCode(err) !== 'ENOENT') {
+      return { ok: false, error: { ok: false, error: 'io_error' } };
+    }
+  }
+  const delta = newSize - existingBytes;
+  if (delta > 0 && ctx.sandbox.willExceedQuota(delta)) {
+    return { ok: false, error: { ok: false, error: 'quota_exceeded' } };
+  }
+  return { ok: true, delta };
 }
 
 export function createGlobTool(ctx: FileOpsCtx): GlobTool {
